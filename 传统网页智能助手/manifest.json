@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "传统网页智能助手",
+  "version": "1.1.0",
+  "description": "通过大模型自动操作当前网页：理解页面、填写表单、点击、上传已附加文件等。",
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "传统网页智能助手"
+  },
+  "web_accessible_resources": [
+    { "resources": ["pagebridge.js"], "matches": ["<all_urls>"] }
+  ]
+}
