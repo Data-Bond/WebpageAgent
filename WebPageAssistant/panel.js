@@ -455,7 +455,7 @@
     const userInput = mk('textarea');
     userInput.id = 'userInput';
     userInput.rows = 2;
-    userInput.placeholder = '描述你要做的操作，例如：为张三提交事假申请，日期明天，并上传附件';
+    userInput.placeholder = '描述操作，例如：为张三提交事假申请并上传附件\n也可每行输入一条指令，如：\n进入成果反馈页面\n填写事假申请并上传附件';
     const sendBtn = mk('button', 'btn primary send-btn', { textContent: '发送' });
     inputRow.appendChild(userInput);
     inputRow.appendChild(sendBtn);
