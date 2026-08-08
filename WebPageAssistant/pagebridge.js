@@ -102,6 +102,82 @@
       return false;
     }
 
+    function inMenuContainer(el) {
+      try { return !!(el.closest && el.closest('nav, aside, [role="menu"], [role="navigation"], [role="menubar"]')); }
+      catch (e) { return false; }
+    }
+
+    var ACTIVE_CLASSES = ['active', 'selected', 'on', 'current', 'is-active', 'router-link-active', 'active-link', 'menu-item-active'];
+    function hasActiveClass(el) {
+      if (!el || !el.classList) return false;
+      for (var i = 0; i < ACTIVE_CLASSES.length; i++) {
+        if (el.classList.contains(ACTIVE_CLASSES[i])) return true;
+      }
+      return false;
+    }
+
+    function isMenuActive(el) {
+      if (!el) return false;
+      if (el.getAttribute && el.getAttribute('aria-current') === 'page') return true;
+      return hasActiveClass(el);
+    }
+
+    function extractHeading() {
+      var h1s = document.querySelectorAll('h1, [role="heading"][aria-level="1"]');
+      for (var i = 0; i < h1s.length; i++) {
+        if (isVisible(h1s[i])) {
+          var t = (h1s[i].innerText || h1s[i].textContent || '').trim();
+          if (t) return t.slice(0, 120);
+        }
+      }
+      var pt = document.querySelector('.page-title, .page-header, .panel-title, .card-title');
+      if (pt && isVisible(pt)) {
+        var t2 = (pt.innerText || pt.textContent || '').trim();
+        if (t2) return t2.slice(0, 120);
+      }
+      var bcs = document.querySelectorAll('.breadcrumb li, .breadcrumb a, [itemtype*="Breadcrumb"] li, [aria-label="breadcrumb"] a, [aria-label="面包屑"] a');
+      if (bcs.length) {
+        var last = bcs[bcs.length - 1];
+        if (last && isVisible(last)) {
+          var t3 = (last.innerText || last.textContent || '').trim();
+          if (t3) return t3.slice(0, 120);
+        }
+      }
+      return (document.title || '').slice(0, 120);
+    }
+
+    function extractActiveMenu() {
+      var cur = document.querySelector('[aria-current="page"]');
+      if (cur) {
+        var t = (cur.innerText || cur.textContent || '').trim();
+        if (t) return t.slice(0, 60);
+      }
+      var containers = document.querySelectorAll('nav, aside, [role="menu"], [role="navigation"], [role="menubar"]');
+      for (var c = 0; c < containers.length; c++) {
+        var actives = containers[c].querySelectorAll('.' + ACTIVE_CLASSES.join(', .'));
+        for (var a = 0; a < actives.length; a++) {
+          if (!isVisible(actives[a])) continue;
+          var t2 = (actives[a].innerText || actives[a].textContent || '').trim();
+          if (t2) return t2.slice(0, 60);
+        }
+      }
+      return '';
+    }
+
+    function countInteractive() {
+      return document.querySelectorAll('input, select, textarea, button, a, [role="button"], [contenteditable="true"], [role="textbox"], [role="option"]').length;
+    }
+
+    function probeSignals() {
+      return JSON.parse(JSON.stringify({
+        url: location.href || '',
+        title: document.title || '',
+        heading: extractHeading(),
+        activeMenu: extractActiveMenu(),
+        interactiveCount: countInteractive()
+      }));
+    }
+
     function snapshot() {
       var all = document.querySelectorAll('input, select, textarea, button, a, [role="button"], [contenteditable="true"], [role="textbox"], [role="option"]');
       var elements = [];
@@ -139,12 +215,16 @@
           disabled: !!(el.disabled || el.readOnly),
           contentEditable: !!(el.isContentEditable || (el.getAttribute && el.getAttribute('contenteditable') === 'true')),
           unique: !!sel.unique,
+          active: inMenuContainer(el) && isMenuActive(el),
           selector: sel.selector
         });
       }
       return JSON.parse(JSON.stringify({
         title: document.title || '',
         url: location.href || '',
+        heading: extractHeading(),
+        activeMenu: extractActiveMenu(),
+        interactiveCount: all.length,
         elements: elements
       }));
     }
@@ -237,6 +317,26 @@
             return el ? (el.innerText || el.value || null) : null;
           },
           sleep: function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); },
+          waitFor: function (test, opts) {
+            var o = opts || {};
+            var poll = o.poll || 200;
+            var timeout = o.timeout || 5000;
+            var deadline = Date.now() + timeout;
+            function check() {
+              if (typeof test === 'function') {
+                try { return !!test(); } catch (e) { return false; }
+              }
+              try { return !!document.querySelector(test); } catch (e) { return false; }
+            }
+            if (check()) return Promise.resolve(true);
+            return new Promise(function (resolve, reject) {
+              var timer = setInterval(function () {
+                if (check()) { clearInterval(timer); resolve(true); return; }
+                if (Date.now() >= deadline) { clearInterval(timer); reject(new Error('waitFor 超时（' + timeout + 'ms）')); }
+              }, poll);
+            });
+          },
+          probe: function () { return probeSignals(); },
           log: function () {
             window.__assistantLogs = window.__assistantLogs || [];
             var parts = Array.prototype.slice.call(arguments);
@@ -249,10 +349,10 @@
         var fn = new Function('page', 'return (async()=>{\n' + source + '\n})();');
         var result = await fn(page);
         window.__assistantLogs = window.__assistantLogs || [];
-        return { ok: true, result: JSON.stringify(result !== undefined ? result : null), logs: window.__assistantLogs };
+        return { ok: true, result: JSON.stringify(result !== undefined ? result : null), probe: probeSignals(), logs: window.__assistantLogs };
       } catch (e) {
         window.__assistantLogs = window.__assistantLogs || [];
-        return { ok: false, error: (e && e.stack) ? e.stack : String(e), logs: window.__assistantLogs };
+        return { ok: false, error: (e && e.stack) ? e.stack : String(e), probe: probeSignals(), logs: window.__assistantLogs };
       }
     }
 
@@ -269,6 +369,8 @@
       }
       if (cmd === 'snapshot') {
         try { respond(snapshot()); } catch (err) { respond(String(err && err.stack || err), false); }
+      } else if (cmd === 'probe') {
+        try { respond(probeSignals()); } catch (err) { respond(String(err && err.stack || err), false); }
       } else if (cmd === 'runScript') {
         var script = detail.payload && detail.payload.script;
         runScript(script || '').then(function (res) {

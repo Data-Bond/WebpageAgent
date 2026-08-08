@@ -86,11 +86,11 @@
         sendResponse({ ok: true, files: list });
         return;
 
-      } else if (cmd === 'snapshot' || cmd === 'runScript') {
+      } else if (cmd === 'snapshot' || cmd === 'runScript' || cmd === 'probe') {
         var payload = {};
         if (cmd === 'runScript') payload.script = msg.script || '';
         // runScript 可能耗时较长（等待页面异步操作），给予更长超时，避免被误判失败后重试导致重复副作用
-        var timeout = cmd === 'runScript' ? 300000 : 12000;
+        var timeout = cmd === 'runScript' ? 300000 : (cmd === 'probe' ? 6000 : 12000);
         dsReq(cmd, payload, timeout).then(function (res) {
           // res = {id, ok, data}. data 可能是 snapshot 对象 或 runScript 结果
           // 对于 runScript 失败，data = {ok:false, error:"..."} ，需要展平 error 字段。
