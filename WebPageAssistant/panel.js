@@ -481,7 +481,7 @@
   function storeSet(obj) {
     return new Promise((resolve) => {
       try {
-        chrome.storage.local.set(obj, () => resolve());
+        chrome.storage.local.set(obj, () => { void chrome.runtime.lastError; resolve(); });
       } catch (e) {
         resolve();
       }
@@ -490,7 +490,7 @@
   function storeGet(keys) {
     return new Promise((resolve) => {
       try {
-        chrome.storage.local.get(keys, (obj) => resolve(obj || {}));
+        chrome.storage.local.get(keys, (obj) => { void chrome.runtime.lastError; resolve(obj || {}); });
       } catch (e) {
         resolve({});
       }
@@ -904,6 +904,7 @@
         dispatch(msg.type, msg);
       });
       port.onDisconnect.addListener(() => {
+        void chrome.runtime.lastError;
         portDead = true;
         setRunning(false);
         stopHeartbeat();
@@ -1007,6 +1008,20 @@
     els.connStatus.textContent = '正在连接…';
     host.hidden = true;
     openPort();
+
+    // bfcache 恢复：页面从前进/后退缓存恢复时，端口已断开，需主动重连
+    window.addEventListener('pageshow', (e) => {
+      if (e.persisted && (portDead || !port)) {
+        triggerReconnect();
+      }
+    });
+    // 页面即将进入 bfcache：提前停止心跳，标记端口失效
+    window.addEventListener('pagehide', (e) => {
+      if (e.persisted) {
+        stopHeartbeat();
+        portDead = true;
+      }
+    });
   }
 
   if (document.body) {

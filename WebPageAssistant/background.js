@@ -12,12 +12,18 @@ const DEFAULT_CONFIG = {
 
 function storageGet(keys) {
   return new Promise((resolve) => {
-    chrome.storage.local.get(keys, (obj) => resolve(obj));
+    chrome.storage.local.get(keys, (obj) => {
+      void chrome.runtime.lastError;
+      resolve(obj || {});
+    });
   });
 }
 function storageSet(obj) {
   return new Promise((resolve) => {
-    chrome.storage.local.set(obj, () => resolve());
+    chrome.storage.local.set(obj, () => {
+      void chrome.runtime.lastError;
+      resolve();
+    });
   });
 }
 
@@ -570,6 +576,7 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 
   port.onDisconnect.addListener(() => {
+    void chrome.runtime.lastError;
     const a = activeTasks.get(tabId);
     if (a) a.cancelRef.cancelled = true;
     // 不从 visibleTabs 中移除：整页刷新时端口断开，但 tabs.onUpdated 仍需据此恢复面板。
