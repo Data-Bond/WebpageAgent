@@ -11,6 +11,11 @@
   if (window.__assistantPanelInjected) return;
   window.__assistantPanelInjected = true;
 
+  // ============ 构建标识（应用名栏显示 分支号-版本号） ============
+  const BUILD_BRANCH = 'dev';
+  const BUILD_VERSION = '0.3.0';
+  const BUILD_TAG = BUILD_BRANCH + '-' + BUILD_VERSION;
+
   // ============ CSS（CSP 安全：通过构造的 CSSStyleSheet 注入） ============
   const CSS_STRING = `
     :host {
@@ -63,10 +68,28 @@
       font-weight: 700;
       letter-spacing: 0.5px;
     }
+    .header-build {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      background: rgba(255, 255, 255, 0.18);
+      color: #fff;
+      padding: 2px 7px;
+      border-radius: 999px;
+      margin-left: 2px;
+      white-space: nowrap;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
     .header-right {
       display: flex;
       align-items: center;
       gap: 6px;
+      flex-shrink: 0;
     }
     .icon-btn {
       background: rgba(255, 255, 255, 0.2);
@@ -112,6 +135,17 @@
       flex-direction: column;
       gap: 8px;
       flex-shrink: 0;
+      min-height: 0;
+      max-height: calc(min(560px, 100vh - 40px) - 210px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+    .settings-panel::-webkit-scrollbar {
+      width: 6px;
+    }
+    .settings-panel::-webkit-scrollbar-thumb {
+      background: #c9cedb;
+      border-radius: 3px;
     }
     .settings-panel label {
       display: flex;
@@ -134,6 +168,86 @@
       border-color: #4f7cff;
       box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.15);
     }
+    .settings-panel textarea {
+      border: 1px solid #d8dbe7;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      background: #fbfcfe;
+      font-family: inherit;
+      resize: vertical;
+      min-height: 60px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    .settings-panel textarea:focus {
+      border-color: #4f7cff;
+      box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.15);
+    }
+    .provider-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      border: 1px dashed #e0e3ef;
+      border-radius: 10px;
+      padding: 10px;
+      background: #fafbff;
+    }
+    .provider-heading {
+      font-size: 12px;
+      font-weight: 700;
+      color: #4a5270;
+    }
+    .provider-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .provider-row {
+      display: grid;
+      grid-template-columns: 1fr 1.4fr 1fr 1.4fr auto;
+      gap: 5px;
+      align-items: center;
+    }
+    .provider-row input {
+      border: 1px solid #d8dbe7;
+      border-radius: 7px;
+      padding: 6px 8px;
+      font-size: 12px;
+      outline: none;
+      background: #fff;
+      font-family: inherit;
+      min-width: 0;
+    }
+    .provider-row input:focus {
+      border-color: #4f7cff;
+      box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.15);
+    }
+    .provider-del {
+      padding: 5px 8px;
+      font-size: 12px;
+      border-radius: 7px;
+    }
+    .add-provider {
+      align-self: flex-start;
+      padding: 5px 10px;
+      font-size: 12px;
+    }
+    .config-io {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding-top: 4px;
+      border-top: 1px dashed #e8ebf5;
+    }
+    .config-io .io-hint {
+      width: 100%;
+      font-size: 11px;
+      color: #8a90a6;
+      line-height: 1.4;
+    }
     .settings-actions {
       display: flex;
       gap: 8px;
@@ -144,6 +258,7 @@
       color: #6a5cff;
       min-height: 16px;
       word-break: break-word;
+      white-space: pre-wrap;
     }
     .btn {
       border: 1px solid #d8dbe7;
@@ -256,6 +371,26 @@
       background: #f0d0d0;
       color: #c0392b;
     }
+    .chip .chip-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 999px;
+      flex-shrink: 0;
+      line-height: 1.4;
+    }
+    .chip .chip-badge.text {
+      background: #e3ecff;
+      color: #3b4b8f;
+    }
+    .chip .chip-badge.ocr {
+      background: #fde8d6;
+      color: #b5651d;
+    }
+    .chip .chip-badge.upload {
+      background: #e6f4ea;
+      color: #1e7d4f;
+    }
     .add-file {
       align-self: flex-start;
     }
@@ -331,6 +466,65 @@
       background: #ffffff;
       border-top: 1px solid #e6e8f0;
       flex-shrink: 0;
+      align-items: flex-end;
+    }
+    .attach-btn {
+      width: 38px;
+      height: 38px;
+      border: 1px solid #d8dbe7;
+      background: #fbfcfe;
+      border-radius: 10px;
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+    }
+    .attach-btn:hover {
+      border-color: #4f7cff;
+      background: #f2f5ff;
+    }
+    .tag-row {
+      display: flex;
+      gap: 8px;
+      padding: 6px 12px 10px;
+      background: #ffffff;
+      border-top: 1px solid #eef0f6;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .tag-field {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex: 1;
+      min-width: 140px;
+    }
+    .tag-field label {
+      font-size: 11px;
+      color: #6a7080;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .tag-select {
+      flex: 1;
+      min-width: 0;
+      border: 1px solid #d8dbe7;
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-family: inherit;
+      background: #fbfcfe;
+      outline: none;
+      cursor: pointer;
+    }
+    .tag-select:focus {
+      border-color: #4f7cff;
+      box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.15);
     }
     #userInput {
       flex: 1;
@@ -369,6 +563,7 @@
   let reconnecting = false;
   let heartbeatId = null;
   let reconnectTimerId = null;
+  let currentConfig = null; // 最新配置（用于重建标签下拉）
 
   const MAX_FILES_BYTES = 5 * 1024 * 1024; // 5MB dataUrl 总字节上限
 
@@ -397,9 +592,75 @@
     return el;
   }
 
+  // 附件分类（与 background 一致）：'text' | 'pdf' | 'image' | 'other'
+  function classifyFile(name, type) {
+    const n = String(name || '').toLowerCase();
+    const mime = String(type || '').toLowerCase();
+    const dot = n.lastIndexOf('.');
+    const ext = dot >= 0 ? n.slice(dot + 1) : '';
+    if (['md', 'markdown', 'txt', 'log', 'text', 'csv', 'json'].indexOf(ext) >= 0) return 'text';
+    if (ext === 'pdf' || mime === 'application/pdf') return 'pdf';
+    if (['png', 'jpg', 'jpeg'].indexOf(ext) >= 0 || mime.indexOf('image/') === 0) return 'image';
+    return 'other';
+  }
+  function kindBadge(kind) {
+    if (kind === 'text') return '文本';
+    if (kind === 'pdf' || kind === 'image') return 'OCR';
+    return '上传';
+  }
+  function kindBadgeClass(kind) {
+    if (kind === 'text') return 'text';
+    if (kind === 'pdf' || kind === 'image') return 'ocr';
+    return 'upload';
+  }
+
+  // 构建一个 provider 行（名称/Base URL/API Key/模型ID + 删除）
+  function addProviderRow(container, data) {
+    const row = mk('div', 'provider-row');
+    const name = mk('input', null, { type: 'text', placeholder: '名称', value: (data && data.name) || '' });
+    name.dataset.field = 'name';
+    const baseURL = mk('input', null, { type: 'text', placeholder: 'Base URL', value: (data && data.baseURL) || '' });
+    baseURL.dataset.field = 'baseURL';
+    const apiKey = mk('input', null, { type: 'password', placeholder: 'API Key', value: (data && data.apiKey) || '' });
+    apiKey.dataset.field = 'apiKey';
+    const models = mk('input', null, { type: 'text', placeholder: '模型ID（逗号分隔）', value: (data && data.models) || '' });
+    models.dataset.field = 'models';
+    const del = mk('button', 'btn provider-del', { type: 'button', textContent: '删除', title: '删除该 provider' });
+    del.addEventListener('click', () => { row.remove(); });
+    row.appendChild(name);
+    row.appendChild(baseURL);
+    row.appendChild(apiKey);
+    row.appendChild(models);
+    row.appendChild(del);
+    container.appendChild(row);
+    return row;
+  }
+
+  // 读取容器内所有 provider 行
+  function collectProviders(container) {
+    const rows = container.querySelectorAll('.provider-row');
+    const out = [];
+    rows.forEach((row) => {
+      const get = (f) => {
+        const el = row.querySelector('input[data-field="' + f + '"]');
+        return el ? el.value.trim() : '';
+      };
+      const name = get('name');
+      const baseURL = get('baseURL');
+      const apiKey = get('apiKey');
+      const models = get('models');
+      // 至少有 baseURL 或 models 才算有效行
+      if (baseURL || models) {
+        out.push({ name: name || 'provider', baseURL, apiKey, models });
+      }
+    });
+    return out;
+  }
+
   function buildDOM() {
     const header = mk('header', 'app-header');
     const title = mk('div', 'header-title', { textContent: '网页智能助手' });
+    const buildBadge = mk('span', 'header-build', { textContent: BUILD_TAG, title: '分支号-版本号' });
     const headerRight = mk('div', 'header-right');
     const clearBtn = mk('button', 'clear-link', { textContent: '清空对话', title: '清空对话与附件' });
     const settingsBtn = mk('button', 'icon-btn', { textContent: '⚙', title: '设置' });
@@ -407,25 +668,48 @@
     headerRight.appendChild(clearBtn);
     headerRight.appendChild(settingsBtn);
     headerRight.appendChild(closeBtn);
-    header.appendChild(title);
+    const headerLeft = mk('div', 'header-left');
+    headerLeft.appendChild(title);
+    headerLeft.appendChild(buildBadge);
+    header.appendChild(headerLeft);
     header.appendChild(headerRight);
 
     const settingsPanel = mk('section', 'settings-panel hidden');
     settingsPanel.id = 'settingsPanel';
-    const apiBase = mk('input', null, { type: 'text', placeholder: 'https://api.deepseek.com/v1' });
-    const apiKey = mk('input', null, { type: 'password', placeholder: 'sk-...' });
-    const model = mk('input', null, { type: 'text', placeholder: 'deepseek-chat' });
-    const maxSteps = mk('input', null, { type: 'number', min: 1, max: 100, placeholder: '15', value: '15' });
     const mkLabel = (text, input) => {
       const label = mk('label');
       label.appendChild(document.createTextNode(text));
       label.appendChild(input);
       return label;
     };
-    settingsPanel.appendChild(mkLabel('API 地址', apiBase));
-    settingsPanel.appendChild(mkLabel('API Key', apiKey));
-    settingsPanel.appendChild(mkLabel('模型', model));
+
+    // 文本模型 Providers
+    const textSection = mk('div', 'provider-section');
+    textSection.appendChild(mk('div', 'provider-heading', { textContent: '文本模型 Providers（OpenAI 兼容，可多个 / LiteLLM）' }));
+    const textProvidersList = mk('div', 'provider-list');
+    textSection.appendChild(textProvidersList);
+    const addTextProviderBtn = mk('button', 'btn add-provider', { type: 'button', textContent: '＋ 添加 provider' });
+    textSection.appendChild(addTextProviderBtn);
+    settingsPanel.appendChild(textSection);
+
+    const systemPromptText = mk('textarea', null, { rows: 3, placeholder: '文本模型 System Prompt（每次调用置于上下文最前）' });
+    settingsPanel.appendChild(mkLabel('文本模型 System Prompt', systemPromptText));
+
+    // PDF-OCR 模型 Providers
+    const ocrSection = mk('div', 'provider-section');
+    ocrSection.appendChild(mk('div', 'provider-heading', { textContent: 'PDF-OCR 模型 Providers（视觉模型 image_url，或 MinerU multipart）' }));
+    const ocrProvidersList = mk('div', 'provider-list');
+    ocrSection.appendChild(ocrProvidersList);
+    const addOcrProviderBtn = mk('button', 'btn add-provider', { type: 'button', textContent: '＋ 添加 provider' });
+    ocrSection.appendChild(addOcrProviderBtn);
+    settingsPanel.appendChild(ocrSection);
+
+    const systemPromptOcr = mk('textarea', null, { rows: 3, placeholder: 'OCR 模型 System Prompt（视觉模型调用时置于最前）' });
+    settingsPanel.appendChild(mkLabel('OCR 模型 System Prompt', systemPromptOcr));
+
+    const maxSteps = mk('input', null, { type: 'number', min: 1, max: 100, placeholder: '15', value: '15' });
     settingsPanel.appendChild(mkLabel('最大步数', maxSteps));
+
     const settingsActions = mk('div', 'settings-actions');
     const saveBtn = mk('button', 'btn primary', { textContent: '保存' });
     const testBtn = mk('button', 'btn', { textContent: '测试连接' });
@@ -435,30 +719,60 @@
     const settingsStatus = mk('div', 'settings-status');
     settingsPanel.appendChild(settingsStatus);
 
+    // 配置导入/导出：下载可编辑的样例 JSON / 上传恢复配置（免重装后重新填 API）
+    const configIo = mk('div', 'config-io');
+    configIo.appendChild(mk('div', 'io-hint', { textContent: '导出当前配置为 JSON 备份，或上传 JSON 恢复配置（重装插件后无需重填 API）。' }));
+    const downloadConfigBtn = mk('button', 'btn', { type: 'button', textContent: '⬇ 下载配置' });
+    const uploadConfigBtn = mk('button', 'btn', { type: 'button', textContent: '⬆ 上传配置' });
+    const uploadConfigInput = mk('input');
+    uploadConfigInput.type = 'file';
+    uploadConfigInput.accept = '.json,application/json';
+    uploadConfigInput.style.display = 'none';
+    configIo.appendChild(downloadConfigBtn);
+    configIo.appendChild(uploadConfigBtn);
+    configIo.appendChild(uploadConfigInput);
+    settingsPanel.appendChild(configIo);
+
     const connStatus = mk('div', 'conn-status', { textContent: '正在连接…' });
 
     const attachArea = mk('section', 'attach-area hidden');
     attachArea.id = 'attachArea';
     const chips = mk('div', 'chips');
-    const addFileBtn = mk('button', 'btn add-file', { textContent: '＋ 添加文件' });
     const fileInput = mk('input');
     fileInput.type = 'file';
     fileInput.multiple = true;
+    fileInput.accept = '.md,.markdown,.txt,.log,.text,.csv,.json,.pdf,.png,.jpg,.jpeg';
     fileInput.style.display = 'none';
     attachArea.appendChild(chips);
-    attachArea.appendChild(addFileBtn);
     attachArea.appendChild(fileInput);
 
     const messages = mk('div', 'messages');
 
     const inputRow = mk('div', 'input-row');
+    const attachBtn = mk('button', 'attach-btn', { type: 'button', textContent: '📎', title: '上传附件（文本/PDF/图片）' });
     const userInput = mk('textarea');
     userInput.id = 'userInput';
     userInput.rows = 2;
     userInput.placeholder = '描述操作，例如：为张三提交事假申请并上传附件\n也可每行输入一条指令，如：\n进入成果反馈页面\n填写事假申请并上传附件';
     const sendBtn = mk('button', 'btn primary send-btn', { textContent: '发送' });
+    inputRow.appendChild(attachBtn);
     inputRow.appendChild(userInput);
     inputRow.appendChild(sendBtn);
+
+    // 输入行下方：两个模型标签选择器（文本 / OCR），切换立即持久化
+    const tagRow = mk('div', 'tag-row');
+    const textTagField = mk('div', 'tag-field');
+    textTagField.appendChild(mk('label', null, { textContent: '文本模型' }));
+    const textTagSelect = mk('select', 'tag-select');
+    textTagSelect.title = '选择文本模型标签（provider名 / 模型ID）';
+    textTagField.appendChild(textTagSelect);
+    const ocrTagField = mk('div', 'tag-field');
+    ocrTagField.appendChild(mk('label', null, { textContent: 'OCR模型' }));
+    const ocrTagSelect = mk('select', 'tag-select');
+    ocrTagSelect.title = '选择 PDF-OCR 模型标签（provider名 / 模型ID）';
+    ocrTagField.appendChild(ocrTagSelect);
+    tagRow.appendChild(textTagField);
+    tagRow.appendChild(ocrTagField);
 
     shadow.appendChild(header);
     shadow.appendChild(settingsPanel);
@@ -466,12 +780,17 @@
     shadow.appendChild(attachArea);
     shadow.appendChild(messages);
     shadow.appendChild(inputRow);
+    shadow.appendChild(tagRow);
 
     return {
       header, settingsBtn, closeBtn, clearBtn,
-      settingsPanel, apiBase, apiKey, model, maxSteps, saveBtn, testBtn, settingsStatus,
-      connStatus, attachArea, chips, addFileBtn, fileInput,
-      messages, userInput, sendBtn
+      settingsPanel, textProvidersList, ocrProvidersList,
+      addTextProviderBtn, addOcrProviderBtn,
+      systemPromptText, systemPromptOcr, maxSteps, saveBtn, testBtn, settingsStatus,
+      downloadConfigBtn, uploadConfigBtn, uploadConfigInput,
+      connStatus, attachArea, chips, fileInput, attachBtn,
+      messages, userInput, sendBtn,
+      textTagSelect, ocrTagSelect
     };
   }
 
@@ -518,8 +837,8 @@
     // 若总体积超上限，仅保留元数据（刷新后需重新添加才能上传）
     const over = filesTotalBytes() > MAX_FILES_BYTES;
     const toStore = attachedFiles.map((f) => over
-      ? { key: f.key, name: f.name, type: f.type, size: f.size }
-      : { key: f.key, name: f.name, type: f.type, size: f.size, dataUrl: f.dataUrl });
+      ? { key: f.key, name: f.name, type: f.type, size: f.size, kind: f.kind }
+      : { key: f.key, name: f.name, type: f.type, size: f.size, dataUrl: f.dataUrl, kind: f.kind });
     storeSet({ [fileKey()]: toStore });
   }
 
@@ -568,7 +887,8 @@
     if (Array.isArray(savedFiles)) {
       for (const f of savedFiles) {
         if (f && f.key) {
-          attachedFiles.push({ key: f.key, name: f.name || '', type: f.type || '', size: f.size || 0, dataUrl: f.dataUrl || '' });
+          const kind = f.kind || classifyFile(f.name, f.type);
+          attachedFiles.push({ key: f.key, name: f.name || '', type: f.type || '', size: f.size || 0, dataUrl: f.dataUrl || '', kind: kind });
           const m = /^f(\d+)$/.exec(String(f.key));
           if (m) { const n = parseInt(m[1], 10); if (n > maxSeq) maxSeq = n; }
         }
@@ -588,7 +908,9 @@
   function renderChips() {
     els.chips.textContent = '';
     attachedFiles.forEach((f, idx) => {
+      const kind = f.kind || classifyFile(f.name, f.type);
       const chip = mk('span', 'chip');
+      const badge = mk('span', 'chip-badge ' + kindBadgeClass(kind), { textContent: kindBadge(kind), title: '类别：' + kind });
       const name = mk('span', 'chip-name', { textContent: f.name || '' });
       name.title = f.name || '';
       const size = mk('span', 'chip-size', { textContent: fileSizeLabel(f.size || 0) });
@@ -598,6 +920,7 @@
         renderChips();
         persistFiles();
       });
+      chip.appendChild(badge);
       chip.appendChild(name);
       chip.appendChild(size);
       chip.appendChild(remove);
@@ -620,12 +943,14 @@
     for (const file of arr) {
       try {
         const dataUrl = await readFileAsDataUrl(file);
+        const kind = classifyFile(file.name, file.type);
         attachedFiles.push({
           key: 'f' + (++fileSeq),
           name: file.name,
           type: file.type || '',
           size: file.size || 0,
-          dataUrl: dataUrl
+          dataUrl: dataUrl,
+          kind: kind
         });
       } catch (e) {
         addBubble('error', '读取文件失败：' + file.name);
@@ -718,7 +1043,7 @@
       addBubble('status', '已上传附件：' + attachedFiles.map((f) => f.name).join('、'));
     }
 
-    const files = attachedFiles.map((f) => ({ key: f.key, name: f.name, type: f.type, dataUrl: f.dataUrl }));
+    const files = attachedFiles.map((f) => ({ key: f.key, name: f.name, type: f.type, dataUrl: f.dataUrl, kind: f.kind }));
     try {
       port.postMessage({ cmd: 'runTask', task: text, files: files });
     } catch (e) {
@@ -756,19 +1081,184 @@
   // ============ 配置 ============
   function collectConfig() {
     return {
-      apiBase: els.apiBase.value.trim(),
-      apiKey: els.apiKey.value.trim(),
-      model: els.model.value.trim(),
-      maxSteps: Number(els.maxSteps.value) || 15
+      textProviders: collectProviders(els.textProvidersList),
+      ocrProviders: collectProviders(els.ocrProvidersList),
+      systemPromptText: els.systemPromptText.value,
+      systemPromptOcr: els.systemPromptOcr.value,
+      maxSteps: Number(els.maxSteps.value) || 15,
+      // 标签由下拉选择驱动（selectTag 实时持久化），此处带回当前选择以备保存
+      selectedTextTag: currentConfig ? currentConfig.selectedTextTag : null,
+      selectedOcrTag: currentConfig ? currentConfig.selectedOcrTag : null
     };
   }
 
   function fillSettings(cfg) {
     if (!cfg) return;
-    if (cfg.apiBase != null) els.apiBase.value = cfg.apiBase;
-    if (cfg.apiKey != null) els.apiKey.value = cfg.apiKey;
-    if (cfg.model != null) els.model.value = cfg.model;
-    if (cfg.maxSteps != null) els.maxSteps.value = cfg.maxSteps != null ? cfg.maxSteps : '';
+    // providers
+    els.textProvidersList.textContent = '';
+    els.ocrProvidersList.textContent = '';
+    const textProviders = Array.isArray(cfg.textProviders) ? cfg.textProviders : [];
+    const ocrProviders = Array.isArray(cfg.ocrProviders) ? cfg.ocrProviders : [];
+    if (textProviders.length === 0) addProviderRow(els.textProvidersList, { name: '默认' });
+    textProviders.forEach((p) => addProviderRow(els.textProvidersList, p));
+    ocrProviders.forEach((p) => addProviderRow(els.ocrProvidersList, p));
+
+    // system prompts：空值用 defaults 预填
+    const defs = cfg.defaults || {};
+    els.systemPromptText.value = cfg.systemPromptText != null ? cfg.systemPromptText : (defs.systemPromptText || '');
+    els.systemPromptOcr.value = cfg.systemPromptOcr != null ? cfg.systemPromptOcr : (defs.systemPromptOcr || '');
+
+    if (cfg.maxSteps != null) els.maxSteps.value = cfg.maxSteps;
+
+    // 保存最新配置并重建标签下拉
+    currentConfig = cfg;
+    rebuildTagSelectors(cfg);
+  }
+
+  // 重建某类标签下拉选项（provider名 / 模型ID），并选中当前 selectedXxxTag
+  function buildTagOptions(select, providers, selected) {
+    select.textContent = '';
+    if (!providers || providers.length === 0) {
+      const opt = mk('option', null, { textContent: '未配置', value: '' });
+      select.appendChild(opt);
+      select.disabled = true;
+      return;
+    }
+    select.disabled = false;
+    let found = false;
+    providers.forEach((p) => {
+      const ids = String(p.models || '').split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+      if (ids.length === 0) ids.push('');
+      ids.forEach((mid) => {
+        const label = p.name + ' / ' + (mid || '?');
+        const val = p.name + '\u0001' + mid;
+        const opt = mk('option', null, { textContent: label, value: val });
+        if (selected && selected.provider === p.name && selected.model === mid) {
+          opt.selected = true;
+          found = true;
+        }
+        select.appendChild(opt);
+      });
+    });
+    if (!found && select.options.length > 0) select.options[0].selected = true;
+  }
+
+  function rebuildTagSelectors(cfg) {
+    buildTagOptions(els.textTagSelect, cfg.textProviders, cfg.selectedTextTag);
+    buildTagOptions(els.ocrTagSelect, cfg.ocrProviders, cfg.selectedOcrTag);
+  }
+
+  // 解析标签下拉 value → {provider, model}
+  function parseTagValue(val) {
+    if (!val) return { provider: '', model: '' };
+    const idx = val.indexOf('\u0001');
+    if (idx < 0) return { provider: val, model: '' };
+    return { provider: val.slice(0, idx), model: val.slice(idx + 1) };
+  }
+
+  // ============ 配置导入 / 导出 ============
+  // apiKey 脱敏掩码：导出的 JSON 不落明文密钥；再导入时同名 provider 自动沿用现有密钥
+  const KEY_MASK = '********';
+  function maskProviders(list) {
+    return (list || []).map((p) => ({
+      name: p.name || 'provider',
+      baseURL: p.baseURL || '',
+      apiKey: p.apiKey ? KEY_MASK : '',
+      models: p.models || ''
+    }));
+  }
+  // 从当前已保存配置中找回同名 provider 的密钥（导入掩码占位时保留旧钥）
+  function preserveKey(kind, name) {
+    const list = (currentConfig && (kind === 'ocr' ? currentConfig.ocrProviders : currentConfig.textProviders)) || [];
+    const hit = list.find((p) => p && p.name === name);
+    return hit && hit.apiKey ? hit.apiKey : '';
+  }
+
+  // 导出当前配置为 JSON（空配置时即带默认 prompt 的可编辑样例）
+  function exportConfig() {
+    const cfg = collectConfig();
+    // 补全默认 system prompt，使空配置下载后也是完整可编辑样例
+    const defs = (currentConfig && currentConfig.defaults) || {};
+    if (!cfg.systemPromptText && defs.systemPromptText) cfg.systemPromptText = defs.systemPromptText;
+    if (!cfg.systemPromptOcr && defs.systemPromptOcr) cfg.systemPromptOcr = defs.systemPromptOcr;
+    const payload = {
+      textProviders: maskProviders(cfg.textProviders),
+      ocrProviders: maskProviders(cfg.ocrProviders),
+      selectedTextTag: cfg.selectedTextTag || null,
+      selectedOcrTag: cfg.selectedOcrTag || null,
+      systemPromptText: cfg.systemPromptText || '',
+      systemPromptOcr: cfg.systemPromptOcr || '',
+      maxSteps: cfg.maxSteps || 15
+    };
+    const json = JSON.stringify(payload, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    try {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'webpage-assistant-config.json';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e) {
+      addBubble('error', '下载配置失败：' + String(e && e.message || e));
+    }
+    setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 1000);
+    els.settingsStatus.textContent = '已导出配置 JSON（apiKey 已脱敏；重新导入时同名 provider 自动沿用现有密钥）';
+  }
+
+  // 规范化上传的 JSON：兼容旧配置 {apiBase,apiKey,model,systemPrompt}
+  function normalizeUploadedConfig(obj) {
+    if (!obj || typeof obj !== 'object') return null;
+    const defs = (currentConfig && currentConfig.defaults) || {};
+
+    let textProviders = Array.isArray(obj.textProviders) ? obj.textProviders : [];
+    if (textProviders.length === 0 && (obj.apiBase || obj.model)) {
+      textProviders = [{ name: '默认', baseURL: obj.apiBase || '', apiKey: obj.apiKey || '', models: obj.model || '' }];
+    }
+    let ocrProviders = Array.isArray(obj.ocrProviders) ? obj.ocrProviders : [];
+
+    const resolveKey = (kind) => (p) => {
+      // 掩码占位：沿用现有同名 provider 的密钥；无则置空待用户手填
+      const key = (p.apiKey === KEY_MASK) ? preserveKey(kind, p.name || 'provider') : (p.apiKey || '');
+      return {
+        name: p.name || 'provider', baseURL: p.baseURL || p.apiBase || '',
+        apiKey: key, models: p.models || p.model || ''
+      };
+    };
+    return {
+      textProviders: textProviders.map(resolveKey('text')),
+      ocrProviders: ocrProviders.map(resolveKey('ocr')),
+      selectedTextTag: obj.selectedTextTag || null,
+      selectedOcrTag: obj.selectedOcrTag || null,
+      systemPromptText: obj.systemPromptText || obj.systemPrompt || defs.systemPromptText || '',
+      systemPromptOcr: obj.systemPromptOcr || defs.systemPromptOcr || '',
+      maxSteps: Number(obj.maxSteps) || 15
+    };
+  }
+
+  async function importConfig(file) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const obj = JSON.parse(text);
+      const norm = normalizeUploadedConfig(obj);
+      if (!norm) throw new Error('JSON 不是有效的配置对象');
+      // 即时回填面板
+      fillSettings(norm);
+      // 持久化到 background
+      try {
+        port.postMessage({ cmd: 'saveConfig', config: norm });
+        els.settingsStatus.textContent = '已导入并保存配置 ✓';
+      } catch (e) {
+        els.settingsStatus.textContent = '已导入到面板，但保存失败：' + String(e && e.message || e);
+      }
+    } catch (e) {
+      els.settingsStatus.textContent = '导入失败：' + String(e && e.message || e);
+      addBubble('error', '导入配置失败：' + String(e && e.message || e));
+    }
+    els.uploadConfigInput.value = '';
   }
 
   // ============ 面板显示 ============
@@ -835,6 +1325,9 @@
         case 'config': handleConfig(msg); break;
         case 'configSaved':
           els.settingsStatus.textContent = msg.ok ? '已保存 ✓' : '保存失败';
+          break;
+        case 'tagSaved':
+          // 标签已持久化；无需额外动作（下拉已即时反映）
           break;
         case 'testResult':
           els.settingsStatus.textContent = msg.message != null ? String(msg.message) : (msg.ok ? '连接成功' : '连接失败');
@@ -971,8 +1464,28 @@
         els.settingsStatus.textContent = '测试失败：未连接';
       }
     });
-    els.addFileBtn.addEventListener('click', () => els.fileInput.click());
+    els.addTextProviderBtn.addEventListener('click', () => addProviderRow(els.textProvidersList, { name: 'provider' }));
+    els.addOcrProviderBtn.addEventListener('click', () => addProviderRow(els.ocrProvidersList, { name: 'provider' }));
+    els.downloadConfigBtn.addEventListener('click', () => exportConfig());
+    els.uploadConfigBtn.addEventListener('click', () => els.uploadConfigInput.click());
+    els.uploadConfigInput.addEventListener('change', () => {
+      if (els.uploadConfigInput.files && els.uploadConfigInput.files[0]) {
+        importConfig(els.uploadConfigInput.files[0]);
+      }
+    });
+    els.attachBtn.addEventListener('click', () => els.fileInput.click());
     els.fileInput.addEventListener('change', () => handleFiles(els.fileInput.files));
+    // 标签下拉切换：立即持久化，对下一次调用生效
+    els.textTagSelect.addEventListener('change', () => {
+      const tag = parseTagValue(els.textTagSelect.value);
+      if (currentConfig) currentConfig.selectedTextTag = tag;
+      try { port.postMessage({ cmd: 'selectTag', kind: 'text', provider: tag.provider, model: tag.model }); } catch (e) {}
+    });
+    els.ocrTagSelect.addEventListener('change', () => {
+      const tag = parseTagValue(els.ocrTagSelect.value);
+      if (currentConfig) currentConfig.selectedOcrTag = tag;
+      try { port.postMessage({ cmd: 'selectTag', kind: 'ocr', provider: tag.provider, model: tag.model }); } catch (e) {}
+    });
     els.sendBtn.addEventListener('click', () => {
       if (running) {
         sendAsCancel();

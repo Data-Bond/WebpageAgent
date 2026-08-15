@@ -108,6 +108,21 @@
     }
 
     var ACTIVE_CLASSES = ['active', 'selected', 'on', 'current', 'is-active', 'router-link-active', 'active-link', 'menu-item-active'];
+
+    // 可交互元素采集范围：标准标签 + ARIA 角色 + 非标准可点击控件（图标按钮、data-act 操作按钮等）
+    // 许多前端框架用 <span>/<i>/<div> + data-* 或图标类实现按钮（如文件删除 span.file-action[data-file-act="delete"]），
+    // 仅靠标准标签会漏采，导致模型在快照中根本看不到这些控件。
+    var INTERACTIVE_SELECTOR = [
+      'input', 'select', 'textarea', 'button', 'a',
+      '[role="button"]', '[role="link"]', '[role="menuitem"]', '[role="menuitemcheckbox"]', '[role="menuitemradio"]',
+      '[role="tab"]', '[role="option"]', '[role="textbox"]', '[contenteditable="true"]',
+      '[onclick]', '[data-file-act]', '[data-act]', '[data-action]', '[data-op]',
+      '[data-toggle]', '[data-dismiss]', '[data-bs-toggle]', '.file-action',
+      // 常见自定义下拉框/选择器的选项元素（layui/element-ui/ant-design/vant 等）
+      'dd[lay-value]', 'li[lay-value]', '.layui-this', '.layui-select-option',
+      '.el-select-dropdown__item', '.el-option', '.ant-select-item-option', '.ant-select-item',
+      '.van-option', '.dropdown-item', '[data-value]'
+    ].join(', ');
     function hasActiveClass(el) {
       if (!el || !el.classList) return false;
       for (var i = 0; i < ACTIVE_CLASSES.length; i++) {
@@ -165,7 +180,19 @@
     }
 
     function countInteractive() {
-      return document.querySelectorAll('input, select, textarea, button, a, [role="button"], [contenteditable="true"], [role="textbox"], [role="option"]').length;
+      return document.querySelectorAll(INTERACTIVE_SELECTOR).length;
+    }
+
+    // DOM 内容长度/结构变化信号：元素总数 + 限量文本长度组合。
+    // 不用 body.innerHTML（整页序列化大字符串成本高、每步两次），该信号只用于变化对比，无需可读。
+    function domLength() {
+      try {
+        var n = document.getElementsByTagName('*').length;
+        var t = (document.body && document.body.textContent) ? document.body.textContent.length : 0;
+        return n * 131071 + Math.min(t, 131070);
+      } catch (e) {
+        return 0;
+      }
     }
 
     function probeSignals() {
@@ -174,35 +201,59 @@
         title: document.title || '',
         heading: extractHeading(),
         activeMenu: extractActiveMenu(),
-        interactiveCount: countInteractive()
+        interactiveCount: countInteractive(),
+        domLen: domLength()
       }));
     }
 
     function snapshot() {
-      var all = document.querySelectorAll('input, select, textarea, button, a, [role="button"], [contenteditable="true"], [role="textbox"], [role="option"]');
+      var all = document.querySelectorAll(INTERACTIVE_SELECTOR);
       var elements = [];
-      for (var i = 0; i < all.length && elements.length < 150; i++) {
+      // 全部 SELECT 的候选预览总预算：多 SELECT 表单若不限量会挤占整个快照（每步都发给大模型）
+      var optionsBudget = 80;
+      for (var i = 0; i < all.length && elements.length < 200; i++) {
         var el = all[i];
         var tag = el.tagName ? el.tagName.toUpperCase() : '';
         var type = el.getAttribute ? (el.getAttribute('type') || '') : '';
         // files 类型只审查可见性，仍收集
         var skipAsLink = (tag === 'A' && el.getAttribute && el.getAttribute('href'));
-        if (!isVisible(el)) continue;
         if (tag === 'INPUT' && !isInteractive('INPUT', type)) continue;
-        if (tag === 'A' && !skipAsLink) {
-          // 无 href 的 a 当按钮处理
-        }
         if (tag === 'OPTION') continue;
         var sel;
         try { sel = uniqueSelector(el); } catch (e) { sel = null; }
         if (!sel || !sel.selector) continue;
+        // 悬浮所在行才显示的操作控件（mouseenter 该行才出现，默认 display:none）、
+        // 以及隐藏的 file 输入框：也收入快照并标注 hidden——合成事件点击对隐藏元素同样有效。
+        var visible = isVisible(el);
+        if (!visible) {
+          var actionableHidden = el.matches && el.matches(
+            '[data-file-act], [data-act], [data-action], [data-op], .file-action, [role="button"], [onclick], input[type="file"]'
+          );
+          if (!actionableHidden) continue;
+        }
+        // 文本：A/BUTTON 取全文；SPAN/I/DIV 也取（图标按钮可能无文本，靠 icon/dataAct 识别）
         var text = '';
-        if (tag === 'A' || tag === 'BUTTON') text = (el.innerText || el.textContent || '').trim().slice(0, 120);
+        if (tag === 'A' || tag === 'BUTTON' || tag === 'SPAN' || tag === 'I' || tag === 'DIV') {
+          text = (el.innerText || el.textContent || '').trim().slice(0, 60);
+        }
+        // 图标语义：抽取后代 <i>/<svg>/<span> 的 icon-* 类名（如 icon-trash → 删除、icon-close → 关闭）
+        var icon = '';
+        try {
+          var iEl = el.querySelector ? el.querySelector('i[class*="icon-"], svg[class*="icon-"], span[class*="icon-"]') : null;
+          if (!iEl && el.className && /icon-[\w-]+/.test(String(el.className))) iEl = el;
+          if (iEl && iEl.className) { var im = String(iEl.className).match(/icon-[\w-]+/); if (im) icon = im[0]; }
+        } catch (e) {}
+        // 操作语义：data-file-act / data-act / data-action / data-op（如 delete/cancel/order/upload）
+        var dataAct = '';
+        if (el.getAttribute) {
+          dataAct = el.getAttribute('data-file-act') || el.getAttribute('data-act') || el.getAttribute('data-action') || el.getAttribute('data-op') || '';
+        }
+        var cls = (el.className && el.className.toString) ? String(el.className).trim().slice(0, 80) : '';
         var value = '';
         try {
           if ('value' in el) value = String(el.value == null ? '' : el.value).slice(0, 200);
         } catch (e) { value = ''; }
-        elements.push({
+        var entry = {
           tag: tag,
           type: el.getAttribute ? (el.getAttribute('type') || '') : '',
           name: el.getAttribute ? (el.getAttribute('name') || '') : '',
@@ -212,12 +263,37 @@
           label: nearestLabel(el) || (el.getAttribute && el.getAttribute('aria-label')) || '',
           value: value,
           text: text,
-          disabled: !!(el.disabled || el.readOnly),
+          disabled: !!el.disabled,
+          readOnly: !!el.readOnly,
           contentEditable: !!(el.isContentEditable || (el.getAttribute && el.getAttribute('contenteditable') === 'true')),
           unique: !!sel.unique,
           active: inMenuContainer(el) && isMenuActive(el),
+          hidden: !visible,
+          cls: cls,
+          dataAct: dataAct,
+          icon: icon,
           selector: sel.selector
-        });
+        };
+        // 原生 SELECT 附带候选预览（value/text，标记当前选中项），模型可据此一步取值，无需先读选项；
+        // 预算耗尽后只保留 selectedText/optionsTotal，把空间留给其他元素
+        if (tag === 'SELECT' && el.options) {
+          var tot = el.options.length;
+          var cap = Math.min(60, Math.max(0, optionsBudget));
+          var op = [];
+          for (var oi = 0; oi < tot && op.length < cap; oi++) {
+            op.push({
+              v: String(el.options[oi].value).slice(0, 60),
+              t: (el.options[oi].text || '').trim().slice(0, 40),
+              s: oi === el.selectedIndex ? 1 : 0
+            });
+          }
+          optionsBudget -= op.length;
+          entry.options = op;
+          if (tot > op.length) entry.optionsTotal = tot;
+          entry.selectedText = (el.selectedIndex >= 0 && el.options[el.selectedIndex])
+            ? (el.options[el.selectedIndex].text || '').trim().slice(0, 40) : '';
+        }
+        elements.push(entry);
       }
       return JSON.parse(JSON.stringify({
         title: document.title || '',
@@ -225,6 +301,7 @@
         heading: extractHeading(),
         activeMenu: extractActiveMenu(),
         interactiveCount: all.length,
+        domLen: domLength(),
         elements: elements
       }));
     }
@@ -244,6 +321,226 @@
         document.dispatchEvent(new CustomEvent('__ds_req', { detail: { id: id, cmd: cmd, payload: payload } }));
       });
     }
+
+    // 对元素节点派发完整鼠标事件序列（含祖先 hover），供 page.click / clickOptionByText / selectOption 共用
+    function dispatchClick(el) {
+      function fireMouse(type, target, extra) {
+        try {
+          var init = { bubbles: true, cancelable: true, view: window, buttons: 1 };
+          if (extra) { for (var k in extra) init[k] = extra[k]; }
+          target.dispatchEvent(new MouseEvent(type, init));
+        } catch (e) {}
+      }
+      try {
+        var node = el;
+        for (var depth = 0; node && depth < 4; depth++) {
+          fireMouse('mouseover', node, { buttons: 0 });
+          fireMouse('mousemove', node, { buttons: 0 });
+          node = node.parentElement;
+        }
+      } catch (e) {}
+      fireMouse('pointerover', el, { buttons: 0 });
+      fireMouse('mouseover', el, { buttons: 0 });
+      fireMouse('pointerdown', el);
+      fireMouse('mousedown', el);
+      try { if (typeof el.focus === 'function') el.focus(); } catch (e) {}
+      fireMouse('pointerup', el);
+      fireMouse('mouseup', el);
+      if (typeof el.click === 'function') { try { el.click(); } catch (e) {} }
+      else { fireMouse('click', el); }
+    }
+
+    // ============ 下拉框共用工具 ============
+    // 选项候选选择器：覆盖 layui/element-ui/ant/vant/select2/chosen/easyUI/jQuery-UI/bootstrap-select/级联 等
+    var OPTION_SEL = '[role="option"], [role="listbox"] li, li[aria-selected], ' +
+      'dd[lay-value], li[lay-value], .layui-select-option, ' +
+      '.el-select-dropdown__item, .el-option, .el-cascader-node, ' +
+      '.ant-select-item-option, .ant-select-item, .van-option, ' +
+      '.dropdown-item, .dropdown-menu li a, ' +
+      '.select2-results__option, .chosen-results li, .active-result, ' +
+      '.ui-menu-item, .ui-menu-item-wrapper, .combobox-item, .combo-p li, ' +
+      'li[data-value], [data-value], option';
+
+    // 规范化文本：去全部空白并小写——消除选项换行/全半角空格/大小写差异造成的误匹配
+    function normText(s) {
+      return String(s == null ? '' : s).replace(/\s+/g, '').toLowerCase();
+    }
+
+    // 匹配等级：0 精确，1 前缀，2 包含，-1 不匹配（基于规范化文本）
+    function rankMatch(t, needle) {
+      t = normText(t);
+      if (!t) return -1;
+      if (t === needle) return 0;
+      if (t.indexOf(needle) === 0) return 1;
+      if (t.indexOf(needle) > 0) return 2;
+      return -1;
+    }
+
+    // 收集当前可见的选项元素（去重），返回 [{el,text,value,selector}]。
+    // selector 默认惰性为空串：uniqueSelector 内部要做整页 querySelectorAll 验证，
+    // 在 200ms 轮询热路径上对每个候选项计算会导致 O(选项数×文档大小) 的主线程扫描。
+    // 仅在确需暴露 selector 的调用方（optionTexts/赢家返回）传 withSelector=true。
+    function collectOptions(limit, withSelector) {
+      var all = document.querySelectorAll(OPTION_SEL);
+      var out = [];
+      var seen = new Set();
+      for (var i = 0; i < all.length && (!limit || out.length < limit); i++) {
+        var e = all[i];
+        if (seen.has(e)) continue;
+        seen.add(e);
+        if (!isVisible(e)) continue;
+        if (e.tagName === 'OPTION') continue; // 原生 option 由 native select 路径处理
+        var t = (e.innerText || e.textContent || '').trim();
+        if (!t) continue;
+        var v = e.getAttribute ? (e.getAttribute('data-value') || e.getAttribute('lay-value') || e.getAttribute('value') || '') : '';
+        var s = '';
+        if (withSelector) {
+          try { var u = uniqueSelector(e); s = u && u.selector ? u.selector : ''; } catch (err) { s = ''; }
+        }
+        out.push({ el: e, text: t.slice(0, 80), value: v, selector: s });
+      }
+      return out;
+    }
+
+    // 仅为少量确需的元素补算 selector（赢家/歧义候选等，数量受控）
+    function withSel(item) {
+      if (item && !item.selector) {
+        try { var u = uniqueSelector(item.el); item.selector = u && u.selector ? u.selector : ''; } catch (err) { item.selector = ''; }
+      }
+      return item;
+    }
+
+    // 按 精确>前缀>包含 排序选优，文本与 value 统一取最小等级（与 selectNativeOption 行为一致）。
+    // 返回 {winner} 或 {ambiguous:[文本...]} 或 null。
+    // 最优等级有多个“不同文本”的候选时判为歧义，宁缺毋滥——避免因文本部分匹配选错同名项目/课题组。
+    function chooseMatch(list, raw) {
+      var needle = normText(raw);
+      if (!needle) return null;
+      var best = -1;
+      var winners = [];
+      for (var i = 0; i < list.length; i++) {
+        var rt = rankMatch(list[i].text, needle);
+        var rv = rankMatch(list[i].value, needle);
+        var r = (rt < 0) ? rv : (rv < 0 ? rt : Math.min(rt, rv));
+        if (r < 0) continue;
+        if (best < 0 || r < best) { best = r; winners = [list[i]]; }
+        else if (r === best) winners.push(list[i]);
+      }
+      if (best < 0) return null;
+      var distinct = {};
+      for (var j = 0; j < winners.length; j++) distinct[normText(winners[j].text)] = true;
+      if (Object.keys(distinct).length > 1) {
+        var texts = [];
+        for (var k = 0; k < winners.length && texts.length < 12; k++) texts.push(winners[k].text);
+        return { ambiguous: texts };
+      }
+      return { winner: winners[0] };
+    }
+
+    // 选项区滚动加载：把最后一个选项滚入可视区/容器滚到底，触发懒渲染
+    function scrollOptionArea(list) {
+      if (!list.length) return false;
+      var last = list[list.length - 1].el;
+      try { last.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+      var node = last.parentElement;
+      var scrolled = false;
+      while (node && node !== document.body) {
+        if (node.scrollHeight > node.clientHeight + 20) {
+          var before = node.scrollTop;
+          node.scrollTop = node.scrollHeight;
+          if (node.scrollTop !== before) scrolled = true;
+        }
+        node = node.parentElement;
+      }
+      return scrolled;
+    }
+
+    // 向输入框键入关键词（原生 setter + input/keyup/keydown），驱动可搜索下拉过滤
+    function typeInto(el, val) {
+      try { if (typeof el.focus === 'function') el.focus(); } catch (e) {}
+      var proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, String(val));
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('keydown', { bubbles: true }));
+      el.dispatchEvent(new Event('keyup', { bubbles: true }));
+    }
+
+    // 找可搜索下拉的过滤输入框：优先展开弹层内的 input，其次触发器自身/内部的非只读 input
+    function findSearchInput(trigger) {
+      var sels = ['.el-select-dropdown input', '.el-select-dropdown__filter input',
+        '.select2-dropdown input.select2-search__field', '.select2-search input',
+        '.chosen-search input', '.dropdown-menu input[type="text"]',
+        '.combo-p input', '.layui-form-selected input', '[role="listbox"] input'];
+      for (var i = 0; i < sels.length; i++) {
+        var all = document.querySelectorAll(sels[i]);
+        for (var j = 0; j < all.length; j++) {
+          if (isVisible(all[j]) && !all[j].disabled && !all[j].readOnly) return all[j];
+        }
+      }
+      if (trigger && trigger.tagName === 'INPUT' && !trigger.readOnly && !trigger.disabled && isVisible(trigger)) return trigger;
+      if (trigger && trigger.querySelector) {
+        var inner = trigger.querySelector('input:not([readonly]):not([disabled])');
+        if (inner && isVisible(inner)) return inner;
+      }
+      return null;
+    }
+
+    // 自定义组件接管的隐藏原生 SELECT：定位其可见组件部分作为新触发器
+    function widgetForHiddenSelect(sel) {
+      var sib = sel.nextElementSibling;
+      if (sib) {
+        if (sib.matches && sib.matches('.select2-container')) return sib.querySelector('.select2-selection') || sib;
+        if (sib.matches && sib.matches('.chosen-container')) return sib;
+      }
+      var p = sel.parentElement;
+      if (p) {
+        if (p.classList && p.classList.contains('bootstrap-select')) return p.querySelector('.dropdown-toggle') || p;
+        if (p.classList && p.classList.contains('combo')) return p.querySelector('.combo-text, .combo-arrow') || p;
+      }
+      return null;
+    }
+    function hasWidgetFor(sel) {
+      try { return !!widgetForHiddenSelect(sel); } catch (e) { return false; }
+    }
+
+    // 原生 SELECT 选值：按 精确>前缀>包含 匹配 value 或文本，歧义抛候选项，未命中抛样本
+    function selectNativeOption(sel, raw) {
+      var opts = sel.options;
+      var list = [];
+      for (var i = 0; i < opts.length; i++) {
+        list.push({ el: opts[i], text: (opts[i].text || '').trim(), value: String(opts[i].value) });
+      }
+      var needle = normText(raw);
+      var best = -1, winners = [];
+      for (var j = 0; j < list.length; j++) {
+        var rt = rankMatch(list[j].text, needle);
+        var rv = rankMatch(list[j].value, needle);
+        var r = (rt < 0) ? rv : (rv < 0 ? rt : Math.min(rt, rv));
+        if (r < 0) continue;
+        if (best < 0 || r < best) { best = r; winners = [list[j]]; }
+        else if (r === best) winners.push(list[j]);
+      }
+      if (best < 0) {
+        var sample = [];
+        for (var s = 0; s < list.length && sample.length < 15; s++) sample.push(list[s].text);
+        throw new Error('原生下拉中未找到“' + raw + '”。部分候选：' + sample.join(' | ') +
+          (list.length > 15 ? ' …(共' + list.length + '项)' : ''));
+      }
+      var distinct = {};
+      for (var d = 0; d < winners.length; d++) distinct[normText(winners[d].text)] = true;
+      if (Object.keys(distinct).length > 1) {
+        var texts = [];
+        for (var k = 0; k < winners.length && texts.length < 12; k++) texts.push(winners[k].text);
+        throw new Error('“' + raw + '”匹配到多个不同选项：' + texts.join(' | ') + '。请用更完整的名称重试。');
+      }
+      var opt = winners[0].el;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('input', { bubbles: true }));
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      var verified = sel.value === opt.value;
+      return { ok: true, via: 'native', text: opt.text.trim(), value: opt.value, verified: verified };
+    }
+    // ============ 下拉框共用工具结束 ============
 
     async function runScript(source) {
       try {
@@ -282,17 +579,20 @@
           },
           click: function (sel) {
             var el = page.q(sel); if (!el) throw new Error('元素未找到: ' + sel);
-            el.click(); return true;
+            // 派发完整鼠标事件序列（含祖先 hover），兼容悬浮才显示的控件与绑定在 mousedown 上的逻辑
+            dispatchClick(el);
+            return true;
           },
           select: function (sel, valOrLabel) {
             var el = page.q(sel); if (!el) throw new Error('元素未找到: ' + sel);
             if (el.tagName === 'SELECT') {
-              for (var opt of el.options) {
-                if (opt.value === String(valOrLabel) || opt.text.trim() === String(valOrLabel)) { el.value = opt.value; break; }
+              // 被自定义组件接管的隐藏原生 select：直接赋值不会同步组件 UI，改为给明确提示
+              if (!isVisible(el) && hasWidgetFor(el)) {
+                throw new Error('该原生 SELECT 被自定义组件接管且已隐藏，直接赋值无效。请改用 page.selectOption(组件可见部分选择器, 文本)');
               }
-            } else {
-              Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, String(valOrLabel));
+              return selectNativeOption(el, String(valOrLabel));
             }
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, String(valOrLabel));
             el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
             return true;
@@ -315,6 +615,152 @@
           getText: function (sel) {
             var el = page.q(sel);
             return el ? (el.innerText || el.value || null) : null;
+          },
+          // 下拉框选项候选选择器：覆盖常见自定义下拉（layui/element-ui/ant/vant/select2/chosen/easyUI/jQuery-UI/bootstrap-select 等）
+          optionSelector: function () {
+            return OPTION_SEL;
+          },
+          // 收集当前可见的下拉选项（轮询等待异步渲染）。返回 [{t:文本(≤50), v:value, s:selector}, ...]，最多 max 条
+          optionTexts: async function (max) {
+            var limit = max || 200;
+            var deadline = Date.now() + 3000;
+            function collect() {
+              var arr = collectOptions(limit, true); // 只读查询一次性返回，selector 字段对外可见故带计算
+              var out = [];
+              for (var i = 0; i < arr.length; i++) out.push({ t: arr[i].text.slice(0, 50), v: arr[i].value, s: arr[i].selector });
+              return out;
+            }
+            var arr = collect();
+            while (arr.length === 0 && Date.now() < deadline) {
+              await page.sleep(200);
+              arr = collect();
+            }
+            return arr;
+          },
+          // 按文本匹配并点击唯一最优可见选项（精确>前缀>包含；轮询等待）。
+          // 命中返回 {ok,text,value,selector}；多个不同候选时抛错并列出候选（宁缺毋滥，不盲选）；未命中抛错并附样本
+          clickOptionByText: async function (text, opts) {
+            var o = opts || {};
+            var timeout = o.timeout || 4000;
+            var raw = String(text || '').trim();
+            if (!raw) throw new Error('clickOptionByText: 文本为空');
+            var deadline = Date.now() + timeout;
+            var scrolled = 0;
+            while (true) {
+              var list = collectOptions(400);
+              var r = chooseMatch(list, raw);
+              if (r && r.winner) {
+                withSel(r.winner);
+                try { r.winner.el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+                dispatchClick(r.winner.el);
+                return { ok: true, text: r.winner.text, value: r.winner.value, selector: r.winner.selector };
+              }
+              if (r && r.ambiguous) {
+                throw new Error('“' + raw + '”匹配到多个不同选项：' + r.ambiguous.join(' | ') + '。请用更完整的名称重试。');
+              }
+              if (Date.now() >= deadline) {
+                var sample = [];
+                for (var i = 0; i < list.length && sample.length < 15; i++) sample.push(list[i].text);
+                throw new Error('未找到匹配“' + text + '”的可见下拉选项（可能未展开、异步未渲染完，或文本不完全匹配）。' +
+                  (sample.length ? '当前可见部分候选：' + sample.join(' | ') : '当前无任何可见选项。'));
+              }
+              // 有选项但无匹配：尝试滚动加载懒渲染的后续选项，再轮询
+              if (list.length && scrolled < 6 && scrollOptionArea(list)) scrolled++;
+              await page.sleep(200);
+            }
+          },
+          // 按文本查找（不点击）唯一最优可见选项，返回 {selector,text,value} 或 null；歧义返回 {ambiguous:[...]}
+          findOption: async function (text, opts) {
+            var o = opts || {};
+            var timeout = o.timeout || 2000;
+            var raw = String(text || '').trim();
+            var deadline = Date.now() + timeout;
+            while (true) {
+              var list = collectOptions(400);
+              var r = chooseMatch(list, raw);
+              if (r && r.winner) { withSel(r.winner); return { selector: r.winner.selector, text: r.winner.text, value: r.winner.value }; }
+              if (r && r.ambiguous) return { ambiguous: r.ambiguous };
+              if (Date.now() >= deadline) return null;
+              await page.sleep(200);
+            }
+          },
+          // 一站式选择下拉项：展开触发器 → （可选）输入关键词搜索过滤 → 唯一最优匹配 → 滚动加载 → 点击 → 验证。
+          // 返回 {ok:true, via, text, value, selector, verified, searchUsed}；歧义/未命中抛错并附候选或样本。
+          selectOption: async function (triggerSel, text, opts) {
+            var o = opts || {};
+            var timeout = o.timeout || 6000;
+            var raw = String(text || '').trim();
+            if (!raw) throw new Error('selectOption: 目标文本为空');
+            var trigger = page.q(triggerSel);
+            if (!trigger) throw new Error('下拉触发器未找到: ' + triggerSel);
+            // 原生 SELECT：未被自定义组件接管时直接走赋值路径
+            var sel = trigger.tagName === 'SELECT' ? trigger
+              : (trigger.closest ? trigger.closest('select') : null);
+            if (sel && isVisible(sel) && !hasWidgetFor(sel)) return selectNativeOption(sel, raw);
+            if (sel && !isVisible(sel)) {
+              var w = widgetForHiddenSelect(sel);
+              if (w) trigger = w;
+            }
+            var deadline = Date.now() + timeout;
+            var searchUsed = false;
+            var scrolled = 0;
+            var opened = false;
+            var emptyRounds = 0;
+            while (true) {
+              var list = collectOptions(400);
+              if (list.length === 0 && !opened) {
+                dispatchClick(trigger); // 展开（只在尚未展开时点击，避免重复点击收拢）
+                opened = true;
+                await page.sleep(150);
+                if (Date.now() >= deadline) break;
+                continue;
+              }
+              if (list.length === 0 && opened) {
+                // 自动补全型（jQuery-UI autocomplete / easyUI combobox 等）：需要键入关键词才渲染选项
+                emptyRounds++;
+                if (emptyRounds >= 3 && !searchUsed) {
+                  var si0 = findSearchInput(trigger);
+                  if (si0) { typeInto(si0, raw); searchUsed = true; }
+                }
+                if (Date.now() >= deadline) break;
+                await page.sleep(200);
+                continue;
+              }
+              if (list.length) {
+                var r = chooseMatch(list, raw);
+                if (r && r.winner) {
+                  withSel(r.winner);
+                  try { r.winner.el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+                  dispatchClick(r.winner.el);
+                  await page.sleep(150);
+                  // 选中信号：弹层收拢 / aria-selected / 常见选中类名
+                  var stillOpen = collectOptions(200).length > 0;
+                  var cls = String(r.winner.el.className || '');
+                  var marked = /selected|layui-this|is-checked|chosen/.test(cls) ||
+                    (r.winner.el.getAttribute && r.winner.el.getAttribute('aria-selected') === 'true');
+                  return { ok: true, via: 'custom', text: r.winner.text, value: r.winner.value,
+                    selector: r.winner.selector, verified: !!(marked || !stillOpen), searchUsed: searchUsed };
+                }
+                if (r && r.ambiguous) {
+                  throw new Error('“' + raw + '”匹配到多个不同选项：' + r.ambiguous.join(' | ') +
+                    '。请用更完整的名称重试，或向用户确认具体名称。');
+                }
+                // 有选项但无匹配：先试搜索过滤，再滚动加载
+                if (!searchUsed) {
+                  var si = findSearchInput(trigger);
+                  if (si) { typeInto(si, raw); searchUsed = true; await page.sleep(300); continue; }
+                }
+                if (scrolled < 6 && scrollOptionArea(list)) { scrolled++; continue; }
+              }
+              if (Date.now() >= deadline) break;
+              await page.sleep(200);
+            }
+            var tail = collectOptions(200);
+            var diag = [];
+            for (var d = 0; d < tail.length && diag.length < 15; d++) diag.push(tail[d].text);
+            throw new Error('选择“' + raw + '”失败：' + (opened ? '下拉已展开但' : '下拉未能展开且') +
+              '未找到匹配项' + (searchUsed ? '（已用关键词搜索过滤）' : '') + '。' +
+              (diag.length ? '当前可见部分候选：' + diag.join(' | ') : '当前无任何可见选项，请检查触发器选择器是否正确。'));
           },
           sleep: function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); },
           waitFor: function (test, opts) {
