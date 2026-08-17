@@ -16,6 +16,26 @@
           return { selector: '#' + CSS.escape(id), unique: true };
         }
       }
+      // 次优：稳定属性选择器（如 [data-file-act="delete"]），全页唯一才采用（PLAN 补充1）
+      var STABLE_ATTRS = ['data-file-act', 'data-act', 'data-action', 'data-op', 'title', 'name', 'aria-label', 'placeholder'];
+      if (el.getAttribute && el.tagName) {
+        var tagLower = el.tagName.toLowerCase();
+        for (var ai = 0; ai < STABLE_ATTRS.length; ai++) {
+          var attrName = STABLE_ATTRS[ai];
+          var attrVal = el.getAttribute(attrName);
+          if (!attrVal) continue;
+          var av = String(attrVal).trim();
+          if (!av || av.length > 60) continue;
+          // 仅在值不含特殊字符时构造，避免选择器注入
+          if (!/^[A-Za-z0-9_:.一-鿿 \-]+$/.test(av)) continue;
+          var asel = tagLower + '[' + attrName + '="' + av.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]';
+          try {
+            if (document.querySelectorAll(asel).length === 1 && document.querySelector(asel) === el) {
+              return { selector: asel, unique: true };
+            }
+          } catch (e) { /* invalid selector, try next */ }
+        }
+      }
       // 构造从 body 向下的路径
       var parts = [];
       var node = el;
@@ -121,7 +141,13 @@
       // 常见自定义下拉框/选择器的选项元素（layui/element-ui/ant-design/vant 等）
       'dd[lay-value]', 'li[lay-value]', '.layui-this', '.layui-select-option',
       '.el-select-dropdown__item', '.el-option', '.ant-select-item-option', '.ant-select-item',
-      '.van-option', '.dropdown-item', '[data-value]'
+      '.van-option', '.dropdown-item', '[data-value]',
+      // 复选/单选框：框架包装器（iView/element/ant/layui/vant/nut）、ARIA 角色与原生 label 包裹。
+      // 真实 input 被框架用 opacity:0 隐藏，可见可点的是包装器——不收录包装器，快照里就看不到复选框。
+      '[role="checkbox"]', '[role="radio"]',
+      '.ivu-checkbox-wrapper', '.el-checkbox', '.ant-checkbox-wrapper',
+      '.layui-form-checkbox', '.van-checkbox', '.van-radio', '.nut-checkbox',
+      'label:has(input[type="checkbox"])', 'label:has(input[type="radio"])'
     ].join(', ');
     function hasActiveClass(el) {
       if (!el || !el.classList) return false;
@@ -195,6 +221,106 @@
       }
     }
 
+    // 表单值摘要：select/input 写入仅改 .value，不改 URL/标题/计数/DOM 长度——
+    // 缺少该信号会让“选项已选中”被变化报告误判为“页面无变化”而触发重复操作（PLAN 补充3）。
+    // 跳过 file/password（值不稳定或敏感），checkbox/radio 取 checked。
+    function formDigest() {
+      try {
+        var els = document.querySelectorAll('input, select, textarea');
+        var parts = [];
+        var total = 0;
+        for (var i = 0; i < els.length && total < 4000; i++) {
+          var e = els[i];
+          var t = (e.type || '').toLowerCase();
+          if (t === 'file' || t === 'password' || t === 'hidden' || t === 'submit' || t === 'button') continue;
+          var v = '';
+          if (t === 'checkbox' || t === 'radio') v = e.checked ? '1' : '0';
+          else { try { v = String(e.value == null ? '' : e.value); } catch (err) { v = ''; } }
+          var name = (e.name || e.id || (e.getAttribute && e.getAttribute('aria-label')) || i);
+          var piece = String(name).slice(0, 40) + ':' + t + '=' + v.slice(0, 80);
+          parts.push(piece);
+          total += piece.length + 1;
+        }
+        return parts.join('|');
+      } catch (e) {
+        return '';
+      }
+    }
+
+    // ============ 复选/单选框识别（iView/element/ant/layui/vant/nut 与原生 label 包裹） ============
+    var CHECKED_CLASSES = ['ivu-checkbox-checked', 'ivu-checkbox-wrapper-checked', 'is-checked',
+      'ant-checkbox-checked', 'ant-checkbox-wrapper-checked', 'layui-form-checked',
+      'van-checkbox--checked', 'van-radio--checked', 'nut-checkbox--checked'];
+    // 供 setChecked 按文本定位的候选选择器（与快照采集范围一致 + 原生 input）
+    var CHECKBOX_SEL = '[role="checkbox"], [role="radio"], ' +
+      '.ivu-checkbox-wrapper, .el-checkbox, .ant-checkbox-wrapper, ' +
+      '.layui-form-checkbox, .van-checkbox, .van-radio, .nut-checkbox, ' +
+      'label:has(input[type="checkbox"]), label:has(input[type="radio"]), ' +
+      'input[type="checkbox"], input[type="radio"]';
+    // 元素自身或其内部的真实 checkbox/radio input
+    function innerBoxInput(el) {
+      if (!el) return null;
+      if (el.tagName === 'INPUT') {
+        var t = String(el.type || '').toLowerCase();
+        return (t === 'checkbox' || t === 'radio') ? el : null;
+      }
+      try {
+        return el.querySelector ? el.querySelector('input[type="checkbox"],input[type="radio"]') : null;
+      } catch (e) { return null; }
+    }
+    // 返回 'checkbox' | 'radio' | ''（该元素是否复选/单选控件或其包装器）
+    function boxKindOf(el) {
+      var inp = innerBoxInput(el);
+      if (inp) {
+        var t = String(inp.type || '').toLowerCase();
+        if (t === 'checkbox' || t === 'radio') return t;
+      }
+      try {
+        if (el.matches && el.matches('[role="checkbox"]')) return 'checkbox';
+        if (el.matches && el.matches('[role="radio"]')) return 'radio';
+      } catch (e) {}
+      return '';
+    }
+    // 读取勾选状态：优先真实 input.checked（框架会同步），退回 aria-checked / 框架选中类名
+    function readBoxChecked(el) {
+      var inp = innerBoxInput(el);
+      if (inp) return !!inp.checked;
+      try { if (el.getAttribute && el.getAttribute('aria-checked') === 'true') return true; } catch (e) {}
+      var probes = [el];
+      try { if (el.firstElementChild) probes.push(el.firstElementChild); } catch (e) {}
+      for (var i = 0; i < probes.length; i++) {
+        var cl = probes[i] && probes[i].classList;
+        if (!cl) continue;
+        for (var j = 0; j < CHECKED_CLASSES.length; j++) {
+          if (cl.contains(CHECKED_CLASSES[j])) return true;
+        }
+      }
+      return false;
+    }
+    function boxWidgetOf(el) {
+      var c = '';
+      try { c = String((el.className && el.className.toString) ? el.className : ''); } catch (e) {}
+      if (/ivu-/.test(c)) return 'ivu';
+      if (/el-checkbox|el-radio/.test(c)) return 'element';
+      if (/ant-checkbox|ant-radio/.test(c)) return 'ant';
+      if (/layui/.test(c)) return 'layui';
+      if (/van-/.test(c)) return 'vant';
+      if (/nut-/.test(c)) return 'nut';
+      return 'native';
+    }
+    // 复选框点击目标：包装器优先——隐藏 input 时点击包裹它的可见 label/框架节点，模拟真实用户操作
+    function boxClickTarget(el) {
+      if (!el) return el;
+      if (el.tagName !== 'INPUT') return el;
+      if (isVisible(el)) return el;
+      try {
+        var w = el.closest && el.closest('.ivu-checkbox-wrapper,.el-checkbox,.ant-checkbox-wrapper,.layui-form-checkbox,.van-checkbox,.van-radio,.nut-checkbox,label');
+        if (w) return w;
+      } catch (e) {}
+      return el;
+    }
+    // ============ 复选/单选框识别结束 ============
+
     function probeSignals() {
       return JSON.parse(JSON.stringify({
         url: location.href || '',
@@ -202,7 +328,8 @@
         heading: extractHeading(),
         activeMenu: extractActiveMenu(),
         interactiveCount: countInteractive(),
-        domLen: domLength()
+        domLen: domLength(),
+        formDigest: formDigest()
       }));
     }
 
@@ -210,7 +337,7 @@
       var all = document.querySelectorAll(INTERACTIVE_SELECTOR);
       var elements = [];
       // 全部 SELECT 的候选预览总预算：多 SELECT 表单若不限量会挤占整个快照（每步都发给大模型）
-      var optionsBudget = 80;
+      var optionsBudget = 500;
       for (var i = 0; i < all.length && elements.length < 200; i++) {
         var el = all[i];
         var tag = el.tagName ? el.tagName.toUpperCase() : '';
@@ -231,9 +358,9 @@
           );
           if (!actionableHidden) continue;
         }
-        // 文本：A/BUTTON 取全文；SPAN/I/DIV 也取（图标按钮可能无文本，靠 icon/dataAct 识别）
+        // 文本：A/BUTTON 取全文；SPAN/I/DIV/LABEL 也取（图标按钮可能无文本，靠 icon/dataAct 识别；LABEL 多为复选框文字）
         var text = '';
-        if (tag === 'A' || tag === 'BUTTON' || tag === 'SPAN' || tag === 'I' || tag === 'DIV') {
+        if (tag === 'A' || tag === 'BUTTON' || tag === 'SPAN' || tag === 'I' || tag === 'DIV' || tag === 'LABEL') {
           text = (el.innerText || el.textContent || '').trim().slice(0, 60);
         }
         // 图标语义：抽取后代 <i>/<svg>/<span> 的 icon-* 类名（如 icon-trash → 删除、icon-close → 关闭）
@@ -249,6 +376,9 @@
           dataAct = el.getAttribute('data-file-act') || el.getAttribute('data-act') || el.getAttribute('data-action') || el.getAttribute('data-op') || '';
         }
         var cls = (el.className && el.className.toString) ? String(el.className).trim().slice(0, 80) : '';
+        // 复选/单选框语义：box 标记 + 当前勾选状态（点击包装器是 toggle，模型必须先读状态再决定操作）
+        var box = '';
+        try { box = boxKindOf(el); } catch (e) {}
         var value = '';
         try {
           if ('value' in el) value = String(el.value == null ? '' : el.value).slice(0, 200);
@@ -272,13 +402,16 @@
           cls: cls,
           dataAct: dataAct,
           icon: icon,
+          box: box,
+          widget: box ? boxWidgetOf(el) : undefined,
+          checked: box ? readBoxChecked(el) : undefined,
           selector: sel.selector
         };
         // 原生 SELECT 附带候选预览（value/text，标记当前选中项），模型可据此一步取值，无需先读选项；
         // 预算耗尽后只保留 selectedText/optionsTotal，把空间留给其他元素
         if (tag === 'SELECT' && el.options) {
           var tot = el.options.length;
-          var cap = Math.min(60, Math.max(0, optionsBudget));
+          var cap = Math.min(500, Math.max(0, optionsBudget));
           var op = [];
           for (var oi = 0; oi < tot && op.length < cap; oi++) {
             op.push({
@@ -302,6 +435,7 @@
         activeMenu: extractActiveMenu(),
         interactiveCount: all.length,
         domLen: domLength(),
+        formDigest: formDigest(),
         elements: elements
       }));
     }
@@ -534,7 +668,12 @@
         throw new Error('“' + raw + '”匹配到多个不同选项：' + texts.join(' | ') + '。请用更完整的名称重试。');
       }
       var opt = winners[0].el;
-      sel.value = opt.value;
+      // 用 HTMLSelectElement 原型 setter 赋值：绕过框架（React 等）对 .value 的拦截（PLAN 补充3）
+      try {
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, opt.value);
+      } catch (e) {
+        sel.value = opt.value;
+      }
       sel.dispatchEvent(new Event('input', { bubbles: true }));
       sel.dispatchEvent(new Event('change', { bubbles: true }));
       var verified = sel.value === opt.value;
@@ -763,6 +902,53 @@
               (diag.length ? '当前可见部分候选：' + diag.join(' | ') : '当前无任何可见选项，请检查触发器选择器是否正确。'));
           },
           sleep: function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); },
+          // 幂等勾选/取消复选框：target 为选择器或 {text:'文本'}；want 默认 true。
+          // 先读当前状态，已是目标状态则不点击——label/包装器点击是 toggle，
+          // 盲点击会把已勾选项点成取消。返回 {ok,changed,checked,verified[,note]}。
+          setChecked: async function (target, want) {
+            var wantB = (want === undefined) ? true : !!want;
+            var el = null;
+            if (target && typeof target === 'object' && typeof target.text === 'string') {
+              // 按可见文本定位复选框（歧义抛候选，宁缺毋滥）
+              var raw = String(target.text || '').trim();
+              if (!raw) throw new Error('setChecked: 目标文本为空');
+              var all = document.querySelectorAll(CHECKBOX_SEL);
+              var cands = [];
+              for (var i = 0; i < all.length; i++) {
+                var e = all[i];
+                if (!isVisible(e)) continue;
+                var t = (e.innerText || e.textContent || '').trim();
+                if (!t) continue;
+                cands.push({ el: e, text: t.slice(0, 80), value: String(e.value || '') });
+              }
+              var r = chooseMatch(cands, raw);
+              if (r && r.winner) {
+                el = r.winner.el;
+              } else if (r && r.ambiguous) {
+                throw new Error('“' + raw + '”匹配到多个不同复选框：' + r.ambiguous.join(' | ') + '。请用更完整的名称重试。');
+              } else {
+                var sample = [];
+                for (var si = 0; si < cands.length && sample.length < 15; si++) sample.push(cands[si].text);
+                throw new Error('未找到文本为“' + raw + '”的复选框。' +
+                  (sample.length ? '当前可见候选：' + sample.join(' | ') : '页面上没有可见的复选框。'));
+              }
+            } else {
+              el = page.q(String(target));
+              if (!el) throw new Error('元素未找到: ' + target);
+              if (!boxKindOf(el)) throw new Error('目标不是复选/单选框: ' + target);
+            }
+            var cur = readBoxChecked(el);
+            if (cur === wantB) {
+              return { ok: true, changed: false, checked: cur, verified: true, note: '已是目标状态，未点击' };
+            }
+            dispatchClick(boxClickTarget(el));
+            // 等框架把模型状态回写到 input.checked/类名（iView/element 等异步同步）
+            try {
+              await page.waitFor(function () { return readBoxChecked(el) === wantB; }, { timeout: 1500, poll: 100 });
+            } catch (e) {}
+            var now = readBoxChecked(el);
+            return { ok: true, changed: now !== cur, checked: now, verified: now === wantB };
+          },
           waitFor: function (test, opts) {
             var o = opts || {};
             var poll = o.poll || 200;

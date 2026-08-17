@@ -129,7 +129,7 @@
       border: 1px solid #e6e8f0;
       border-radius: 12px;
       margin: 8px 12px 0;
-      padding: 12px;
+      padding: 12px 12px 80px 12px;
       box-shadow: 0 4px 16px rgba(35, 40, 58, 0.06);
       display: flex;
       flex-direction: column;
@@ -206,10 +206,20 @@
       gap: 6px;
     }
     .provider-row {
-      display: grid;
-      grid-template-columns: 1fr 1.4fr 1fr 1.4fr auto;
+      display: flex;
+      flex-direction: column;
       gap: 5px;
-      align-items: center;
+      padding: 8px;
+      border: 1px solid #e8ebf5;
+      border-radius: 8px;
+      background: #fff;
+    }
+    .provider-field {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      font-size: 11px;
+      color: #5a6072;
     }
     .provider-row input {
       border: 1px solid #d8dbe7;
@@ -219,14 +229,14 @@
       outline: none;
       background: #fff;
       font-family: inherit;
-      min-width: 0;
     }
     .provider-row input:focus {
       border-color: #4f7cff;
       box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.15);
     }
     .provider-del {
-      padding: 5px 8px;
+      align-self: flex-end;
+      padding: 5px 12px;
       font-size: 12px;
       border-radius: 7px;
     }
@@ -239,8 +249,8 @@
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
-      padding-top: 4px;
-      border-top: 1px dashed #e8ebf5;
+      padding-bottom: 8px;
+      border-bottom: 1px dashed #e8ebf5;
     }
     .config-io .io-hint {
       width: 100%;
@@ -617,6 +627,12 @@
   // 构建一个 provider 行（名称/Base URL/API Key/模型ID + 删除）
   function addProviderRow(container, data) {
     const row = mk('div', 'provider-row');
+    const makeField = (labelText, input) => {
+      const label = mk('label', 'provider-field');
+      label.appendChild(document.createTextNode(labelText));
+      label.appendChild(input);
+      return label;
+    };
     const name = mk('input', null, { type: 'text', placeholder: '名称', value: (data && data.name) || '' });
     name.dataset.field = 'name';
     const baseURL = mk('input', null, { type: 'text', placeholder: 'Base URL', value: (data && data.baseURL) || '' });
@@ -625,12 +641,12 @@
     apiKey.dataset.field = 'apiKey';
     const models = mk('input', null, { type: 'text', placeholder: '模型ID（逗号分隔）', value: (data && data.models) || '' });
     models.dataset.field = 'models';
-    const del = mk('button', 'btn provider-del', { type: 'button', textContent: '删除', title: '删除该 provider' });
+    const del = mk('button', 'btn provider-del', { type: 'button', textContent: '✕ 删除', title: '删除该 provider' });
     del.addEventListener('click', () => { row.remove(); });
-    row.appendChild(name);
-    row.appendChild(baseURL);
-    row.appendChild(apiKey);
-    row.appendChild(models);
+    row.appendChild(makeField('名称', name));
+    row.appendChild(makeField('Base URL', baseURL));
+    row.appendChild(makeField('API Key', apiKey));
+    row.appendChild(makeField('模型ID（逗号分隔）', models));
     row.appendChild(del);
     container.appendChild(row);
     return row;
@@ -683,6 +699,20 @@
       return label;
     };
 
+    // 配置导入/导出（置于面板顶部）：下载当前配置 JSON / 上传恢复配置（免重装后重新填 API）
+    const configIo = mk('div', 'config-io');
+    configIo.appendChild(mk('div', 'io-hint', { textContent: '导出当前配置为 JSON 备份，或上传 JSON 恢复配置（重装插件后无需重填 API）。' }));
+    const downloadConfigBtn = mk('button', 'btn', { type: 'button', textContent: '⬇ 下载配置' });
+    const uploadConfigBtn = mk('button', 'btn', { type: 'button', textContent: '⬆ 上传配置' });
+    const uploadConfigInput = mk('input');
+    uploadConfigInput.type = 'file';
+    uploadConfigInput.accept = '.json,application/json';
+    uploadConfigInput.style.display = 'none';
+    configIo.appendChild(downloadConfigBtn);
+    configIo.appendChild(uploadConfigBtn);
+    configIo.appendChild(uploadConfigInput);
+    settingsPanel.appendChild(configIo);
+
     // 文本模型 Providers
     const textSection = mk('div', 'provider-section');
     textSection.appendChild(mk('div', 'provider-heading', { textContent: '文本模型 Providers（OpenAI 兼容，可多个 / LiteLLM）' }));
@@ -718,20 +748,6 @@
     settingsPanel.appendChild(settingsActions);
     const settingsStatus = mk('div', 'settings-status');
     settingsPanel.appendChild(settingsStatus);
-
-    // 配置导入/导出：下载可编辑的样例 JSON / 上传恢复配置（免重装后重新填 API）
-    const configIo = mk('div', 'config-io');
-    configIo.appendChild(mk('div', 'io-hint', { textContent: '导出当前配置为 JSON 备份，或上传 JSON 恢复配置（重装插件后无需重填 API）。' }));
-    const downloadConfigBtn = mk('button', 'btn', { type: 'button', textContent: '⬇ 下载配置' });
-    const uploadConfigBtn = mk('button', 'btn', { type: 'button', textContent: '⬆ 上传配置' });
-    const uploadConfigInput = mk('input');
-    uploadConfigInput.type = 'file';
-    uploadConfigInput.accept = '.json,application/json';
-    uploadConfigInput.style.display = 'none';
-    configIo.appendChild(downloadConfigBtn);
-    configIo.appendChild(uploadConfigBtn);
-    configIo.appendChild(uploadConfigInput);
-    settingsPanel.appendChild(configIo);
 
     const connStatus = mk('div', 'conn-status', { textContent: '正在连接…' });
 
@@ -1156,107 +1172,51 @@
     return { provider: val.slice(0, idx), model: val.slice(idx + 1) };
   }
 
-  // ============ 配置导入 / 导出 ============
-  // apiKey 脱敏掩码：导出的 JSON 不落明文密钥；再导入时同名 provider 自动沿用现有密钥
-  const KEY_MASK = '********';
-  function maskProviders(list) {
-    return (list || []).map((p) => ({
-      name: p.name || 'provider',
-      baseURL: p.baseURL || '',
-      apiKey: p.apiKey ? KEY_MASK : '',
-      models: p.models || ''
-    }));
-  }
-  // 从当前已保存配置中找回同名 provider 的密钥（导入掩码占位时保留旧钥）
-  function preserveKey(kind, name) {
-    const list = (currentConfig && (kind === 'ocr' ? currentConfig.ocrProviders : currentConfig.textProviders)) || [];
-    const hit = list.find((p) => p && p.name === name);
-    return hit && hit.apiKey ? hit.apiKey : '';
-  }
-
-  // 导出当前配置为 JSON（空配置时即带默认 prompt 的可编辑样例）
-  function exportConfig() {
-    const cfg = collectConfig();
-    // 补全默认 system prompt，使空配置下载后也是完整可编辑样例
-    const defs = (currentConfig && currentConfig.defaults) || {};
-    if (!cfg.systemPromptText && defs.systemPromptText) cfg.systemPromptText = defs.systemPromptText;
-    if (!cfg.systemPromptOcr && defs.systemPromptOcr) cfg.systemPromptOcr = defs.systemPromptOcr;
-    const payload = {
-      textProviders: maskProviders(cfg.textProviders),
-      ocrProviders: maskProviders(cfg.ocrProviders),
-      selectedTextTag: cfg.selectedTextTag || null,
-      selectedOcrTag: cfg.selectedOcrTag || null,
-      systemPromptText: cfg.systemPromptText || '',
-      systemPromptOcr: cfg.systemPromptOcr || '',
-      maxSteps: cfg.maxSteps || 15
-    };
-    const json = JSON.stringify(payload, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
+  // ============ 配置导入 / 导出（后台为权威：校验/合并/落库/刷新） ============
+  // 导出：后台 exportPayload 返回严格 7 键 JSON（含 apiKey 明文，重装免重配）；面板仅用 Blob+<a download> 落盘。
+  // 导入：面板原样把文件文本交给后台 importConfig → validateImportConfig 校验/合并 → 回推 configImported + 新 config。
+  function downloadJsonText(json, filename) {
     try {
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'webpage-assistant-config.json';
+      a.download = filename;
       a.style.display = 'none';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 1000);
     } catch (e) {
       addBubble('error', '下载配置失败：' + String(e && e.message || e));
     }
-    setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 1000);
-    els.settingsStatus.textContent = '已导出配置 JSON（apiKey 已脱敏；重新导入时同名 provider 自动沿用现有密钥）';
   }
 
-  // 规范化上传的 JSON：兼容旧配置 {apiBase,apiKey,model,systemPrompt}
-  function normalizeUploadedConfig(obj) {
-    if (!obj || typeof obj !== 'object') return null;
-    const defs = (currentConfig && currentConfig.defaults) || {};
-
-    let textProviders = Array.isArray(obj.textProviders) ? obj.textProviders : [];
-    if (textProviders.length === 0 && (obj.apiBase || obj.model)) {
-      textProviders = [{ name: '默认', baseURL: obj.apiBase || '', apiKey: obj.apiKey || '', models: obj.model || '' }];
+  function exportConfig() {
+    if (!port || portDead) {
+      els.settingsStatus.textContent = '导出失败：未连接后台';
+      return;
     }
-    let ocrProviders = Array.isArray(obj.ocrProviders) ? obj.ocrProviders : [];
-
-    const resolveKey = (kind) => (p) => {
-      // 掩码占位：沿用现有同名 provider 的密钥；无则置空待用户手填
-      const key = (p.apiKey === KEY_MASK) ? preserveKey(kind, p.name || 'provider') : (p.apiKey || '');
-      return {
-        name: p.name || 'provider', baseURL: p.baseURL || p.apiBase || '',
-        apiKey: key, models: p.models || p.model || ''
-      };
-    };
-    return {
-      textProviders: textProviders.map(resolveKey('text')),
-      ocrProviders: ocrProviders.map(resolveKey('ocr')),
-      selectedTextTag: obj.selectedTextTag || null,
-      selectedOcrTag: obj.selectedOcrTag || null,
-      systemPromptText: obj.systemPromptText || obj.systemPrompt || defs.systemPromptText || '',
-      systemPromptOcr: obj.systemPromptOcr || defs.systemPromptOcr || '',
-      maxSteps: Number(obj.maxSteps) || 15
-    };
+    try { port.postMessage({ cmd: 'exportConfig' }); } catch (e) {
+      els.settingsStatus.textContent = '导出失败：' + String(e && e.message || e);
+    }
   }
 
   async function importConfig(file) {
     if (!file) return;
-    try {
-      const text = await file.text();
-      const obj = JSON.parse(text);
-      const norm = normalizeUploadedConfig(obj);
-      if (!norm) throw new Error('JSON 不是有效的配置对象');
-      // 即时回填面板
-      fillSettings(norm);
-      // 持久化到 background
-      try {
-        port.postMessage({ cmd: 'saveConfig', config: norm });
-        els.settingsStatus.textContent = '已导入并保存配置 ✓';
-      } catch (e) {
-        els.settingsStatus.textContent = '已导入到面板，但保存失败：' + String(e && e.message || e);
-      }
-    } catch (e) {
+    let text;
+    try { text = await file.text(); } catch (e) {
+      els.settingsStatus.textContent = '读取文件失败：' + String(e && e.message || e);
+      els.uploadConfigInput.value = '';
+      return;
+    }
+    if (!port || portDead) {
+      els.settingsStatus.textContent = '导入失败：未连接后台';
+      els.uploadConfigInput.value = '';
+      return;
+    }
+    try { port.postMessage({ cmd: 'importConfig', raw: String(text) }); } catch (e) {
       els.settingsStatus.textContent = '导入失败：' + String(e && e.message || e);
-      addBubble('error', '导入配置失败：' + String(e && e.message || e));
     }
     els.uploadConfigInput.value = '';
   }
@@ -1325,6 +1285,22 @@
         case 'config': handleConfig(msg); break;
         case 'configSaved':
           els.settingsStatus.textContent = msg.ok ? '已保存 ✓' : '保存失败';
+          break;
+        case 'configExport':
+          if (typeof msg.json === 'string') {
+            downloadJsonText(msg.json, 'assistant-config.json');
+            els.settingsStatus.textContent = '已导出配置 JSON ✓（含完整 provider/密钥/提示词，可重装后导入恢复）';
+          }
+          break;
+        case 'configImported':
+          if (msg.ok) {
+            els.settingsStatus.textContent = '已导入并保存配置 ✓';
+            addBubble('status', '已导入配置并生效');
+          } else {
+            const em = '导入配置失败：' + (msg.error || '文件无效');
+            els.settingsStatus.textContent = em;
+            addBubble('error', em);
+          }
           break;
         case 'tagSaved':
           // 标签已持久化；无需额外动作（下拉已即时反映）

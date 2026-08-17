@@ -10,7 +10,7 @@ const DEFAULT_CONFIG = {
   selectedTextTag: null,
   selectedOcrTag: null,
   systemPromptText:
-    "你是'传统网页智能助手'，一个自主控制浏览器网页的智能体。用户已在一个网页系统上登录，你要根据用户用自然语言提出的任务，自动在当前页面完成一系列操作（读取信息、填写表单、选择下拉框、点击按钮、上传用户已附加的文件等），全程不需要用户再手动操作网页。\n\n每次你会得到：【页面快照】(当前可见的交互元素及选择器，含页面主标题 heading、当前激活菜单 activeMenu)、【执行结果】(上一步脚本运行结果)、【变化报告】(上一步操作后页面的可观测变化对比)。\n\n【核心原则：预测-验证，禁止空转】\n1) 每个动作只做一次。执行前先想好预期效果。\n2) 动作后，阅读下一轮工具结果中的【变化报告】来验证：\n   - 导航/页面切换：看 urlChanged、headingChanged、activeMenuChanged。\n   - 值变化（表单填写等）：用 page.getText(选择器) 查询，或看下一轮快照中对应元素的 value 字段。\n   - 元素出现/消失：看 countDelta 或用 page.waitFor 等待。\n3) 严禁重复执行已经执行过且页面无变化的动作。如果某动作执行后【变化报告】显示\"页面无变化\"，说明操作未生效或效果不可观测——不要重复同一操作，改用 page.waitFor 等待异步加载、或 page.probe()/page.getText 主动查询验证。\n4) 如果某操作的预期效果不可观测（expect 为\"不可观测\"）且变化报告为空：不要重复该操作，先继续执行后续其它步骤，把多个步骤的预期结果合并后再一并验证。\n5) 当没有其它可合并验证的步骤时，输出 {\"action\":\"ask\",\"question\":\"...\"} 向用户说明哪些操作已完成但效果未确认，询问是否成功、是否需要重做。\n\n【导航类操作】点击菜单/链接后，页面可能是异步加载。请在脚本中用 await page.waitFor(选择器或函数, {timeout:5000}) 等待目标页面内容出现后再 return，不要点击后立即 return true 假设成功。\n\n【页面跳转】当你的脚本触发了整页跳转（如点击链接导致页面重载），脚本执行可能因页面重载而中断——这是正常的，引擎会自动等待新页面加载完成后再给你下一轮快照。如果你的操作目标是跳转到新页面，请在点击后用 await page.waitFor 等待目标内容出现；若页面重载导致脚本中断，无需担心，下一轮快照会反映新页面状态。\n\n用户可能一次输入多条指令（每行一条），引擎会逐条执行并在指令间自动等待页面稳定。你只需专注完成当前指令即可。\n\n你必须严格只输出一个 JSON 对象，不要输出任何其他文字。三种输出格式：\n1) 需要执行操作时：{\"action\":\"plan\",\"summary\":\"这一步的意图说明\",\"expect\":\"预期的可观测变化，如'页面跳转到成果反馈'或'姓名字段填为张三'；若不可观测则填'不可观测'\",\"script\":\"/* 在异步函数体内执行的 JS，可使用下列助手，执行完 return 一个 JSON 可序列化结果 */\"}\n可用的 page 助手方法：page.q(选择器)、page.qa(选择器数组)、page.setVal(选择器,值)、page.click(选择器)、page.select(选择器,值或文本)、page.upload(选择器,文件key)、page.getText(选择器)、page.sleep(毫秒)、page.waitFor(选择器或函数,{poll,timeout})（轮询等待条件满足，超时抛错）、page.probe()（返回{url,title,heading,activeMenu,interactiveCount,domLen}轻量页面信号）、page.optionTexts(max)（返回当前可见下拉选项数组 [{t,v,s}]，最多 max 条默认200；轮询等待异步渲染，用于读取已展开的自定义下拉框选项）、page.selectOption(触发器selector,文本,{timeout})（一站式服务自定义下拉：自动展开/搜索/匹配/点击/验证，返回 {ok,via,text,value,verified}；歧义或未命中抛错并附候选，选择自定义下拉项务必用它）、page.clickOptionByText(文本,{timeout})（在下拉已展开时按 精确>前缀>包含 点击唯一最优可见选项）、page.findOption(文本,{timeout})（按文本查找可见下拉选项，返回 {selector,text,value} 或 null，不点击）、page.optionSelector()（返回下拉选项候选 CSS 选择器，可配合 page.qa 自行遍历）。选择器应尽量使用快照中给出的唯一选择器。快照中的元素带有 unique(选择器是否唯一)、disabled(禁用的元素不可操作)、readOnly(只读输入框，多为自定义下拉/日期选择器的触发器，可点击展开，不要因只读而避开)、contentEditable(是否可编辑富文本，可用 setVal 填充)；tag=SELECT 的元素额外带 options(候选预览 [{v,t,s}]，s=1 为当前选中) 与 selectedText(当前选中文本) 字段，可据 options 的精确 v/t 直接 page.select、active(是否为当前激活的菜单项)、cls(类名)、dataAct(data-file-act/data-act 等操作语义，如 delete/cancel/order/upload)、icon(图标类名，如 icon-trash=删除、icon-x/icon-close=关闭/取消、icon-plus=新增) 字段；许多按钮是无文字的图标按钮(用 span/i/div + 图标类或 data-act 实现)，请结合 dataAct、icon、cls、aria-label、label、text 综合判断其用途（如 dataAct=\"delete\" 或 icon=\"icon-trash\" 即为删除按钮，用 page.click(其 selector) 操作）。hidden=true 表示该操作控件默认不可见（需悬浮所在行才显示，如文件行的删除/排序按钮），但 page.click 对隐藏元素同样会派发完整鼠标事件序列（mouseover→pointerdown/mousedown→pointerup/mouseup→click，且向祖先冒泡），可直接点击。点击自定义下拉框展开选项等只改局部 DOM 的操作，【变化报告】中的 DOM 长度差(domChanged)会记录变化——不要因 interactiveCount 不变就视为无效而重复执行同一展开操作。若 unique 为 false，请结合 label 或 text 用更具体的选择器（如 nth-of-type）来定位唯一元素；不要操作 disabled 为 true 的元素。上传文件用 page.upload('<选择器>','<文件key>')。\n\n【自定义下拉框/选择器】下拉项的选择流程以系统消息末尾的【运行时手册】为唯一准绳（原生 SELECT 用 page.select；其余一律 page.selectOption，歧义/未命中按其错误提示处理）。\n2) 需要向用户确认或缺少信息时：{\"action\":\"ask\",\"question\":\"要问用户的问题\"}\n3) 任务已完成时：{\"action\":\"done\",\"summary\":\"向用户汇报最终结果\"}\n如果上一步返回了错误，请根据错误修正脚本重试，避免死循环。完成全部必需步骤后再输出 done。",
+    "你是'传统网页智能助手'，一个自主控制浏览器网页的智能体。用户已在一个网页系统上登录，你要根据用户用自然语言提出的任务，自动在当前页面完成一系列操作（读取信息、填写表单、选择下拉框、点击按钮、上传用户已附加的文件等），全程不需要用户再手动操作网页。\n\n每次你会得到：【页面快照】(当前可见的交互元素及选择器，含页面主标题 heading、当前激活菜单 activeMenu)、【执行结果】(上一步脚本运行结果)、【变化报告】(上一步操作后页面的可观测变化对比)。\n\n【核心原则：预测-验证，禁止空转】\n1) 每个动作只做一次。执行前先想好预期效果。\n2) 动作后，阅读下一轮工具结果中的【变化报告】来验证：\n   - 导航/页面切换：看 urlChanged、headingChanged、activeMenuChanged。\n   - 值变化（表单填写等）：用 page.getText(选择器) 查询，或看下一轮快照中对应元素的 value 字段。\n   - 元素出现/消失：看 countDelta 或用 page.waitFor 等待。\n3) 严禁重复执行已经执行过且页面无变化的动作。如果某动作执行后【变化报告】显示\"页面无变化\"，说明操作未生效或效果不可观测——不要重复同一操作，改用 page.waitFor 等待异步加载、或 page.probe()/page.getText 主动查询验证。\n4) 如果某操作的预期效果不可观测（expect 为\"不可观测\"）且变化报告为空：不要重复该操作，先继续执行后续其它步骤，把多个步骤的预期结果合并后再一并验证。\n5) 当没有其它可合并验证的步骤时，输出 {\"action\":\"ask\",\"question\":\"...\"} 向用户说明哪些操作已完成但效果未确认，询问是否成功、是否需要重做。\n\n【导航类操作】点击菜单/链接后，页面可能是异步加载。请在脚本中用 await page.waitFor(选择器或函数, {timeout:5000}) 等待目标页面内容出现后再 return，不要点击后立即 return true 假设成功。\n\n【页面跳转】当你的脚本触发了整页跳转（如点击链接导致页面重载），脚本执行可能因页面重载而中断——这是正常的，引擎会自动等待新页面加载完成后再给你下一轮快照。如果你的操作目标是跳转到新页面，请在点击后用 await page.waitFor 等待目标内容出现；若页面重载导致脚本中断，无需担心，下一轮快照会反映新页面状态。\n\n用户可能一次输入多条指令（每行一条），引擎会逐条执行并在指令间自动等待页面稳定。你只需专注完成当前指令即可。\n\n你必须严格只输出一个 JSON 对象，不要输出任何其他文字。三种输出格式：\n1) 需要执行操作时：{\"action\":\"plan\",\"summary\":\"这一步的意图说明\",\"expect\":\"预期的可观测变化，如'页面跳转到成果反馈'或'姓名字段填为张三'；若不可观测则填'不可观测'\",\"script\":\"/* 在异步函数体内执行的 JS，可使用下列助手，执行完 return 一个 JSON 可序列化结果 */\"}\n可用的 page 助手方法：page.q(选择器)、page.qa(选择器数组)、page.setVal(选择器,值)、page.click(选择器)、page.select(选择器,值或文本)、page.upload(选择器,文件key)、page.getText(选择器)、page.sleep(毫秒)、page.waitFor(选择器或函数,{poll,timeout})（轮询等待条件满足，超时抛错）、page.probe()（返回{url,title,heading,activeMenu,interactiveCount,domLen,formDigest}轻量页面信号）、page.optionTexts(max)（返回当前可见下拉选项数组 [{t,v,s}]，最多 max 条默认200；轮询等待异步渲染，用于读取已展开的自定义下拉框选项）、page.selectOption(触发器selector,文本,{timeout})（一站式服务自定义下拉：自动展开/搜索/匹配/点击/验证，返回 {ok,via,text,value,verified}；歧义或未命中抛错并附候选，选择自定义下拉项务必用它）、page.clickOptionByText(文本,{timeout})（在下拉已展开时按 精确>前缀>包含 点击唯一最优可见选项）、page.findOption(文本,{timeout})（按文本查找可见下拉选项，返回 {selector,text,value} 或 null，不点击）、page.setChecked(选择器或{text:'文本'},true/false)（幂等勾选/取消复选/单选框：先读当前状态，已是目标状态则不点击，返回 {ok,changed,checked,verified}；勾选类操作必须用它，禁止对复选框 label 直接 page.click——label 点击是 toggle，会把已勾选项点成取消）、page.optionSelector()（返回下拉选项候选 CSS 选择器，可配合 page.qa 自行遍历）。选择器应尽量使用快照中给出的唯一选择器。快照中的元素带有 unique(选择器是否唯一)、disabled(禁用的元素不可操作)、readOnly(只读输入框，多为自定义下拉/日期选择器的触发器，可点击展开，不要因只读而避开)、contentEditable(是否可编辑富文本，可用 setVal 填充)；tag=SELECT 的元素额外带 options(候选预览 [{v,t,s}]，s=1 为当前选中) 与 selectedText(当前选中文本) 字段，可据 options 的精确 v/t 直接 page.select、active(是否为当前激活的菜单项)、cls(类名)、dataAct(data-file-act/data-act 等操作语义，如 delete/cancel/order/upload)、icon(图标类名，如 icon-trash=删除、icon-x/icon-close=关闭/取消、icon-plus=新增)、box(复选/单选框标记，值为 'checkbox' 或 'radio')、checked(该复选/单选框当前是否已勾选，勾选类操作前先读它，已是目标状态就不要再点) 字段；许多按钮是无文字的图标按钮(用 span/i/div + 图标类或 data-act 实现)，请结合 dataAct、icon、cls、aria-label、label、text 综合判断其用途（如 dataAct=\"delete\" 或 icon=\"icon-trash\" 即为删除按钮，用 page.click(其 selector) 操作）。hidden=true 表示该操作控件默认不可见（需悬浮所在行才显示，如文件行的删除/排序按钮），但 page.click 对隐藏元素同样会派发完整鼠标事件序列（mouseover→pointerdown/mousedown→pointerup/mouseup→click，且向祖先冒泡），可直接点击。点击自定义下拉框展开选项等只改局部 DOM 的操作，【变化报告】中的 DOM 长度差(domChanged)会记录变化——不要因 interactiveCount 不变就视为无效而重复执行同一展开操作。若 unique 为 false，请结合 label 或 text 用更具体的选择器（如 nth-of-type）来定位唯一元素；不要操作 disabled 为 true 的元素。上传文件用 page.upload('<选择器>','<文件key>')。\n\n【自定义下拉框/选择器】下拉项的选择流程以系统消息末尾的【运行时手册】为唯一准绳（原生 SELECT 用 page.select；其余一律 page.selectOption，歧义/未命中按其错误提示处理）。\n2) 需要向用户确认或缺少信息时：{\"action\":\"ask\",\"question\":\"要问用户的问题\"}\n3) 任务已完成时：{\"action\":\"done\",\"summary\":\"向用户汇报最终结果\"}\n如果上一步返回了错误，请根据错误修正脚本重试，避免死循环。完成全部必需步骤后再输出 done。",
   systemPromptOcr: DEFAULT_SYSTEM_PROMPT_OCR,
   maxSteps: 15
 };
@@ -38,6 +38,7 @@ const RUNTIME_PLAYBOOK =
   '3) selectOption 抛错分两类：歧义（列出多个候选）→ 用更完整名称重试或 action:ask 向用户确认，禁止随意二选一；未命中（附当前可见候选样本）→ 对照样本修正目标文本后重试一次，仍失败则 action:ask。\n' +
   '4) 只读排障：page.findOption(文本)/page.optionTexts(50)/page.probe()，不触发护栏。\n' +
   '5) 验证以 helper 返回值与【变化报告】为准；同一触发器已展开时不要再次点击（会收拢）。目标文本以用户任务或附件 OCR 原文为准，不要自行增删字。\n' +
+  '【复选框/单选框】勾选或取消一律用 page.setChecked(选择器或{text:"目标文本"}, true/false)：它先读当前状态，已是目标状态则不点击（幂等）。禁止对 label/复选框直接 page.click——label 点击是 toggle，会把已勾选项点成取消。快照中此类元素带 box/checked 字段；"选择 X"的语义是"使 X 处于勾选态"，已勾选即完成。勾选/表单值变化会在【变化报告】中显示 formChanged=true。\n' +
   PLAYBOOK_END;
 
 function withRuntimePlaybook(content) {
@@ -86,9 +87,9 @@ async function getConfigMerged() {
   if (textProviders.length === 0 && (cfg.apiBase || cfg.apiKey || cfg.model)) {
     textProviders = [normalizeProvider({
       name: '默认',
-      baseURL: cfg.apiBase || DEFAULT_CONFIG.apiBase,
+      baseURL: cfg.apiBase || '',
       apiKey: cfg.apiKey || '',
-      models: cfg.model || DEFAULT_CONFIG.model
+      models: cfg.model || ''
     })];
   }
 
@@ -149,10 +150,114 @@ function configPayload(cfg) {
   };
 }
 
+// 导出配置负载：严格 7 键结构（PLAN 补充2），apiKey 明文以支持重装免重配
+function exportPayload(cfg) {
+  return {
+    textProviders: cfg.textProviders,
+    ocrProviders: cfg.ocrProviders,
+    selectedTextTag: cfg.selectedTextTag,
+    selectedOcrTag: cfg.selectedOcrTag,
+    systemPromptText: cfg.systemPromptText,
+    systemPromptOcr: cfg.systemPromptOcr,
+    maxSteps: cfg.maxSteps
+  };
+}
+
+// 导入配置校验 + 规范化：providers 逐项 normalizeProvider；selected*Tag 结构校验；
+// systemPrompt* 必须字符串；maxSteps 正整数 ≤100；apiKey 掩码('********')沿用现有同名 provider 的密钥。
+// 兼容旧配置 {apiBase,apiKey,model,systemPrompt}。与现有配置合并（未提供字段保留现有值）。
+// 返回 { ok:true, config } 或 { error }。
+function validateImportConfig(obj, current) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { error: 'JSON 不是有效的配置对象' };
+  const cur = current || {};
+
+  function preserveKey(p, curList) {
+    if (p.apiKey === '********') {
+      const hit = (curList || []).find((x) => x && x.name === p.name);
+      return Object.assign({}, p, { apiKey: (hit && hit.apiKey) || '' });
+    }
+    return p;
+  }
+
+  // textProviders（兼容旧 {apiBase,apiKey,model}）
+  let textProviders = null;
+  if ('textProviders' in obj) {
+    if (!Array.isArray(obj.textProviders)) return { error: 'textProviders 必须是数组' };
+    if (obj.textProviders.some((p) => !p || typeof p !== 'object')) return { error: 'textProviders 存在无效条目' };
+    textProviders = obj.textProviders.map(normalizeProvider).filter(Boolean);
+  }
+  if (textProviders === null && ('apiBase' in obj || 'model' in obj || 'apiKey' in obj)) {
+    textProviders = [normalizeProvider({ name: '默认', baseURL: obj.apiBase || '', apiKey: obj.apiKey || '', models: obj.model || '' })].filter(Boolean);
+  }
+  // ocrProviders
+  let ocrProviders = null;
+  if ('ocrProviders' in obj) {
+    if (!Array.isArray(obj.ocrProviders)) return { error: 'ocrProviders 必须是数组' };
+    if (obj.ocrProviders.some((p) => !p || typeof p !== 'object')) return { error: 'ocrProviders 存在无效条目' };
+    ocrProviders = obj.ocrProviders.map(normalizeProvider).filter(Boolean);
+  }
+
+  // 合并基准：未提供字段沿用现有配置
+  const merged = {
+    textProviders: textProviders !== null ? textProviders.map((p) => preserveKey(p, cur.textProviders)) : (cur.textProviders || []),
+    ocrProviders: ocrProviders !== null ? ocrProviders.map((p) => preserveKey(p, cur.ocrProviders)) : (cur.ocrProviders || []),
+    selectedTextTag: cur.selectedTextTag != null ? cur.selectedTextTag : null,
+    selectedOcrTag: cur.selectedOcrTag != null ? cur.selectedOcrTag : null,
+    systemPromptText: cur.systemPromptText != null ? cur.systemPromptText : DEFAULT_CONFIG.systemPromptText,
+    systemPromptOcr: cur.systemPromptOcr != null ? cur.systemPromptOcr : DEFAULT_CONFIG.systemPromptOcr,
+    maxSteps: cur.maxSteps != null ? cur.maxSteps : DEFAULT_CONFIG.maxSteps
+  };
+
+  // selected*Tag：null 或 {provider,model} 全字符串
+  for (const k of ['selectedTextTag', 'selectedOcrTag']) {
+    if (!(k in obj)) continue;
+    const v = obj[k];
+    if (v === null) { merged[k] = null; continue; }
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return { error: k + ' 必须为 {provider, model} 或 null' };
+    if (typeof v.provider !== 'string' || typeof v.model !== 'string') return { error: k + ' 的 provider/model 必须为字符串' };
+    merged[k] = { provider: v.provider, model: v.model };
+  }
+
+  // systemPrompt*：必须字符串
+  for (const k of ['systemPromptText', 'systemPromptOcr']) {
+    if (!(k in obj)) continue;
+    if (typeof obj[k] !== 'string') return { error: k + ' 必须是字符串' };
+    merged[k] = obj[k];
+  }
+  // 兼容旧 systemPrompt
+  if ('systemPrompt' in obj && !('systemPromptText' in obj) && typeof obj.systemPrompt === 'string') {
+    merged.systemPromptText = obj.systemPrompt;
+  }
+
+  // maxSteps：正整数 ≤100
+  if ('maxSteps' in obj) {
+    const n = Number(obj.maxSteps);
+    if (!Number.isInteger(n) || n < 1 || n > 100) return { error: 'maxSteps 必须是 1-100 的正整数' };
+    merged.maxSteps = n;
+  }
+
+  if (textProviders === null && ocrProviders === null && !('selectedTextTag' in obj) && !('selectedOcrTag' in obj) &&
+      !('systemPromptText' in obj) && !('systemPromptOcr' in obj) && !('systemPrompt' in obj) && !('maxSteps' in obj)) {
+    return { error: '配置不包含任何可识别字段（需 textProviders/ocrProviders/selectedTextTag/selectedOcrTag/systemPromptText/systemPromptOcr/maxSteps 至少一项）' };
+  }
+
+  return { ok: true, config: merged };
+}
+
+// chat/completions 端点规整：去尾部斜杠；已含 /chat/completions 幂等去掉再拼回；
+// 若无 /vN 版本段则自动补 /v1（OpenAI 兼容标准，避免 baseURL 缺 /v1 时 404 连发）。
+function chatCompletionsUrl(baseURL) {
+  let u = String(baseURL || '').trim().replace(/\/+$/, '');
+  const suffix = '/chat/completions';
+  if (u.endsWith(suffix)) u = u.slice(0, -suffix.length);
+  if (!/\/v\d+[a-zA-Z0-9.]*$/.test(u)) u += '/v1';
+  return u + suffix;
+}
+
 // OpenAI chat/completions 通用调用。options.maxTokens 可选；options.timeoutMs 可选
 async function callChatCompletions(baseURL, apiKey, model, messages, options) {
   const opts = options || {};
-  const url = String(baseURL || '').replace(/\/+$/, '') + '/chat/completions';
+  const url = chatCompletionsUrl(baseURL);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs || 90000);
   let res;
@@ -173,13 +278,13 @@ async function callChatCompletions(baseURL, apiKey, model, messages, options) {
     });
   } catch (e) {
     clearTimeout(timer);
-    throw new Error('请求大模型超时或网络错误: ' + String(e && e.message || e));
+    throw new Error('请求大模型超时或网络错误: ' + String(e && e.message || e) + ' @ ' + url);
   }
   clearTimeout(timer);
   if (!res.ok) {
     let body = '';
     try { body = (await res.text()).slice(0, 300); } catch (e) { body = ''; }
-    throw new Error('LLM 请求失败 HTTP ' + res.status + ': ' + body);
+    throw new Error('LLM 请求失败 HTTP ' + res.status + ' @ ' + url + ': ' + body);
   }
   const data = await res.json();
   let content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
@@ -194,23 +299,89 @@ async function callChatCompletions(baseURL, apiKey, model, messages, options) {
   return content;
 }
 
+// 每次调用大模型（含 OCR）都在聊天窗实时出摘要：
+// 请求已发出（模型/字节或字符/max_tokens/完整 URL）→ 已收到返回（字数+前15/后15）→ 失败原因（HTTP 状态+响应片段+URL）。
+function makeApiReporter(postMsg) {
+  function previewParts(text) {
+    const t = String(text || '');
+    return { n: t.length, head: t.slice(0, 15), tail: t.length > 15 ? t.slice(-15) : '' };
+  }
+  return {
+    request: function (label, meta) {
+      const m = meta || {};
+      const parts = [];
+      if (m.fileName) parts.push('附件「' + m.fileName + '」');
+      if (m.model) parts.push('模型 ' + m.model);
+      if (m.bytes != null) parts.push('图像约 ' + m.bytes + ' 字节');
+      if (m.chars != null) parts.push('上下文约 ' + m.chars + ' 字符');
+      if (m.maxTokens != null) parts.push('max_tokens=' + m.maxTokens);
+      if (m.extra) parts.push(String(m.extra));
+      postMsg({ type: 'status', text: (label || '模型') + ' 请求已发出：' + parts.join('，') + (m.url ? '，URL：' + m.url : '') });
+    },
+    response: function (label, text) {
+      const p = previewParts(text);
+      postMsg({ type: 'status', text: (label || '模型') + ' 已收到返回数据：' + p.n + ' 字；前15：' + p.head + (p.tail ? '；后15：' + p.tail : '') });
+    },
+    failure: function (label, url, err) {
+      postMsg({ type: 'status', kind: 'error', text: (label || '模型') + ' 未收到有效返回：' + String(err && err.message || err) + (url ? '，URL：' + url : '') });
+    }
+  };
+}
+
+// ===== OCR 防滥用：全局串行 + 连续失败熔断 =====
+// promise 链保证整个扩展任意时刻最多 1 个 OCR 请求在飞（跨标签页），消除并发/重发并发。
+const OCR_MAX_CONSECUTIVE_FAILS = 2;
+let ocrQueue = Promise.resolve();
+function runOcrExclusive(taskFn) {
+  const p = ocrQueue.then(function () { return taskFn(); });
+  ocrQueue = p.catch(function () { /* 让后续请求不被前一次失败打断排队 */ });
+  return p;
+}
+// origin → 连续失败计数；达到阈值即熔断（不再发任何 OCR 请求），用户“修复后再试”动作复位。
+const ocrBreaker = new Map();
+function ocrBreakerState(origin) {
+  if (!ocrBreaker.has(origin)) ocrBreaker.set(origin, { fails: 0 });
+  return ocrBreaker.get(origin);
+}
+function ocrBreakerIsOpen(origin) { return ocrBreakerState(origin).fails >= OCR_MAX_CONSECUTIVE_FAILS; }
+function ocrBreakerRecordFailure(origin) { ocrBreakerState(origin).fails += 1; }
+function ocrBreakerRecordSuccess(origin) { ocrBreakerState(origin).fails = 0; }
+function ocrBreakerReset(origin) { ocrBreaker.delete(origin); }
+
 // 文本模型调用：每次实时 resolve 当前选中标签（面板切换下拉即对下一次调用生效）
-async function callLLM(messages, kind) {
+async function callLLM(messages, kind, reporter) {
   const config = await getConfigMerged();
   const tag = resolveTag(config, kind || 'text');
   if (!tag) throw new Error('未配置' + (kind === 'ocr' ? ' OCR ' : '文本') + '模型 provider/模型ID');
-  return callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, { timeoutMs: 90000 });
+  const url = chatCompletionsUrl(tag.baseURL);
+  const label = ((kind || 'text') === 'ocr') ? 'OCR' : '文本模型';
+  if (reporter) {
+    let chars = 0;
+    for (const m of messages || []) { chars += String((m && m.content) || '').length; }
+    reporter.request(label, { model: tag.model, chars: chars, url: url });
+  }
+  try {
+    const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, { timeoutMs: 90000 });
+    if (reporter) reporter.response(label, text);
+    return text;
+  } catch (e) {
+    if (reporter) reporter.failure(label, url, e);
+    throw e;
+  }
 }
 
 // OCR 调用：按当前选中 OCR 模型ID 分派。
-// - 普通多模态视觉模型（如 qwen3.6-chat）：OpenAI image_url + dataURL 格式
+// - 普通多模态视觉模型（如 qwen3.6-chat）：OpenAI image_url + dataURL 格式（system+user，max_tokens=4096）
 // - MinerU 模型：multipart/form-data（files + lang_list/backend/parse_method/formula_enable/table_enable/return_md）
-async function callOcrVision({ fileName, pngDataUrl }, cfg) {
+// pngDataUrl 长度近似图像字节数（base64 ~ 4/3 原始字节），用于 reporter。
+async function callOcrVision({ fileName, uploadName, pngDataUrl }, cfg, reporter) {
   const tag = resolveTag(cfg, 'ocr');
   if (!tag) throw new Error('未配置 OCR 模型 provider/模型ID');
 
+  const approxBytes = Math.round(String(pngDataUrl || '').length * 3 / 4);
+
   if (/^MinerU/i.test(tag.model)) {
-    return callOcrMinerU({ fileName, pngDataUrl }, tag);
+    return callOcrMinerU({ fileName, uploadName, pngDataUrl, approxBytes }, tag, reporter);
   }
 
   // 视觉模型：messages = system + user(image_url + text)
@@ -224,7 +395,16 @@ async function callOcrVision({ fileName, pngDataUrl }, cfg) {
       ]
     }
   ];
-  return callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, { maxTokens: 4096, timeoutMs: 120000 });
+  const url = chatCompletionsUrl(tag.baseURL);
+  if (reporter) reporter.request('OCR', { fileName: fileName, model: tag.model, bytes: approxBytes, maxTokens: 4096, url: url });
+  try {
+    const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, { maxTokens: 4096, timeoutMs: 120000 });
+    if (reporter) reporter.response('OCR', text);
+    return text;
+  } catch (e) {
+    if (reporter) reporter.failure('OCR', url, e);
+    throw e;
+  }
 }
 
 // dataURL → Blob
@@ -233,18 +413,44 @@ async function dataUrlToBlob(dataUrl) {
   return await r.blob();
 }
 
-// MinerU OCR：multipart/form-data 上传图片
-async function callOcrMinerU({ fileName, pngDataUrl }, tag) {
+// MinerU 返回中的识别文本递归提取：
+// 命中 full_ocr_result / full_ocr_content / markdown / md / ocr_result / result / content / text / data
+// 中第一个非空字符串；对象按候选键优先递归、数组按顺序递归；深限 6 层防爆栈。
+function findMineruText(node, depth) {
+  if (depth == null) depth = 0;
+  if (node == null || depth > 6) return null;
+  if (typeof node === 'string') return node.trim() ? node : null;
+  if (typeof node !== 'object') return null;
+  if (Array.isArray(node)) {
+    for (const it of node) { const hit = findMineruText(it, depth + 1); if (hit) return hit; }
+    return null;
+  }
+  const KEYS = ['full_ocr_result', 'full_ocr_content', 'markdown', 'md', 'ocr_result', 'result', 'content', 'text', 'data'];
+  for (const k of KEYS) {
+    if (!(k in node)) continue;
+    const v = node[k];
+    if (typeof v === 'string') { if (v.trim()) return v; }
+    else if (v && typeof v === 'object') { const hit = findMineruText(v, depth + 1); if (hit) return hit; }
+  }
+  return null;
+}
+
+// MinerU OCR：multipart/form-data 上传图片（browser FormData，不手动设 Content-Type）。
+// 响应解析不依赖 content-type 头：先 res.text() 读全部 → 尝试 JSON.parse → 成功走 findMineruText
+// 递归提取（无识别文本字段，如只有 task_id，则回显原始返回）；失败当纯文本 markdown。
+async function callOcrMinerU({ fileName, uploadName, pngDataUrl, approxBytes }, tag, reporter) {
   const url = String(tag.baseURL || '').replace(/\/+$/, '');
   const blob = await dataUrlToBlob(pngDataUrl);
   const fd = new FormData();
-  fd.append('files', blob, fileName || 'page.png');
+  fd.append('files', blob, uploadName || fileName || 'page.png');
   fd.append('lang_list', 'ch');
   fd.append('backend', 'hybrid-auto-engine');
   fd.append('parse_method', 'auto');
   fd.append('formula_enable', 'true');
   fd.append('table_enable', 'true');
   fd.append('return_md', 'true');
+
+  if (reporter) reporter.request('OCR', { fileName: fileName, model: tag.model, bytes: approxBytes, extra: 'MinerU multipart', url: url });
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 180000);
@@ -258,27 +464,33 @@ async function callOcrMinerU({ fileName, pngDataUrl }, tag) {
     });
   } catch (e) {
     clearTimeout(timer);
-    throw new Error('MinerU OCR 请求失败: ' + String(e && e.message || e));
+    const err = new Error('MinerU OCR 请求失败: ' + String(e && e.message || e) + ' @ ' + url);
+    if (reporter) reporter.failure('OCR', url, err);
+    throw err;
   }
   clearTimeout(timer);
   if (!res.ok) {
     let body = '';
     try { body = (await res.text()).slice(0, 300); } catch (e) { body = ''; }
-    throw new Error('MinerU OCR 请求失败 HTTP ' + res.status + ': ' + body);
+    const err = new Error('MinerU OCR 请求失败 HTTP ' + res.status + ' @ ' + url + ': ' + body);
+    if (reporter) reporter.failure('OCR', url, err);
+    throw err;
   }
-  // MinerU 返回可能是 JSON（含 md 字段）或纯文本
-  const ctype = res.headers.get('content-type') || '';
-  if (ctype.indexOf('application/json') >= 0) {
-    const data = await res.json();
-    if (data && typeof data === 'object') {
-      for (const k of ['md', 'markdown', 'text', 'content', 'result']) {
-        if (typeof data[k] === 'string' && data[k]) return data[k];
-      }
-      try { return JSON.stringify(data); } catch (e) { return String(data); }
-    }
-    return String(data);
+  // 不依赖 content-type：先读全部文本，再探测 JSON
+  const raw = await res.text();
+  let data = null;
+  try { data = JSON.parse(raw); } catch (e) { data = null; }
+  let out;
+  if (data && typeof data === 'object') {
+    const hit = findMineruText(data);
+    // 无识别文本字段（如仅返回 task_id）→ 回显原始 JSON 便于排查，不再做无谓轮询
+    out = hit || ('【MinerU 返回未包含识别文本，原始返回】\n' + raw);
+  } else {
+    // 非 JSON（纯文本）直接当 markdown 返回
+    out = raw;
   }
-  return await res.text();
+  if (reporter) reporter.response('OCR', out);
+  return out;
 }
 
 // ============ offscreen 文档管理（PDF→PNG 渲染需要 DOM/canvas） ============
@@ -349,7 +561,38 @@ function classifyFile(name, type) {
 }
 
 // OCR 结果缓存：origin → Map(key→text)；clearHistory 时同步清除
-const ocrCache = new Map();
+// ============ OCR 结果持久化缓存 ============
+// 存在 chrome.storage.local（键 'ocr:' + origin），SW 重启后仍可命中——
+// OCR 调用昂贵且易受摘要，把文本结果变成跨会话资产，同一 origin、同一附件 key 绝不重复 OCR。
+// 容量控制：每 origin 最多 20 条 / 总字符 ≤ 400K，超出按写入先后 FIFO 淘汰。
+const OCR_CACHE_MAX_ENTRIES = 20;
+const OCR_CACHE_MAX_CHARS = 400000;
+
+async function ocrCacheGet(origin) {
+  const key = 'ocr:' + origin;
+  const saved = await storageGet(key);
+  const obj = saved && saved[key];
+  return (obj && typeof obj === 'object') ? obj : {};
+}
+
+// 读-改-写：写入时重读 storage，降低不同标签页并发同 origin 时的覆盖概率
+async function ocrCacheSet(origin, attachKey, text) {
+  const obj = await ocrCacheGet(origin);
+  obj[attachKey] = String(text || '');
+  const keys = Object.keys(obj);
+  let total = 0;
+  for (const k of keys) total += String(obj[k] || '').length;
+  // 按插入序淘汰最旧条目，直到满足条数与体积双上限
+  while (keys.length && (keys.length > OCR_CACHE_MAX_ENTRIES || total > OCR_CACHE_MAX_CHARS)) {
+    total -= String(obj[keys[0]] || '').length;
+    delete obj[keys.shift()];
+  }
+  await storageSet({ ['ocr:' + origin]: obj });
+}
+
+async function ocrCacheClear(origin) {
+  await storageSet({ ['ocr:' + origin]: {} });
+}
 
 
 async function inject(tabId) {
@@ -424,10 +667,12 @@ function buildUserPrompt(task, files) {
   return s;
 }
 
-// 预处理附件：分类 → 文本类解码全文 / PDF·图片类 OCR；返回 { textBlocks, ocrBlocks }
+// 预处理附件：分类 → 文本类解码全文 / PDF·图片类 OCR；返回 { textBlocks, ocrBlocks, aborted? }
 // textBlocks: ['【文本附件 name】\n<全文>', ...]
 // ocrBlocks:  ['【OCR识别结果 name】\n<文本>', ...]
-// 通过 post({type:'status',...}) 反馈进度；OCR 失败/文本解码失败均不阻断发送。
+// OCR 防滥用：全局串行（runOcrExclusive）+ 连续失败熔断（ocrBreaker，阈值 OCR_MAX_CONSECUTIVE_FAILS）。
+// 熔断已开 → 直接 aborted（不发任何 OCR 请求）；任一附件 OCR 失败 → 记失败并中止本次发送（不重试本批）。
+// 文本解码失败仅警告并跳过该附件，不阻断发送。
 async function preprocessFiles({ files, origin, postMsg, cancelRef }) {
   const textBlocks = [];
   const ocrBlocks = [];
@@ -436,9 +681,20 @@ async function preprocessFiles({ files, origin, postMsg, cancelRef }) {
   const cfg = await getConfigMerged();
   const hasOcr = !!resolveTag(cfg, 'ocr');
 
-  // 该 origin 的 OCR 缓存
-  if (!ocrCache.has(origin)) ocrCache.set(origin, new Map());
-  const cacheMap = ocrCache.get(origin);
+  // 该 origin 的 OCR 持久化缓存：同一 origin、同一附件 key 不重复 OCR（SW 重启后依然命中）
+  const cacheObj = await ocrCacheGet(origin);
+
+  const reporter = makeApiReporter(postMsg);
+
+  // 熔断检查：含 OCR 附件且已熔断 → 不发起任何 OCR 请求，直接中止本次发送
+  const hasOcrFile = files.some((f) => {
+    const k = (f && f.kind) || classifyFile(f && f.name, f && f.type);
+    return (k === 'pdf' || k === 'image') && !!f.dataUrl;
+  });
+  if (hasOcrFile && hasOcr && ocrBreakerIsOpen(origin)) {
+    postMsg({ type: 'status', text: 'OCR 已连续失败 ' + ocrBreakerState(origin).fails + ' 次，已熔断：本次发送未发起任何 OCR 请求。请保存配置 / 清空对话后重试。', kind: 'error' });
+    return { textBlocks, ocrBlocks, aborted: true, reason: 'OCR 熔断已开（连续失败 ' + ocrBreakerState(origin).fails + ' 次），请在修复后保存配置或清空对话重试' };
+  }
 
   for (const f of files) {
     if (cancelRef && cancelRef.cancelled) break;
@@ -463,26 +719,34 @@ async function preprocessFiles({ files, origin, postMsg, cancelRef }) {
         postMsg({ type: 'status', text: '未配置 OCR 模型，已跳过附件「' + f.name + '」的 OCR', kind: 'error' });
         continue;
       }
-      const cacheKey = f.key + ':' + (f.dataUrl.length || 0);
-      let ocrText = cacheMap.get(cacheKey);
+      const cacheKey = f.key;
+      let ocrText = (cacheObj[cacheKey] != null) ? String(cacheObj[cacheKey]) : null;
       if (ocrText != null) {
         postMsg({ type: 'status', text: 'OCR 命中缓存：' + f.name + '（' + ocrText.length + ' 字）' });
       } else {
         try {
-          let pngDataUrl = f.dataUrl;
-          if (kind === 'pdf') {
-            postMsg({ type: 'status', text: '正在 OCR：' + f.name + '…' });
-            await ensureOffscreen();
-            pngDataUrl = await pdfFirstPageToPng(f.dataUrl);
-          } else {
-            postMsg({ type: 'status', text: '正在 OCR：' + f.name + '…' });
-          }
-          ocrText = await callOcrVision({ fileName: f.name, pngDataUrl }, cfg);
-          cacheMap.set(cacheKey, ocrText);
+          // 全局串行：任意时刻最多 1 个 OCR 请求在飞（跨标签页），消除并发/重发
+          ocrText = await runOcrExclusive(async () => {
+            let pngDataUrl = f.dataUrl;
+            let uploadName = f.name;
+            if (kind === 'pdf') {
+              postMsg({ type: 'status', text: '正在 OCR：' + f.name + '…（PDF 首页渲染→PNG）' });
+              await ensureOffscreen();
+              pngDataUrl = await pdfFirstPageToPng(f.dataUrl);
+              uploadName = (f.name || 'page').replace(/\.pdf$/i, '') + '.png';
+            } else {
+              postMsg({ type: 'status', text: '正在 OCR：' + f.name + '…' });
+            }
+            return await callOcrVision({ fileName: f.name, uploadName: uploadName, pngDataUrl: pngDataUrl }, cfg, reporter);
+          });
+          await ocrCacheSet(origin, cacheKey, ocrText);
+          ocrBreakerRecordSuccess(origin);
           postMsg({ type: 'status', text: 'OCR 完成：' + f.name + '（' + (ocrText ? ocrText.length : 0) + ' 字）' });
         } catch (e) {
-          postMsg({ type: 'status', text: 'OCR 失败「' + f.name + '」：' + String(e && e.message || e), kind: 'error' });
-          continue;
+          ocrBreakerRecordFailure(origin);
+          postMsg({ type: 'status', text: 'OCR 失败「' + f.name + '」：' + String(e && e.message || e) + '（连续失败 ' + ocrBreakerState(origin).fails + '/' + OCR_MAX_CONSECUTIVE_FAILS + ' 次）', kind: 'error' });
+          // 首个失败立即中止本次发送：不再尝试该批其它附件、不重试
+          return { textBlocks, ocrBlocks, aborted: true, reason: 'OCR 失败「' + f.name + '」：' + String(e && e.message || e) };
         }
       }
       if (ocrText) ocrBlocks.push('【OCR识别结果 ' + f.name + '】\n' + ocrText);
@@ -602,6 +866,16 @@ function scriptHash(source) {
   return String(source || '').replace(/\s+/g, ' ').trim();
 }
 
+// 重复动作护栏键：优先用归一化 summary（去空白/数字，`s:` 前缀），无 summary 用归一化脚本特征（`r:` 前缀）。
+// 模型改写脚本写法不再绕过护栏（同一意图、不同写法 → 同一 key）。
+function guardKey(parsed) {
+  const s = parsed && parsed.summary;
+  if (s && typeof s === 'string' && s.trim()) {
+    return 's:' + s.replace(/[\s\d]+/g, '');
+  }
+  return 'r:' + scriptHash(parsed && parsed.script);
+}
+
 function isProbeValid(p) {
   return p && !p.__error && typeof p.url === 'string';
 }
@@ -626,10 +900,13 @@ function computeChangeReport(before, afterProbe) {
     countDelta: (a.interactiveCount || 0) - (before.count || 0),
     // DOM 内容长度差：下拉框展开/收拢、列表行删除等局部 DOM 变化的关键补充信号
     domLenBefore: beforeDomLen,
-    domLenAfter: afterDomLen
+    domLenAfter: afterDomLen,
+    // 表单值变化：select/input 写入只改 .value，URL/标题/计数/DOM 长度都不变——
+    // 缺少该信号会把“选择成功”误判为“页面无变化”而触发重复操作
+    formChanged: (typeof before.formDigest === 'string' && typeof a.formDigest === 'string' && before.formDigest !== a.formDigest)
   };
   report.domChanged = (beforeDomLen != null && afterDomLen != null && beforeDomLen !== afterDomLen) ? (afterDomLen - beforeDomLen) : false;
-  report.anyChange = !!(report.urlChanged || report.titleChanged || report.headingChanged || report.activeMenuChanged || report.countDelta !== 0 || report.domChanged);
+  report.anyChange = !!(report.urlChanged || report.titleChanged || report.headingChanged || report.activeMenuChanged || report.countDelta !== 0 || report.domChanged || report.formChanged);
   return report;
 }
 
@@ -643,6 +920,7 @@ function changeSummary(report) {
   if (report.activeMenuChanged) parts.push('菜单→' + truncate(report.activeMenuAfter || '?', 30));
   if (report.countDelta !== 0) parts.push('元素' + (report.countDelta > 0 ? '+' : '') + report.countDelta);
   if (report.domChanged) parts.push('DOM' + (report.domChanged > 0 ? '+' : '') + report.domChanged);
+  if (report.formChanged) parts.push('表单值变化');
   return '页面已变化：' + parts.join(', ');
 }
 
@@ -734,8 +1012,9 @@ const visibleTabs = new Set();
 const pendingInstructions = new Map();
 
 // 返回终端状态：'done' | 'ask' | 'error' | 'cancelled' | 'maxsteps'
-async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, textBlocks, ocrBlocks }) {
+async function runStreamingTask({ tabId, origin, task, files, port, cancelRef }) {
   const postMsg = (obj) => post(port, obj);
+  const apiReporter = makeApiReporter(postMsg);
 
   const config = await getConfigMerged();
 
@@ -750,15 +1029,23 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, t
   } else {
     messages.unshift({ role: 'system', content: RUNTIME_PLAYBOOK });
   }
-  // 首条 user：用户任务 + 可上传文件清单 + 全部文本附件全文块
-  let firstUser = buildUserPrompt(task, files);
-  if (textBlocks && textBlocks.length) {
-    firstUser += '\n\n' + textBlocks.join('\n\n');
-  }
-  messages.push({ role: 'user', content: firstUser });
-  // OCR 结果块作为最后一条 user 消息追加（保证在上下文最后面）
-  if (ocrBlocks && ocrBlocks.length) {
-    messages.push({ role: 'user', content: ocrBlocks.join('\n\n') });
+  // 首条 user：用户任务 + 可上传文件清单（不含附件正文）
+  messages.push({ role: 'user', content: buildUserPrompt(task, files) });
+
+  // 附件正文块：不能依赖历史——持久化历史每条截断 1500 字，ask 回复、多指令第 2 条起
+  // 读到的都是残片。改为每次运行从当前附件重算：文本本地解码、OCR 走持久化缓存（命中零成本）。
+  // 附件块不推入 messages（不进历史），而是拼在每步上下文的末端，杜绝历史重复膨胀。
+  let attachMsg = null;
+  if (files && files.length) {
+    const pre = await preprocessFiles({ files, origin, postMsg, cancelRef });
+    if (pre.aborted) {
+      // OCR 熔断或首个 OCR 失败：中止本次运行（上层多指令编排遇 error 会停批）
+      postMsg({ type: 'status', text: pre.reason || 'OCR 处理已中止', kind: 'error' });
+      await saveHistory(origin, messages);
+      return 'error';
+    }
+    const blocks = pre.textBlocks.concat(pre.ocrBlocks);
+    if (blocks.length) attachMsg = { role: 'user', content: blocks.join('\n\n') };
   }
 
   const setResp = await sendToContentRetry(tabId, { cmd: 'setFiles', files: files || [] });
@@ -791,7 +1078,8 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, t
           heading: snapResp.heading || '',
           activeMenu: snapResp.activeMenu || '',
           count: snapResp.interactiveCount != null ? snapResp.interactiveCount : (Array.isArray(snapResp.elements) ? snapResp.elements.length : 0),
-          domLen: snapResp.domLen != null ? snapResp.domLen : null
+          domLen: snapResp.domLen != null ? snapResp.domLen : null,
+          formDigest: snapResp.formDigest != null ? snapResp.formDigest : null
         };
       } catch (e) {
         snapshotText = '【快照失败】' + String(e);
@@ -799,12 +1087,14 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, t
     }
     snapshotText = truncate(snapshotText, 40000);
 
-    // EPHEMERAL snapshot: 不写入 messages，避免 token 膨胀
-    const contextMessages = messages.concat([{ role: 'user', content: '【页面快照】\n' + snapshotText }]);
+    // EPHEMERAL：附件块与快照一样不写入 messages，只在下发时拼到上下文末端，避免历史膨胀
+    const contextMessages = attachMsg
+      ? messages.concat([attachMsg, { role: 'user', content: '【页面快照】\n' + snapshotText }])
+      : messages.concat([{ role: 'user', content: '【页面快照】\n' + snapshotText }]);
 
     let llmText;
     try {
-      llmText = await callLLM(contextMessages);
+      llmText = await callLLM(contextMessages, 'text', apiReporter);
     } catch (e) {
       postMsg({ type: 'error', message: '调用大模型失败：' + String(e && e.message || e) });
       await saveHistory(origin, messages);
@@ -836,7 +1126,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, t
 
     const action = parsed.action;
     if (action === 'plan' && parsed.script) {
-      const hash = scriptHash(parsed.script);
+      const hash = guardKey(parsed);
       const guard = checkRepeat(actionLog, hash);
 
       if (guard.forceAsk) {
@@ -948,7 +1238,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, t
 }
 
 // 多指令编排：顺序执行多条指令，指令间等待页面稳定
-async function runMultiTask({ tabId, origin, instructions, files, port, cancelRef, textBlocks, ocrBlocks }) {
+async function runMultiTask({ tabId, origin, instructions, files, port, cancelRef }) {
   const postMsg = (obj) => post(port, obj);
 
   for (let idx = 0; idx < instructions.length; idx++) {
@@ -964,12 +1254,8 @@ async function runMultiTask({ tabId, origin, instructions, files, port, cancelRe
 
     // 所有指令都携带用户附加的文件——页面导航后 content script 会被重新注入，
     // 文件存储会重置，需要重新同步才能在后续指令中使用 page.upload。
-    // textBlocks/ocrBlocks 仅注入到首条指令（已写入历史，后续指令沿用历史）。
-    const result = await runStreamingTask({
-      tabId, origin, task, files, port, cancelRef,
-      textBlocks: idx === 0 ? textBlocks : null,
-      ocrBlocks: idx === 0 ? ocrBlocks : null
-    });
+    // 附件正文由 runStreamingTask 内部统一从持久化缓存重算注入（每条指令都拿到全量附件）。
+    const result = await runStreamingTask({ tabId, origin, task, files, port, cancelRef });
 
     // ask 暂停：保存剩余指令，等用户回复后继续
     if (result === 'ask') {
@@ -981,6 +1267,14 @@ async function runMultiTask({ tabId, origin, instructions, files, port, cancelRe
     }
 
     if (result === 'cancelled') return;
+
+    // 单条指令出错即停止整批（PLAN 补充6 修复“出错仍继续 → 瞬间连发 N 个失败请求”）：
+    // 清空 pending 并返回，不再执行后续指令
+    if (result === 'error') {
+      pendingInstructions.delete(tabId);
+      postMsg({ type: 'status', text: '指令执行出错，已停止后续剩余 ' + (instructions.length - idx - 1) + ' 条指令（避免连发失败）', kind: 'error' });
+      return;
+    }
 
     // 指令间等待页面稳定 + 重新注入桥接（页面可能已导航）
     if (idx < instructions.length - 1 && !cancelRef.cancelled) {
@@ -1017,6 +1311,13 @@ async function resumePendingInstructions({ tabId, origin, files, port, cancelRef
     }
 
     if (result === 'cancelled') return true;
+
+    // 单条指令出错即停止整批（避免连发失败），并清空 pending
+    if (result === 'error') {
+      pendingInstructions.delete(tabId);
+      postMsg({ type: 'status', text: '指令执行出错，已停止后续剩余 ' + (pending.length - idx - 1) + ' 条指令（避免连发失败）', kind: 'error' });
+      return true;
+    }
 
     if (idx < pending.length - 1 && !cancelRef.cancelled) {
       postMsg({ type: 'status', text: '等待页面就绪后执行下一条指令…' });
@@ -1074,6 +1375,7 @@ chrome.runtime.onConnect.addListener((port) => {
         const base = saved.assistantConfig || {};
         const next = Object.assign({}, base, msg.config || {});
         await storageSet({ assistantConfig: next });
+        ocrBreakerReset(origin); // 保存配置视为“修复后再试”信号，复位熔断
         postMsg({ type: 'configSaved', ok: true });
         // 保存后回推最新配置（含标签回退解析），供面板下拉同步
         const config = await getConfigMerged();
@@ -1099,41 +1401,61 @@ chrome.runtime.onConnect.addListener((port) => {
             const base = saved.assistantConfig || {};
             await storageSet({ assistantConfig: Object.assign({}, base, msg.config) });
           }
+          ocrBreakerReset(origin); // 保存/测试视为“修复后再试”信号，复位 OCR 熔断
           const cfg = await getConfigMerged();
           const textTag = resolveTag(cfg, 'text');
           if (!textTag) throw new Error('未配置文本模型 provider/模型ID');
+
+          // 文本模型 ping：用 reporter 出“请求/返回/失败”三态摘要（含完整 URL）
+          const reporter = makeApiReporter(postMsg);
+          const textUrl = chatCompletionsUrl(textTag.baseURL);
+          reporter.request('文本模型', { model: textTag.model, extra: '连通性测试', url: textUrl });
           const text = await callChatCompletions(textTag.baseURL, textTag.apiKey, textTag.model, [
             { role: 'system', content: '你是一个连通性测试助手。' },
             { role: 'user', content: '请只回复两个字：成功' }
           ], { timeoutMs: 30000 });
+          reporter.response('文本模型', text);
           let message = '文本[' + textTag.name + '/' + textTag.model + ']连接成功。模型回复：' + truncate(text, 200);
 
-          // OCR 类已配选中标签：一并探测（MinerU 走 multipart，无法纯文本 ping，仅报告已配置）
+          // OCR 类：视觉/MinerU 端点常拒绝纯文本 ping，仅做“参数就绪”汇报；
+          // 实际连通性在上传附件 OCR 时验证（PLAN 补充3）
           const ocrTag = resolveTag(cfg, 'ocr');
           if (ocrTag) {
-            if (/^MinerU/i.test(ocrTag.model)) {
-              message += '\nOCR[' + ocrTag.name + '/' + ocrTag.model + ']已配置（MinerU 为 multipart 端点，跳过文本探测）。';
-            } else {
-              try {
-                const otext = await callChatCompletions(ocrTag.baseURL, ocrTag.apiKey, ocrTag.model, [
-                  { role: 'user', content: '请只回复两个字：成功' }
-                ], { timeoutMs: 30000 });
-                message += '\nOCR[' + ocrTag.name + '/' + ocrTag.model + ']连接成功。模型回复：' + truncate(otext, 200);
-              } catch (e) {
-                message += '\nOCR[' + ocrTag.name + '/' + ocrTag.model + ']探测失败：' + String(e && e.message || e);
-              }
-            }
+            message += '\nOCR[' + ocrTag.name + '/' + ocrTag.model + ']参数就绪（' + (/^MinerU/i.test(ocrTag.model) ? 'MinerU multipart 端点' : '视觉模型端点') + '，不发纯文本探测；实际连通性在上传附件 OCR 时验证）。';
           }
           postMsg({ type: 'testResult', ok: true, message: message });
         } catch (e) {
           postMsg({ type: 'testResult', ok: false, message: '连接失败：' + String(e && e.message || e) });
         }
       })();
+    } else if (cmd === 'exportConfig') {
+      (async () => {
+        try {
+          const cfg = await getConfigMerged();
+          postMsg({ type: 'configExport', json: JSON.stringify(exportPayload(cfg), null, 2) });
+        } catch (e) {
+          postMsg({ type: 'status', text: '导出配置失败：' + String(e && e.message || e), kind: 'error' });
+        }
+      })();
+    } else if (cmd === 'importConfig') {
+      (async () => {
+        let obj = null;
+        try { obj = JSON.parse(String(msg.raw || '')); } catch (e) { obj = null; }
+        const cur = await getConfigMerged();
+        const v = validateImportConfig(obj, cur);
+        if (!v.ok) { postMsg({ type: 'configImported', ok: false, error: v.error }); return; }
+        await storageSet({ assistantConfig: v.config });
+        ocrBreakerReset(origin); // 导入配置视为“修复后再试”信号，复位熔断
+        const cfg2 = await getConfigMerged();
+        postMsg({ type: 'configImported', ok: true });
+        postMsg({ type: 'config', config: configPayload(cfg2) }); // 刷新面板与标签下拉
+      })();
     } else if (cmd === 'clearHistory') {
       (async () => {
         await storageSet({ ['hist:' + origin]: [] });
         pendingInstructions.delete(tabId);
-        ocrCache.delete(origin); // 清空对话时同步清除 OCR 缓存
+        await ocrCacheClear(origin); // 清空对话时同步清除持久化 OCR 缓存
+        ocrBreakerReset(origin); // 清空对话视为“修复后再试”信号，复位熔断
         postMsg({ type: 'historyCleared', ok: true });
       })();
     } else if (cmd === 'cancel') {
@@ -1163,30 +1485,23 @@ chrome.runtime.onConnect.addListener((port) => {
 
           if (hasPending && instructions.length === 1) {
             // 用户在回复 ask 后继续：先执行回复，再自动恢复剩余指令
-            // 回复消息不再重复注入附件文本/OCR（已在历史中）
+            // 附件正文在 runStreamingTask 内统一从持久化缓存重算注入（历史每条截断 1500 字，不可依赖）
             await runStreamingTask({ tabId, origin, task: msg.task, files, port, cancelRef });
             if (!cancelRef.cancelled) {
               await resumePendingInstructions({ tabId, origin, files, port, cancelRef });
             }
           } else {
-            // 新的多指令批次（或单指令）：先预处理附件（文本解码 / PDF·图片 OCR）
+            // 新的多指令批次（或单指令）：附件预处理已内置于 runStreamingTask
+            // （文本本地解码 / PDF·图片 OCR 走持久化缓存，熔断/首败中止由内部返回 error 触发停批）
             pendingInstructions.delete(tabId);
             if (instructions.length === 0) {
               postMsg({ type: 'status', text: '未识别到有效指令' });
+            } else if (cancelRef.cancelled) {
+              postMsg({ type: 'status', text: '已取消' });
+            } else if (instructions.length === 1) {
+              await runStreamingTask({ tabId, origin, task: instructions[0], files, port, cancelRef });
             } else {
-              let textBlocks = [], ocrBlocks = [];
-              if (files.length) {
-                const pre = await preprocessFiles({ files, origin, postMsg, cancelRef });
-                textBlocks = pre.textBlocks;
-                ocrBlocks = pre.ocrBlocks;
-              }
-              if (cancelRef.cancelled) {
-                postMsg({ type: 'status', text: '已取消' });
-              } else if (instructions.length === 1) {
-                await runStreamingTask({ tabId, origin, task: instructions[0], files, port, cancelRef, textBlocks, ocrBlocks });
-              } else {
-                await runMultiTask({ tabId, origin, instructions, files, port, cancelRef, textBlocks, ocrBlocks });
-              }
+              await runMultiTask({ tabId, origin, instructions, files, port, cancelRef });
             }
           }
         } finally {
