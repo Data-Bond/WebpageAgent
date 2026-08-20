@@ -5,70 +5,179 @@
   'use strict';
 
   var INSTALLED = '__assistantPage';
+  var BRIDGE_VERSION = '2.5.0';
 
   function install() {
-    function uniqueSelector(el) {
-      if (!el || el.nodeType !== 1) return null;
-      // 优先用 id
-      if (el.id) {
-        var id = String(el.id).trim();
-        if (id && /^[A-Za-z_][\w:.\-]*$/.test(id) && document.querySelectorAll('#' + CSS.escape(id)).length === 1) {
-          return { selector: '#' + CSS.escape(id), unique: true };
+    var scriptAborted = false;
+    function onAbortSignal() { scriptAborted = true; }
+    document.addEventListener('__ds_abort', onAbortSignal);
+
+    var SHADOW_SEP = ' >>> ';
+    var FRAME_SEP = ' >>frame>> ';
+
+    function safeAll(root, selector) {
+      try { return Array.from(root.querySelectorAll(selector)); } catch (e) { return []; }
+    }
+
+    // 顶层文档、开放 ShadowRoot、同源 iframe 文档。跨域 iframe 无法由页面世界读取，
+    // 会保留 iframe 元素本身供模型点击/导航，但不会伪装成可访问。
+    function collectContexts() {
+      var out = [];
+      var seen = new Set();
+      function walk(root) {
+        if (!root || seen.has(root)) return;
+        seen.add(root);
+        out.push(root);
+        var nodes = safeAll(root, '*');
+        for (var i = 0; i < nodes.length; i++) {
+          var el = nodes[i];
+          if (el.shadowRoot) walk(el.shadowRoot);
+          if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+            try { if (el.contentDocument) walk(el.contentDocument); } catch (e) {}
+          }
         }
       }
-      // 次优：稳定属性选择器（如 [data-file-act="delete"]），全页唯一才采用（PLAN 补充1）
-      var STABLE_ATTRS = ['data-file-act', 'data-act', 'data-action', 'data-op', 'title', 'name', 'aria-label', 'placeholder'];
-      if (el.getAttribute && el.tagName) {
-        var tagLower = el.tagName.toLowerCase();
-        for (var ai = 0; ai < STABLE_ATTRS.length; ai++) {
-          var attrName = STABLE_ATTRS[ai];
-          var attrVal = el.getAttribute(attrName);
-          if (!attrVal) continue;
-          var av = String(attrVal).trim();
-          if (!av || av.length > 60) continue;
-          // 仅在值不含特殊字符时构造，避免选择器注入
-          if (!/^[A-Za-z0-9_:.一-鿿 \-]+$/.test(av)) continue;
-          var asel = tagLower + '[' + attrName + '="' + av.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]';
-          try {
-            if (document.querySelectorAll(asel).length === 1 && document.querySelector(asel) === el) {
-              return { selector: asel, unique: true };
+      walk(document);
+      return out;
+    }
+
+    function resolveDeepSelector(selector, all) {
+      var raw = String(selector || '').trim();
+      if (!raw) return all ? [] : null;
+      var frameParts = raw.split(FRAME_SEP);
+      var roots = [document];
+      for (var fi = 0; fi < frameParts.length; fi++) {
+        var shadowParts = frameParts[fi].split(SHADOW_SEP);
+        var currentRoots = roots;
+        var matches = [];
+        for (var si = 0; si < shadowParts.length; si++) {
+          matches = [];
+          for (var ri = 0; ri < currentRoots.length; ri++) {
+            matches = matches.concat(safeAll(currentRoots[ri], shadowParts[si]));
+          }
+          if (si < shadowParts.length - 1) {
+            currentRoots = [];
+            for (var mi = 0; mi < matches.length; mi++) {
+              if (matches[mi].shadowRoot) currentRoots.push(matches[mi].shadowRoot);
             }
-          } catch (e) { /* invalid selector, try next */ }
+          }
+        }
+        if (fi < frameParts.length - 1) {
+          roots = [];
+          for (var mj = 0; mj < matches.length; mj++) {
+            try { if (matches[mj].contentDocument) roots.push(matches[mj].contentDocument); } catch (e) {}
+          }
+        } else {
+          return all ? matches : (matches[0] || null);
         }
       }
-      // 构造从 body 向下的路径
+      return all ? [] : null;
+    }
+
+    function queryAllDeep(selector) {
+      var raw = String(selector || '');
+      if (raw.indexOf(SHADOW_SEP) >= 0 || raw.indexOf(FRAME_SEP) >= 0) {
+        return resolveDeepSelector(raw, true);
+      }
+      var out = [];
+      var seen = new Set();
+      var roots = collectContexts();
+      for (var i = 0; i < roots.length; i++) {
+        var hits = safeAll(roots[i], raw);
+        for (var j = 0; j < hits.length; j++) {
+          if (!seen.has(hits[j])) { seen.add(hits[j]); out.push(hits[j]); }
+        }
+      }
+      return out;
+    }
+
+    function queryDeep(selector) {
+      var all = queryAllDeep(selector);
+      return all.length ? all[0] : null;
+    }
+
+    function isStableId(id) {
+      var s = String(id || '').trim();
+      if (!s || s.length > 100) return false;
+      if (/^\d+$/.test(s) || /^[0-9a-f]{8}-[0-9a-f-]{20,}$/i.test(s)) return false;
+      if (/^(:r\d+:|rc_select_\d+|react-select-\d+|mui-\d+|ember\d+|__\w+\d{5,})$/i.test(s)) return false;
+      return true;
+    }
+
+    function localSelector(el, root) {
+      if (!el || el.nodeType !== 1 || !root) return null;
+      if (el.id && isStableId(el.id)) {
+        var id = String(el.id).trim();
+        var idSel = id ? '#' + CSS.escape(id) : '';
+        if (idSel && safeAll(root, idSel).length === 1) return { selector: idSel, unique: true };
+      }
+      var attrs = ['data-testid', 'data-test', 'data-qa', 'data-file-act', 'data-act',
+        'data-action', 'data-op', 'name', 'aria-label', 'placeholder', 'title'];
+      var tagLower = el.tagName.toLowerCase();
+      for (var ai = 0; ai < attrs.length; ai++) {
+        var attrName = attrs[ai];
+        var attrVal = el.getAttribute && el.getAttribute(attrName);
+        if (!attrVal) continue;
+        var av = String(attrVal).trim();
+        if (!av || av.length > 120) continue;
+        var asel = tagLower + '[' + attrName + '="' + CSS.escape(av) + '"]';
+        if (safeAll(root, asel).length === 1) return { selector: asel, unique: true };
+      }
+
       var parts = [];
       var node = el;
-      while (node && node.nodeType === 1 && node !== document.body && node !== document.documentElement) {
+      while (node && node.nodeType === 1) {
         var part = node.tagName.toLowerCase();
-        if (node.id && /^[A-Za-z_][\w:.\-]*$/.test(String(node.id).trim())) {
-          part = part + '#' + CSS.escape(String(node.id).trim());
-          parts.unshift(part);
-          break;
-        }
-        if (node.classList && node.classList.length) {
-          var cls = node.classList[0];
-          if (/^[A-Za-z_][\w\-]*$/.test(cls)) part = part + '.' + cls;
+        if (node.id && isStableId(node.id)) {
+          var nid = String(node.id).trim();
+          if (nid) {
+            var anchored = part + '#' + CSS.escape(nid);
+            if (safeAll(root, anchored).length === 1) {
+              parts.unshift(anchored);
+              break;
+            }
+          }
         }
         var parent = node.parentNode;
-        if (parent && parent.nodeType === 1) {
-          var siblings = parent.children;
+        if (parent && (parent.nodeType === 1 || parent.nodeType === 11 || parent.nodeType === 9)) {
+          var siblings = parent.children || [];
           var idx = 1;
           for (var s = 0; s < siblings.length; s++) {
             if (siblings[s] === node) break;
             if (siblings[s].tagName === node.tagName) idx++;
           }
-          part = part + ':nth-of-type(' + idx + ')';
+          part += ':nth-of-type(' + idx + ')';
         }
         parts.unshift(part);
-        node = node.parentNode;
+        if (!parent || parent === root || node === root.body || node === root.documentElement) break;
+        node = parent;
       }
       var path = parts.join(' > ');
-      var unique = false;
-      try {
-        if (document.querySelectorAll(path).length === 1) unique = true;
-      } catch (e) { /* invalid selector, fall through */ }
-      return { selector: path || null, unique: unique };
+      return { selector: path || null, unique: !!path && safeAll(root, path).length === 1 };
+    }
+
+    function uniqueSelector(el) {
+      if (!el || el.nodeType !== 1) return null;
+      var root = el.getRootNode ? el.getRootNode() : document;
+      var local = localSelector(el, root);
+      if (!local || !local.selector) return local;
+      if (root === document) return local;
+      if (root.nodeType === 11 && root.host) {
+        var host = uniqueSelector(root.host);
+        return host && host.selector
+          ? { selector: host.selector + SHADOW_SEP + local.selector, unique: !!(host.unique && local.unique) }
+          : local;
+      }
+      if (root.nodeType === 9) {
+        try {
+          var frame = root.defaultView && root.defaultView.frameElement;
+          var fs = frame && uniqueSelector(frame);
+          if (fs && fs.selector) {
+            return { selector: fs.selector + FRAME_SEP + local.selector, unique: !!(fs.unique && local.unique) };
+          }
+        } catch (e) {}
+      }
+      return local;
     }
 
     function isVisible(el) {
@@ -77,7 +186,8 @@
         ? el.ownerDocument.defaultView.getComputedStyle(el)
         : null;
       if (style) {
-        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 ||
+          style.pointerEvents === 'none') return false;
       }
       var rects = el.getClientRects();
       if (!rects || rects.length === 0) return false;
@@ -92,9 +202,32 @@
         var t = (el.labels[0].innerText || '').trim();
         if (t) return t;
       }
+      var labelledBy = el.getAttribute && el.getAttribute('aria-labelledby');
+      if (labelledBy) {
+        var labelRoot = el.getRootNode ? el.getRootNode() : document;
+        var labelParts = labelledBy.split(/\s+/);
+        var labelTexts = [];
+        for (var li = 0; li < labelParts.length; li++) {
+          var by = null;
+          try { by = labelRoot.querySelector('#' + CSS.escape(labelParts[li])); } catch (e) {}
+          if (by) {
+            var bt = (by.innerText || by.textContent || '').trim();
+            if (bt) labelTexts.push(bt);
+          }
+        }
+        if (labelTexts.length) return labelTexts.join(' ').slice(0, 120);
+      }
+      try {
+        var wrapping = el.closest && el.closest('label');
+        if (wrapping) {
+          var wt = (wrapping.innerText || wrapping.textContent || '').trim();
+          if (wt) return wt.slice(0, 120);
+        }
+      } catch (e) {}
       var id = el.id;
       if (id) {
-        var lbl = document.querySelector('label[for="' + CSS.escape(id) + '"]');
+        var root = el.getRootNode ? el.getRootNode() : document;
+        var lbl = root.querySelector && root.querySelector('label[for="' + CSS.escape(id) + '"]');
         if (lbl) {
           var lt = (lbl.innerText || '').trim();
           if (lt) return lt;
@@ -114,7 +247,7 @@
     function isInteractive(tag, type) {
       var t = (type || '').toLowerCase();
       if (tag === 'INPUT') {
-        return ['text', 'email', 'date', 'number', 'password', 'checkbox', 'radio', 'file', 'tel', 'url', 'search', 'time'].indexOf(t) >= 0;
+        return t !== 'hidden';
       }
       if (tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON') return true;
       if (tag === 'A') return true;
@@ -135,7 +268,8 @@
     var INTERACTIVE_SELECTOR = [
       'input', 'select', 'textarea', 'button', 'a',
       '[role="button"]', '[role="link"]', '[role="menuitem"]', '[role="menuitemcheckbox"]', '[role="menuitemradio"]',
-      '[role="tab"]', '[role="option"]', '[role="textbox"]', '[contenteditable="true"]',
+      '[role="tab"]', '[role="option"]', '[role="textbox"]', '[role="combobox"]', '[contenteditable="true"]',
+      'summary', '[tabindex]:not([tabindex="-1"])',
       '[onclick]', '[data-file-act]', '[data-act]', '[data-action]', '[data-op]',
       '[data-toggle]', '[data-dismiss]', '[data-bs-toggle]', '.file-action',
       // 常见自定义下拉框/选择器的选项元素（layui/element-ui/ant-design/vant 等）
@@ -164,19 +298,19 @@
     }
 
     function extractHeading() {
-      var h1s = document.querySelectorAll('h1, [role="heading"][aria-level="1"]');
+      var h1s = queryAllDeep('h1, [role="heading"][aria-level="1"]');
       for (var i = 0; i < h1s.length; i++) {
         if (isVisible(h1s[i])) {
           var t = (h1s[i].innerText || h1s[i].textContent || '').trim();
           if (t) return t.slice(0, 120);
         }
       }
-      var pt = document.querySelector('.page-title, .page-header, .panel-title, .card-title');
+      var pt = queryDeep('.page-title, .page-header, .panel-title, .card-title');
       if (pt && isVisible(pt)) {
         var t2 = (pt.innerText || pt.textContent || '').trim();
         if (t2) return t2.slice(0, 120);
       }
-      var bcs = document.querySelectorAll('.breadcrumb li, .breadcrumb a, [itemtype*="Breadcrumb"] li, [aria-label="breadcrumb"] a, [aria-label="面包屑"] a');
+      var bcs = queryAllDeep('.breadcrumb li, .breadcrumb a, [itemtype*="Breadcrumb"] li, [aria-label="breadcrumb"] a, [aria-label="面包屑"] a');
       if (bcs.length) {
         var last = bcs[bcs.length - 1];
         if (last && isVisible(last)) {
@@ -188,12 +322,12 @@
     }
 
     function extractActiveMenu() {
-      var cur = document.querySelector('[aria-current="page"]');
+      var cur = queryDeep('[aria-current="page"]');
       if (cur) {
         var t = (cur.innerText || cur.textContent || '').trim();
         if (t) return t.slice(0, 60);
       }
-      var containers = document.querySelectorAll('nav, aside, [role="menu"], [role="navigation"], [role="menubar"]');
+      var containers = queryAllDeep('nav, aside, [role="menu"], [role="navigation"], [role="menubar"]');
       for (var c = 0; c < containers.length; c++) {
         var actives = containers[c].querySelectorAll('.' + ACTIVE_CLASSES.join(', .'));
         for (var a = 0; a < actives.length; a++) {
@@ -206,19 +340,74 @@
     }
 
     function countInteractive() {
-      return document.querySelectorAll(INTERACTIVE_SELECTOR).length;
+      return queryAllDeep(INTERACTIVE_SELECTOR).length;
     }
 
     // DOM 内容长度/结构变化信号：元素总数 + 限量文本长度组合。
     // 不用 body.innerHTML（整页序列化大字符串成本高、每步两次），该信号只用于变化对比，无需可读。
     function domLength() {
       try {
-        var n = document.getElementsByTagName('*').length;
-        var t = (document.body && document.body.textContent) ? document.body.textContent.length : 0;
+        var roots = collectContexts();
+        var n = 0;
+        var t = 0;
+        for (var i = 0; i < roots.length; i++) {
+          n += safeAll(roots[i], '*').length;
+          var body = roots[i].body || roots[i];
+          t += body && body.textContent ? body.textContent.length : 0;
+        }
         return n * 131071 + Math.min(t, 131070);
       } catch (e) {
         return 0;
       }
+    }
+
+    function domDigest() {
+      try {
+        var nodes = queryAllDeep(
+          '[role="alert"], [role="status"], [aria-live], .alert, .message, .toast, .notification, ' +
+          '.el-message, .ant-message, .layui-layer-msg, .van-toast, .success, .error'
+        );
+        var hash = 2166136261;
+        var count = 0;
+        for (var i = 0; i < nodes.length; i++) {
+          if (!isVisible(nodes[i])) continue;
+          var text = String(nodes[i].innerText || nodes[i].textContent || '').slice(0, 1000);
+          for (var j = 0; j < text.length; j++) hash = Math.imul(hash ^ text.charCodeAt(j), 16777619);
+          count++;
+        }
+        return count + ':' + (hash >>> 0).toString(16);
+      } catch (e) { return ''; }
+    }
+
+    function statusMessages() {
+      var nodes = queryAllDeep(
+        '[role="alert"], [role="status"], [aria-live], .alert, .message, .toast, .notification, ' +
+        '.el-message, .ant-message, .layui-layer-msg, .van-toast, .success, .error'
+      );
+      var out = [];
+      for (var i = 0; i < nodes.length && out.length < 12; i++) {
+        if (!isVisible(nodes[i])) continue;
+        var text = String(nodes[i].innerText || nodes[i].textContent || '').trim();
+        if (text && out.indexOf(text) < 0) out.push(text.slice(0, 300));
+      }
+      return out;
+    }
+
+    function framesSummary() {
+      var frames = queryAllDeep('iframe, frame');
+      var out = [];
+      for (var i = 0; i < frames.length && out.length < 30; i++) {
+        var accessible = false;
+        try { accessible = !!frames[i].contentDocument; } catch (e) {}
+        var us = null;
+        try { us = uniqueSelector(frames[i]); } catch (e) {}
+        out.push({
+          selector: us && us.selector || '',
+          src: String(frames[i].src || '').slice(0, 300),
+          accessible: accessible
+        });
+      }
+      return out;
     }
 
     // 表单值摘要：select/input 写入仅改 .value，不改 URL/标题/计数/DOM 长度——
@@ -226,22 +415,24 @@
     // 跳过 file/password（值不稳定或敏感），checkbox/radio 取 checked。
     function formDigest() {
       try {
-        var els = document.querySelectorAll('input, select, textarea');
-        var parts = [];
-        var total = 0;
-        for (var i = 0; i < els.length && total < 4000; i++) {
+        var els = queryAllDeep('input, select, textarea, [contenteditable="true"], [role="textbox"]');
+        var hash = 2166136261;
+        var count = 0;
+        for (var i = 0; i < els.length; i++) {
           var e = els[i];
           var t = (e.type || '').toLowerCase();
-          if (t === 'file' || t === 'password' || t === 'hidden' || t === 'submit' || t === 'button') continue;
+          if (t === 'password' || t === 'hidden' || t === 'submit' || t === 'button') continue;
           var v = '';
-          if (t === 'checkbox' || t === 'radio') v = e.checked ? '1' : '0';
+          if (t === 'file') v = e.files ? Array.from(e.files).map(function (f) { return f.name + ':' + f.size; }).join(',') : '';
+          else if (t === 'checkbox' || t === 'radio') v = e.checked ? '1' : '0';
+          else if (e.isContentEditable) v = String(e.textContent || '');
           else { try { v = String(e.value == null ? '' : e.value); } catch (err) { v = ''; } }
           var name = (e.name || e.id || (e.getAttribute && e.getAttribute('aria-label')) || i);
           var piece = String(name).slice(0, 40) + ':' + t + '=' + v.slice(0, 80);
-          parts.push(piece);
-          total += piece.length + 1;
+          for (var pi = 0; pi < piece.length; pi++) hash = Math.imul(hash ^ piece.charCodeAt(pi), 16777619);
+          count++;
         }
-        return parts.join('|');
+        return count + ':' + (hash >>> 0).toString(16);
       } catch (e) {
         return '';
       }
@@ -329,17 +520,34 @@
         activeMenu: extractActiveMenu(),
         interactiveCount: countInteractive(),
         domLen: domLength(),
+        domDigest: domDigest(),
+        statusMessages: statusMessages(),
+        framesSummary: framesSummary(),
         formDigest: formDigest()
       }));
     }
 
     function snapshot() {
-      var all = document.querySelectorAll(INTERACTIVE_SELECTOR);
+      var all = queryAllDeep(INTERACTIVE_SELECTOR);
+      // 大型后台页面常有数百菜单项。优先保留可见表单控件和可操作控件，
+      // 避免前 200 个导航链接把页面深处的表单挤出快照。
+      var ordered = all.slice().sort(function (a, b) {
+        function score(el) {
+          var s = isVisible(el) ? 100 : 0;
+          var tag = el.tagName || '';
+          if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') s += 60;
+          if (tag === 'BUTTON' || (el.getAttribute && /button|checkbox|radio|option|textbox/.test(el.getAttribute('role') || ''))) s += 40;
+          if (el.getAttribute && (el.getAttribute('data-testid') || el.getAttribute('name') || el.getAttribute('aria-label'))) s += 20;
+          if (el.disabled) s -= 30;
+          return s;
+        }
+        return score(b) - score(a);
+      });
       var elements = [];
       // 全部 SELECT 的候选预览总预算：多 SELECT 表单若不限量会挤占整个快照（每步都发给大模型）
       var optionsBudget = 500;
-      for (var i = 0; i < all.length && elements.length < 200; i++) {
-        var el = all[i];
+      for (var i = 0; i < ordered.length && elements.length < 300; i++) {
+        var el = ordered[i];
         var tag = el.tagName ? el.tagName.toUpperCase() : '';
         var type = el.getAttribute ? (el.getAttribute('type') || '') : '';
         // files 类型只审查可见性，仍收集
@@ -354,7 +562,7 @@
         var visible = isVisible(el);
         if (!visible) {
           var actionableHidden = el.matches && el.matches(
-            '[data-file-act], [data-act], [data-action], [data-op], .file-action, [role="button"], [onclick], input[type="file"]'
+            '[data-file-act], [data-act], [data-action], [data-op], .file-action, [role="button"], [onclick], input[type="file"], select, .select2-hidden-accessible'
           );
           if (!actionableHidden) continue;
         }
@@ -381,7 +589,10 @@
         try { box = boxKindOf(el); } catch (e) {}
         var value = '';
         try {
-          if ('value' in el) value = String(el.value == null ? '' : el.value).slice(0, 200);
+          var fieldType = String(type || '').toLowerCase();
+          if (fieldType === 'password') value = el.value ? '[REDACTED]' : '';
+          else if (fieldType === 'file') value = el.files ? Array.from(el.files).map(function (f) { return f.name; }).join(', ').slice(0, 200) : '';
+          else if ('value' in el) value = String(el.value == null ? '' : el.value).slice(0, 200);
         } catch (e) { value = ''; }
         var entry = {
           tag: tag,
@@ -390,11 +601,15 @@
           id: el.id || '',
           placeholder: el.getAttribute ? (el.getAttribute('placeholder') || '') : '',
           ariaLabel: el.getAttribute ? (el.getAttribute('aria-label') || '') : '',
+          role: el.getAttribute ? (el.getAttribute('role') || '') : '',
           label: nearestLabel(el) || (el.getAttribute && el.getAttribute('aria-label')) || '',
           value: value,
           text: text,
           disabled: !!el.disabled,
           readOnly: !!el.readOnly,
+          required: !!el.required || !!(el.getAttribute && el.getAttribute('aria-required') === 'true'),
+          accept: el.getAttribute ? (el.getAttribute('accept') || '') : '',
+          multiple: !!el.multiple,
           contentEditable: !!(el.isContentEditable || (el.getAttribute && el.getAttribute('contenteditable') === 'true')),
           unique: !!sel.unique,
           active: inMenuContainer(el) && isMenuActive(el),
@@ -434,7 +649,12 @@
         heading: extractHeading(),
         activeMenu: extractActiveMenu(),
         interactiveCount: all.length,
+        snapshotCount: elements.length,
+        truncated: all.length > elements.length,
         domLen: domLength(),
+        domDigest: domDigest(),
+        statusMessages: statusMessages(),
+        framesSummary: framesSummary(),
         formDigest: formDigest(),
         elements: elements
       }));
@@ -460,9 +680,10 @@
     function dispatchClick(el) {
       function fireMouse(type, target, extra) {
         try {
-          var init = { bubbles: true, cancelable: true, view: window, buttons: 1 };
+          var targetWin = target.ownerDocument && target.ownerDocument.defaultView || window;
+          var init = { bubbles: true, cancelable: true, composed: true, view: targetWin, buttons: 1 };
           if (extra) { for (var k in extra) init[k] = extra[k]; }
-          target.dispatchEvent(new MouseEvent(type, init));
+          target.dispatchEvent(new targetWin.MouseEvent(type, init));
         } catch (e) {}
       }
       try {
@@ -493,7 +714,23 @@
       '.dropdown-item, .dropdown-menu li a, ' +
       '.select2-results__option, .chosen-results li, .active-result, ' +
       '.ui-menu-item, .ui-menu-item-wrapper, .combobox-item, .combo-p li, ' +
-      'li[data-value], [data-value], option';
+      'li[data-value], dd[data-value], div[role="option"]';
+
+    var POPUP_SEL = [
+      '.el-select-dropdown', '.el-popper', '.el-cascader__dropdown',
+      '.ant-select-dropdown', '.ant-cascader-dropdown',
+      '.ivu-select-dropdown', '.layui-form-select .layui-anim',
+      '.select2-dropdown', '.chosen-drop',
+      '.dropdown-menu.show', '.dropdown-menu[style*="display: block"]',
+      '.combo-p', '.combo-panel', '.combobox-item-wrapper',
+      '.n-select-menu', '.n-base-select-menu',
+      '.rc-virtual-list', '.van-popup', '.van-popover',
+      '[role="listbox"]', '[role="presentation"].el-select-dropdown'
+    ].join(', ');
+
+    var WIDGET_SEL = '.el-select, .el-cascader, .ant-select, .ivu-select, .layui-form-select, ' +
+      '.select2-container, .chosen-container, .n-select, .van-dropdown-menu, .combo, ' +
+      '.bootstrap-select, [role="combobox"]';
 
     // 规范化文本：去全部空白并小写——消除选项换行/全半角空格/大小写差异造成的误匹配
     function normText(s) {
@@ -501,21 +738,25 @@
     }
 
     // 匹配等级：0 精确，1 前缀，2 包含，-1 不匹配（基于规范化文本）
+    // 同时允许 needle 比选项更长（模型常把「张文帅(邮箱)」整段传入，而选项只有姓名）
     function rankMatch(t, needle) {
       t = normText(t);
-      if (!t) return -1;
+      needle = normText(needle);
+      if (!t || !needle) return -1;
       if (t === needle) return 0;
-      if (t.indexOf(needle) === 0) return 1;
-      if (t.indexOf(needle) > 0) return 2;
+      if (t.indexOf(needle) === 0 || (needle.indexOf(t) === 0 && t.length >= 2)) return 1;
+      if (t.indexOf(needle) > 0 || (needle.indexOf(t) > 0 && t.length >= 2)) return 2;
       return -1;
     }
+
+    var MAX_LIST_OPTIONS = 500;
 
     // 收集当前可见的选项元素（去重），返回 [{el,text,value,selector}]。
     // selector 默认惰性为空串：uniqueSelector 内部要做整页 querySelectorAll 验证，
     // 在 200ms 轮询热路径上对每个候选项计算会导致 O(选项数×文档大小) 的主线程扫描。
     // 仅在确需暴露 selector 的调用方（optionTexts/赢家返回）传 withSelector=true。
     function collectOptions(limit, withSelector) {
-      var all = document.querySelectorAll(OPTION_SEL);
+      var all = queryAllDeep(OPTION_SEL);
       var out = [];
       var seen = new Set();
       for (var i = 0; i < all.length && (!limit || out.length < limit); i++) {
@@ -534,6 +775,166 @@
         out.push({ el: e, text: t.slice(0, 80), value: v, selector: s });
       }
       return out;
+    }
+
+    function widgetRoot(trigger) {
+      if (!trigger) return null;
+      try {
+        if (trigger.closest) {
+          var w = trigger.closest(WIDGET_SEL);
+          if (w) return w;
+        }
+      } catch (e) {}
+      return trigger;
+    }
+
+    function isHiddenPopup(el) {
+      if (!el) return true;
+      if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return true;
+      var cn = String(el.className || '');
+      if (/\b(is-hidden|hidden|el-select-dropdown-hidden|ant-select-dropdown-hidden|ivu-select-dropdown-hidden)\b/.test(cn)) return true;
+      return !isVisible(el);
+    }
+
+    function controlledPopup(trigger) {
+      if (!trigger || !trigger.getAttribute) return null;
+      var ids = [trigger.getAttribute('aria-controls'), trigger.getAttribute('aria-owns')];
+      var rootEl = widgetRoot(trigger);
+      if (rootEl && rootEl.getAttribute) {
+        ids.push(rootEl.getAttribute('aria-controls'), rootEl.getAttribute('aria-owns'));
+      }
+      for (var i = 0; i < ids.length; i++) {
+        if (!ids[i]) continue;
+        var root = trigger.getRootNode ? trigger.getRootNode() : document;
+        var hit = null;
+        try { hit = root.querySelector('#' + CSS.escape(ids[i])); } catch (e) {}
+        if (!hit) {
+          try { hit = queryDeep('#' + CSS.escape(ids[i])); } catch (e) {}
+        }
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    function popupDistance(trigger, popup) {
+      try {
+        var tr = trigger.getBoundingClientRect();
+        var pr = popup.getBoundingClientRect();
+        var dx = Math.abs((pr.left + pr.right) / 2 - (tr.left + tr.right) / 2);
+        var dy = Math.min(Math.abs(pr.top - tr.bottom), Math.abs(tr.top - pr.bottom), Math.abs(pr.top - tr.top));
+        return dx + dy;
+      } catch (e) { return Infinity; }
+    }
+
+    function findPopupForTrigger(trigger) {
+      var controlled = controlledPopup(trigger);
+      if (controlled && !isHiddenPopup(controlled)) return controlled;
+      var root = widgetRoot(trigger);
+      if (root && root.querySelector) {
+        var inner = root.querySelector('dl, .layui-anim, [role="listbox"], .el-select-dropdown, .dropdown-menu, .combo-panel');
+        if (inner && !isHiddenPopup(inner)) return inner;
+      }
+      var pops = queryAllDeep(POPUP_SEL);
+      var best = null;
+      var bestDist = Infinity;
+      for (var i = 0; i < pops.length; i++) {
+        if (isHiddenPopup(pops[i])) continue;
+        var dist = popupDistance(trigger, pops[i]);
+        if (dist < bestDist) { bestDist = dist; best = pops[i]; }
+      }
+      // 距离过远的弹层几乎肯定属于别的控件（例如页面上另一个已展开的年份选择器）
+      if (best && bestDist < 480) return best;
+      return null;
+    }
+
+    function isTriggerOpen(trigger) {
+      if (!trigger) return false;
+      function expanded(el) {
+        if (!el || !el.getAttribute) return null;
+        var v = el.getAttribute('aria-expanded');
+        if (v === 'true') return true;
+        if (v === 'false') return false;
+        return null;
+      }
+      var own = expanded(trigger);
+      if (own === true) return true;
+      var root = widgetRoot(trigger);
+      var rootExp = expanded(root);
+      if (rootExp === true) return true;
+      if (root && root.classList) {
+        if (root.classList.contains('is-focus') || root.classList.contains('is-reverse') ||
+            root.classList.contains('ant-select-open') || root.classList.contains('el-select--open') ||
+            root.classList.contains('layui-form-selected') || root.classList.contains('select2-container--open') ||
+            root.classList.contains('ivu-select-visible') || root.classList.contains('n-select--open')) {
+          return true;
+        }
+      }
+      if (own === false && rootExp === false) return false;
+      return !!findPopupForTrigger(trigger);
+    }
+
+    function findArrow(trigger) {
+      var root = widgetRoot(trigger) || trigger;
+      if (!root || !root.querySelector) return null;
+      var hit = root.querySelector('.el-input__suffix, .el-select__caret, .el-icon-arrow-up, .el-icon-arrow-down, .ant-select-arrow, .layui-edge, .select2-selection__arrow, .ivu-select-arrow');
+      return hit || null;
+    }
+
+    function collectOptionsIn(root, limit, withSelector) {
+      if (!root) return [];
+      var nodes = [];
+      function walk(r) {
+        if (!r) return;
+        if (r.matches && r.matches(OPTION_SEL)) nodes.push(r);
+        nodes = nodes.concat(safeAll(r, OPTION_SEL));
+        var all = safeAll(r, '*');
+        for (var i = 0; i < all.length; i++) {
+          if (all[i].shadowRoot) walk(all[i].shadowRoot);
+        }
+      }
+      walk(root);
+      var out = [];
+      var seen = new Set();
+      for (var j = 0; j < nodes.length && (!limit || out.length < limit); j++) {
+        var e = nodes[j];
+        if (seen.has(e)) continue;
+        seen.add(e);
+        if (!isVisible(e)) continue;
+        if (e.tagName === 'OPTION') continue;
+        var t = (e.innerText || e.textContent || '').trim();
+        if (!t) continue;
+        var v = e.getAttribute ? (e.getAttribute('data-value') || e.getAttribute('lay-value') || e.getAttribute('value') || '') : '';
+        var s = '';
+        if (withSelector) {
+          try { var u = uniqueSelector(e); s = u && u.selector ? u.selector : ''; } catch (err) { s = ''; }
+        }
+        out.push({ el: e, text: t.slice(0, 80), value: v, selector: s });
+      }
+      return out;
+    }
+
+    // 只收集「这个触发器」的选项。没有关联弹层时返回空数组，绝不回退到整页——
+    // 否则年份/JCR/其它下拉的可见项会被误当成已经展开，从而既不点击也不搜索。
+    function optionsForTrigger(trigger, limit, withSelector) {
+      var popup = findPopupForTrigger(trigger);
+      if (popup) return collectOptionsIn(popup, limit, withSelector);
+      var root = widgetRoot(trigger);
+      if (root && root !== trigger) {
+        var inner = collectOptionsIn(root, limit, withSelector);
+        if (inner.length) return inner;
+      }
+      return [];
+    }
+
+    function collectOpenPopupOptions(limit, withSelector) {
+      var pops = queryAllDeep(POPUP_SEL).filter(function (p) { return !isHiddenPopup(p); });
+      if (!pops.length) return [];
+      var acc = [];
+      var cap = limit || MAX_LIST_OPTIONS;
+      for (var i = 0; i < pops.length && acc.length < cap; i++) {
+        acc = acc.concat(collectOptionsIn(pops[i], cap - acc.length, withSelector));
+      }
+      return acc;
     }
 
     // 仅为少量确需的元素补算 selector（赢家/歧义候选等，数量受控）
@@ -571,70 +972,415 @@
       return { winner: winners[0] };
     }
 
-    // 选项区滚动加载：把最后一个选项滚入可视区/容器滚到底，触发懒渲染
+    // 选项区滚动：优先按一屏递增（虚拟列表只渲染可见行，跳到底会漏中间项），
+    // 并派发 scroll，以便 Select2 ajax 等在接近底部时请求下一页。
     function scrollOptionArea(list) {
       if (!list.length) return false;
       var last = list[list.length - 1].el;
       try { last.scrollIntoView({ block: 'nearest' }); } catch (e) {}
-      var node = last.parentElement;
-      var scrolled = false;
-      while (node && node !== document.body) {
-        if (node.scrollHeight > node.clientHeight + 20) {
-          var before = node.scrollTop;
-          node.scrollTop = node.scrollHeight;
-          if (node.scrollTop !== before) scrolled = true;
-        }
+      var nodes = [];
+      var node = last;
+      var depth = 0;
+      while (node && node !== document.body && depth < 12) {
+        nodes.push(node);
         node = node.parentElement;
+        depth++;
+      }
+      var scrolled = false;
+      var seen = new Set();
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        if (!el || seen.has(el)) continue;
+        seen.add(el);
+        if (el.scrollHeight <= el.clientHeight + 12) continue;
+        var before = el.scrollTop;
+        var step = Math.max(el.clientHeight - 24, 48);
+        el.scrollTop = Math.min(before + step, el.scrollHeight);
+        try { el.dispatchEvent(new Event('scroll', { bubbles: true })); } catch (e) {}
+        if (el.scrollTop !== before) scrolled = true;
       }
       return scrolled;
     }
 
-    // 向输入框键入关键词（原生 setter + input/keyup/keydown），驱动可搜索下拉过滤
-    function typeInto(el, val) {
-      try { if (typeof el.focus === 'function') el.focus(); } catch (e) {}
-      var proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, String(val));
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('keydown', { bubbles: true }));
-      el.dispatchEvent(new Event('keyup', { bubbles: true }));
+    function optionKey(item) {
+      return normText(item && item.text) + '\0' + String((item && item.value) || '');
     }
 
-    // 找可搜索下拉的过滤输入框：优先展开弹层内的 input，其次触发器自身/内部的非只读 input
-    function findSearchInput(trigger) {
-      var sels = ['.el-select-dropdown input', '.el-select-dropdown__filter input',
-        '.select2-dropdown input.select2-search__field', '.select2-search input',
-        '.chosen-search input', '.dropdown-menu input[type="text"]',
-        '.combo-p input', '.layui-form-selected input', '[role="listbox"] input'];
-      for (var i = 0; i < sels.length; i++) {
-        var all = document.querySelectorAll(sels[i]);
-        for (var j = 0; j < all.length; j++) {
-          if (isVisible(all[j]) && !all[j].disabled && !all[j].readOnly) return all[j];
+    function serializeOptions(list, max) {
+      var n = Math.max(1, Math.min(Number(max) || MAX_LIST_OPTIONS, MAX_LIST_OPTIONS));
+      var out = [];
+      for (var i = 0; i < list.length && out.length < n; i++) {
+        out.push({
+          t: String(list[i].text || '').slice(0, 80),
+          v: String(list[i].value || '').slice(0, 80)
+        });
+      }
+      return out;
+    }
+
+    function catalogPayload(list, extra) {
+      extra = extra || {};
+      var options = serializeOptions(list, extra.max);
+      return {
+        ok: extra.ok !== false,
+        kind: extra.kind || 'query',
+        reason: extra.reason || '',
+        query: extra.query || '',
+        opened: extra.opened !== false,
+        searchAvailable: !!extra.searchAvailable,
+        via: extra.via || '',
+        count: options.length,
+        truncated: !!(extra.truncated || list.length > options.length),
+        options: options
+      };
+    }
+
+    // 通用过滤词：原文 + 按空白/标点切出的片段。不针对姓名/邮箱等业务类型。
+    function filterQueries(raw) {
+      var s = String(raw || '').trim();
+      var out = [];
+      var seen = {};
+      function add(x) {
+        x = String(x || '').trim();
+        if (!x || x.length < 2) return;
+        var k = normText(x);
+        if (!k || seen[k]) return;
+        seen[k] = true;
+        out.push(x.length > 80 ? x.slice(0, 80) : x);
+      }
+      add(s);
+      var parts = s.split(/[\s,;|/\\()（）\[\]【】<>《》:：'"`]+/);
+      for (var i = 0; i < parts.length; i++) add(parts[i]);
+      return out;
+    }
+
+    function sleepMs(ms) {
+      return new Promise(function (resolve, reject) {
+        var start = Date.now();
+        var t = setInterval(function () {
+          if (scriptAborted) { clearInterval(t); reject(new Error('已停止')); return; }
+          if (Date.now() - start >= ms) { clearInterval(t); resolve(); }
+        }, 50);
+      });
+    }
+
+    async function ensureOpenDropdown(trigger) {
+      if (isTriggerOpen(trigger) && findPopupForTrigger(trigger)) return true;
+      var attempts = 0;
+      while (attempts < 3) {
+        attempts++;
+        var arrow = findArrow(trigger);
+        dispatchClick(arrow && attempts > 1 ? arrow : trigger);
+        var until = Date.now() + 900;
+        while (Date.now() < until) {
+          await sleepMs(120);
+          if (findPopupForTrigger(trigger) || isTriggerOpen(trigger)) return true;
         }
       }
-      if (trigger && trigger.tagName === 'INPUT' && !trigger.readOnly && !trigger.disabled && isVisible(trigger)) return trigger;
-      if (trigger && trigger.querySelector) {
-        var inner = trigger.querySelector('input:not([readonly]):not([disabled])');
-        if (inner && isVisible(inner)) return inner;
+      return !!(isTriggerOpen(trigger) || findPopupForTrigger(trigger));
+    }
+
+    async function applyFilterQuery(trigger, q) {
+      var si = findSearchInput(trigger);
+      if (!si) return false;
+      var before = optionsForTrigger(trigger, 80).map(function (x) { return x.text; }).join('\n');
+      typeInto(si, q);
+      var until = Date.now() + 1400;
+      while (Date.now() < until) {
+        await sleepMs(160);
+        var now = optionsForTrigger(trigger, 80).map(function (x) { return x.text; }).join('\n');
+        if (now !== before) break;
+      }
+      return true;
+    }
+
+    // 滚动收割本控件选项。虚拟列表节点会复用，必须按 text+value 去重，不能按 DOM 节点。
+    async function harvestOptions(trigger, max) {
+      var limit = Math.max(1, Math.min(Number(max) || MAX_LIST_OPTIONS, MAX_LIST_OPTIONS));
+      var seen = {};
+      var acc = [];
+      var stagnant = 0;
+      for (var round = 0; round < 90 && acc.length < limit; round++) {
+        var list = optionsForTrigger(trigger, limit);
+        var added = 0;
+        for (var i = 0; i < list.length && acc.length < limit; i++) {
+          var k = optionKey(list[i]);
+          if (!k || seen[k]) continue;
+          seen[k] = true;
+          acc.push(list[i]);
+          added++;
+        }
+        if (acc.length >= limit) break;
+        if (added === 0) {
+          stagnant++;
+          if (stagnant >= 3) break;
+        } else {
+          stagnant = 0;
+        }
+        var moved = scrollOptionArea(list.length ? list : acc);
+        if (!moved && added === 0) break;
+        await sleepMs(80);
+      }
+      return acc;
+    }
+
+    function nativeOptionList(sel, max) {
+      var limit = Math.max(1, Math.min(Number(max) || MAX_LIST_OPTIONS, MAX_LIST_OPTIONS));
+      var list = [];
+      var opts = sel.options || [];
+      for (var i = 0; i < opts.length && list.length < limit; i++) {
+        list.push({ el: opts[i], text: (opts[i].text || '').trim(), value: String(opts[i].value) });
+      }
+      return { list: list, truncated: opts.length > list.length };
+    }
+
+    // 向输入框键入关键词（原生 setter + input/keyup/keydown），驱动可搜索下拉过滤
+    function typeInto(el, val) {
+      if (!el) return;
+      var win = el.ownerDocument && el.ownerDocument.defaultView || window;
+      try { if (typeof el.focus === 'function') el.focus(); } catch (e) {}
+      var text = String(val);
+      if (el.isContentEditable) {
+        el.textContent = text;
+      } else {
+        var proto = el.tagName === 'TEXTAREA' ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
+        try { Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, text); }
+        catch (e) { try { el.value = text; } catch (e2) {} }
+      }
+      try {
+        el.dispatchEvent(new win.InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: text }));
+      } catch (e) {
+        el.dispatchEvent(new win.Event('input', { bubbles: true, composed: true }));
+      }
+      el.dispatchEvent(new win.Event('change', { bubbles: true, composed: true }));
+      var last = text.slice(-1) || 'a';
+      try {
+        el.dispatchEvent(new win.KeyboardEvent('keydown', { bubbles: true, composed: true, key: last, code: 'Key' + last.toUpperCase() }));
+        el.dispatchEvent(new win.KeyboardEvent('keyup', { bubbles: true, composed: true, key: last, code: 'Key' + last.toUpperCase() }));
+      } catch (e) {
+        el.dispatchEvent(new win.Event('keydown', { bubbles: true }));
+        el.dispatchEvent(new win.Event('keyup', { bubbles: true }));
+      }
+    }
+
+    function isSearchTypedInput(el) {
+      if (!el) return false;
+      if (el.disabled) return false;
+      if (el.isContentEditable) return isVisible(el);
+      if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return false;
+      var type = String(el.type || 'text').toLowerCase();
+      if (el.tagName === 'INPUT' && type && !/^(text|search|email|tel|url|number)?$/.test(type)) return false;
+      return isVisible(el) || el === arguments[1];
+    }
+
+    // 找可搜索下拉的过滤输入框：只在本触发器组件或已关联弹层内找，禁止拿页面上第一个可见搜索框
+    function findSearchInput(trigger) {
+      var popup = findPopupForTrigger(trigger);
+      var root = widgetRoot(trigger);
+      var scopes = [];
+      if (popup) scopes.push(popup);
+      if (root) scopes.push(root);
+      if (trigger && scopes.indexOf(trigger) < 0) scopes.push(trigger);
+
+      function pick(scope) {
+        if (!scope) return null;
+        if (isSearchTypedInput(scope, trigger)) return scope;
+        var nodes = [];
+        try { nodes = safeAll(scope, 'input, textarea, [contenteditable="true"]'); } catch (e) { nodes = []; }
+        for (var i = 0; i < nodes.length; i++) {
+          if (isSearchTypedInput(nodes[i], trigger)) return nodes[i];
+        }
+        return null;
+      }
+      for (var s = 0; s < scopes.length; s++) {
+        var hit = pick(scopes[s]);
+        if (hit) return hit;
       }
       return null;
     }
 
     // 自定义组件接管的隐藏原生 SELECT：定位其可见组件部分作为新触发器
     function widgetForHiddenSelect(sel) {
+      if (!sel) return null;
       var sib = sel.nextElementSibling;
       if (sib) {
         if (sib.matches && sib.matches('.select2-container')) return sib.querySelector('.select2-selection') || sib;
-        if (sib.matches && sib.matches('.chosen-container')) return sib;
+        if (sib.matches && sib.matches('.chosen-container, .selectize-control')) return sib;
+      }
+      if (sel.id) {
+        var s2 = null;
+        try { s2 = document.getElementById('select2-' + sel.id + '-container'); } catch (e) {}
+        if (s2) {
+          try { return s2.closest('.select2-selection') || s2.closest('.select2-container') || s2; } catch (e) { return s2; }
+        }
+        var ch = null;
+        try { ch = document.getElementById(sel.id + '_chosen'); } catch (e) {}
+        if (ch) return ch;
       }
       var p = sel.parentElement;
       if (p) {
         if (p.classList && p.classList.contains('bootstrap-select')) return p.querySelector('.dropdown-toggle') || p;
         if (p.classList && p.classList.contains('combo')) return p.querySelector('.combo-text, .combo-arrow') || p;
+        var innerS2 = p.querySelector && p.querySelector('.select2-container .select2-selection, .select2-container');
+        if (innerS2) return innerS2;
       }
       return null;
     }
     function hasWidgetFor(sel) {
       try { return !!widgetForHiddenSelect(sel); } catch (e) { return false; }
+    }
+
+    // 从容器 / Select2 可见壳 / 隐藏 select 反查真正的 SELECT。
+    // Select2 的 DOM 是 select + 兄弟 .select2-container，closest('select') 从可见壳向上找不到。
+    function findAssociatedSelect(el) {
+      if (!el || el.nodeType !== 1) return null;
+      if (el.tagName === 'SELECT') return el;
+      try {
+        var up = el.closest && el.closest('select');
+        if (up) return up;
+      } catch (e) {}
+      try {
+        var down = el.querySelector && el.querySelector('select');
+        if (down) return down;
+      } catch (e) {}
+      var node = el;
+      for (var hop = 0; hop < 6 && node; hop++) {
+        var prev = node.previousElementSibling;
+        if (prev && prev.tagName === 'SELECT') return prev;
+        if (prev && prev.querySelector) {
+          var inner = prev.querySelector('select');
+          if (inner) return inner;
+        }
+        node = node.parentElement;
+      }
+      var wrap = null;
+      try { wrap = el.closest && el.closest('.select2-container, .chosen-container, .bootstrap-select, .combo, .selectize-control'); } catch (e) {}
+      if (wrap) {
+        if (wrap.previousElementSibling && wrap.previousElementSibling.tagName === 'SELECT') return wrap.previousElementSibling;
+        var host = wrap.parentElement;
+        if (host) {
+          var hs = host.querySelector('select');
+          if (hs) return hs;
+        }
+      }
+      var rid = el.id || '';
+      if (!rid && el.querySelector) {
+        var named = el.querySelector('[id^="select2-"][id$="-container"]');
+        if (named) rid = named.id;
+      }
+      var m = String(rid).match(/^select2-(.+)-container$/);
+      if (m) {
+        var origin = document.getElementById(m[1]);
+        if (origin && origin.tagName === 'SELECT') return origin;
+      }
+      return null;
+    }
+
+    function resolveWidget(el) {
+      var sel = findAssociatedSelect(el);
+      var widget = sel ? widgetForHiddenSelect(sel) : null;
+      if (!widget && el) {
+        try {
+          if (el.matches && el.matches('.select2-selection, [role="combobox"]')) widget = el;
+          else if (el.closest) {
+            var c = el.closest('.select2-container, .chosen-container, .bootstrap-select, .combo, .selectize-control');
+            if (c) widget = c.querySelector('.select2-selection, .chosen-single, .dropdown-toggle, [role="combobox"]') || c;
+          }
+        } catch (e) {}
+      }
+      if (sel && isVisible(sel) && !widget) return { trigger: sel, native: sel, decorated: null };
+      if (sel && widget) return { trigger: widget, native: null, decorated: sel };
+      if (sel) return { trigger: widget || sel, native: isVisible(sel) ? sel : null, decorated: isVisible(sel) ? null : sel };
+      return { trigger: widget || el, native: null, decorated: null };
+    }
+
+    function pageJQuery(el) {
+      var win = (el && el.ownerDocument && el.ownerDocument.defaultView) || window;
+      var jq = win.jQuery || win.$;
+      if (jq && typeof jq === 'function' && jq.fn) return jq;
+      return null;
+    }
+
+    // Select2 官方选值是 $el.val(v).trigger('change')；jQuery trigger 不会自动变成原生 Event。
+    // Chosen / bootstrap-select / Selectize / easyUI 同样要走插件 API，否则 UI 与校验不同步。
+    function applyWidgetValue(sel, value, text) {
+      var notified = [];
+      var jq = pageJQuery(sel);
+      if (jq) {
+        try {
+          var $el = jq(sel);
+          try { $el.val(value); } catch (e) {}
+          var sib = sel.nextElementSibling;
+          var sibCls = String((sib && sib.className) || '');
+          var isSelect2 = false;
+          try {
+            isSelect2 = $el.hasClass('select2-hidden-accessible') || !!$el.data('select2') ||
+              /\bselect2-container\b/.test(sibCls);
+          } catch (e) { isSelect2 = /\bselect2-container\b/.test(sibCls); }
+          if (isSelect2) {
+            try { $el.trigger('change'); } catch (e) {}
+            try {
+              $el.trigger({
+                type: 'select2:select',
+                params: { data: { id: value, text: text || value, element: sel } }
+              });
+            } catch (e) {}
+            notified.push('select2');
+          }
+          try {
+            if ($el.data('chosen') || /\bchosen-container\b/.test(sibCls)) {
+              $el.trigger('chosen:updated');
+              $el.trigger('change');
+              notified.push('chosen');
+            }
+          } catch (e) {}
+          try {
+            if (typeof $el.selectpicker === 'function' &&
+              ($el.hasClass('selectpicker') || (sel.parentElement && sel.parentElement.classList.contains('bootstrap-select')))) {
+              $el.selectpicker('val', value);
+              notified.push('bootstrap-select');
+            }
+          } catch (e) {}
+          try {
+            if (jq.fn && jq.fn.combobox && $el.data('combobox')) {
+              $el.combobox('setValue', value);
+              notified.push('easyui');
+            }
+          } catch (e) {}
+          if (!notified.length) {
+            try { $el.trigger('change'); notified.push('jquery'); } catch (e) {}
+          }
+        } catch (e) {}
+      }
+      try {
+        var sz = sel.selectize;
+        if (sz && typeof sz.setValue === 'function') { sz.setValue(value); notified.push('selectize'); }
+      } catch (e) {}
+      return notified;
+    }
+
+    function syncRelatedValue(sel, value) {
+      try {
+        if (sel.getAttribute && sel.getAttribute('data-value') != null) sel.setAttribute('data-value', String(value));
+      } catch (e) {}
+      var name = sel.getAttribute && sel.getAttribute('name');
+      if (!name) return;
+      var scope = sel.parentElement || document;
+      try {
+        var group = sel.closest && sel.closest('.form-group, .form-field, .form-item, .form-row');
+        if (group) scope = group;
+      } catch (e) {}
+      var extras = [];
+      try { extras = safeAll(scope, 'input[type="hidden"][name="' + CSS.escape(name) + '"]'); } catch (e) {}
+      var win = sel.ownerDocument && sel.ownerDocument.defaultView || window;
+      for (var i = 0; i < extras.length; i++) {
+        if (!extras[i] || extras[i] === sel) continue;
+        try {
+          extras[i].value = String(value);
+          extras[i].dispatchEvent(new win.Event('input', { bubbles: true, composed: true }));
+          extras[i].dispatchEvent(new win.Event('change', { bubbles: true, composed: true }));
+        } catch (e) {}
+      }
     }
 
     // 原生 SELECT 选值：按 精确>前缀>包含 匹配 value 或文本，歧义抛候选项，未命中抛样本
@@ -668,113 +1414,236 @@
         throw new Error('“' + raw + '”匹配到多个不同选项：' + texts.join(' | ') + '。请用更完整的名称重试。');
       }
       var opt = winners[0].el;
-      // 用 HTMLSelectElement 原型 setter 赋值：绕过框架（React 等）对 .value 的拦截（PLAN 补充3）
+      var win = sel.ownerDocument && sel.ownerDocument.defaultView || window;
       try {
-        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, opt.value);
+        Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, 'value').set.call(sel, opt.value);
       } catch (e) {
         sel.value = opt.value;
       }
-      sel.dispatchEvent(new Event('input', { bubbles: true }));
-      sel.dispatchEvent(new Event('change', { bubbles: true }));
-      var verified = sel.value === opt.value;
-      return { ok: true, via: 'native', text: opt.text.trim(), value: opt.value, verified: verified };
+      try { opt.selected = true; } catch (e) {}
+      var plugins = applyWidgetValue(sel, opt.value, opt.text.trim());
+      syncRelatedValue(sel, opt.value);
+      sel.dispatchEvent(new win.Event('input', { bubbles: true, composed: true }));
+      sel.dispatchEvent(new win.Event('change', { bubbles: true, composed: true }));
+      var valid = true, validationMessage = '';
+      try { valid = sel.checkValidity(); validationMessage = String(sel.validationMessage || ''); } catch (e) {}
+      var verified = sel.value === opt.value && valid;
+      return { ok: true, kind: 'mutation', via: plugins.length ? plugins.join('+') : 'native', text: opt.text.trim(), value: opt.value,
+        valid: valid, validationMessage: validationMessage, verified: verified, plugins: plugins };
     }
     // ============ 下拉框共用工具结束 ============
 
-    async function runScript(source) {
-      try {
-        var page = {
-          q: function (sel) { return document.querySelector(sel); },
-          qa: function (sel) { return Array.from(document.querySelectorAll(sel)); },
+    function createPageApi() {
+      var page = {
+          q: function (sel) { return queryDeep(sel); },
+          qa: function (sel) { return queryAllDeep(sel); },
           setVal: function (sel, val) {
             var el = page.q(sel); if (!el) throw new Error('元素未找到: ' + sel);
+            if (el.disabled) throw new Error('元素已禁用，不能填写: ' + sel);
             var isContentEditable = el.isContentEditable ||
               (el.getAttribute && (el.getAttribute('contenteditable') === 'true' || (el.getAttribute('role') === 'textbox' && el.isContentEditable)));
+            if (el.readOnly && !isContentEditable) throw new Error('元素只读，不能直接填写: ' + sel);
+            var win = el.ownerDocument && el.ownerDocument.defaultView || window;
+            function fireValueEvents(target, text) {
+              try {
+                target.dispatchEvent(new win.InputEvent('input', {
+                  bubbles: true, composed: true, inputType: 'insertText', data: String(text)
+                }));
+              } catch (e) {
+                target.dispatchEvent(new win.Event('input', { bubbles: true, composed: true }));
+              }
+              target.dispatchEvent(new win.Event('change', { bubbles: true, composed: true }));
+            }
+            function validityOf(target) {
+              try {
+                return {
+                  valid: typeof target.checkValidity === 'function' ? target.checkValidity() : true,
+                  validationMessage: String(target.validationMessage || '')
+                };
+              } catch (e) { return { valid: true, validationMessage: '' }; }
+            }
             if (isContentEditable) {
               el.focus();
-              el.textContent = String(val);
-              if (typeof document.execCommand === 'function') {
-                try { document.execCommand('selectAll', false, null); } catch (e) {}
-              }
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
+              var inserted = false;
+              try {
+                var doc = el.ownerDocument || document;
+                var sel = doc.getSelection && doc.getSelection();
+                var range = doc.createRange && doc.createRange();
+                if (sel && range) {
+                  range.selectNodeContents(el);
+                  sel.removeAllRanges();
+                  sel.addRange(range);
+                }
+                if (typeof doc.execCommand === 'function') {
+                  inserted = !!doc.execCommand('insertText', false, String(val));
+                }
+              } catch (e) {}
+              if (!inserted) el.textContent = String(val);
+              fireValueEvents(el, val);
               el.blur();
-              return true;
+              var textActual = String(el.textContent || '');
+              return { ok: true, kind: 'mutation', expected: String(val), actual: textActual, verified: textActual === String(val) };
             }
             if (el.tagName === 'TEXTAREA') {
-              var tproto = HTMLTextAreaElement.prototype;
+              var tproto = win.HTMLTextAreaElement.prototype;
               Object.getOwnPropertyDescriptor(tproto, 'value').set.call(el, val);
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-              return true;
+              fireValueEvents(el, val);
+              var tv = validityOf(el);
+              return { ok: true, kind: 'mutation', expected: String(val), actual: String(el.value),
+                valid: tv.valid, validationMessage: tv.validationMessage,
+                verified: String(el.value) === String(val) && tv.valid };
             }
             if (el.tagName === 'INPUT') {
-              Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, val);
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-              return true;
+              var inputType = String(el.type || 'text').toLowerCase();
+              if (inputType === 'checkbox' || inputType === 'radio') throw new Error('复选/单选框请使用 page.setChecked');
+              if (inputType === 'file') throw new Error('文件输入请使用 page.upload');
+              if (/^(button|submit|reset|image)$/.test(inputType)) throw new Error('按钮请使用 page.click');
+              var iproto = win.HTMLInputElement.prototype;
+              Object.getOwnPropertyDescriptor(iproto, 'value').set.call(el, val);
+              fireValueEvents(el, val);
+              var iv = validityOf(el);
+              return { ok: true, kind: 'mutation', expected: String(val), actual: String(el.value),
+                valid: iv.valid, validationMessage: iv.validationMessage,
+                verified: String(el.value) === String(val) && iv.valid };
             }
             throw new Error('不支持对该元素赋值: ' + sel);
           },
           click: function (sel) {
             var el = page.q(sel); if (!el) throw new Error('元素未找到: ' + sel);
+            if (el.disabled || el.getAttribute && el.getAttribute('aria-disabled') === 'true') throw new Error('元素已禁用，不能点击: ' + sel);
             // 派发完整鼠标事件序列（含祖先 hover），兼容悬浮才显示的控件与绑定在 mousedown 上的逻辑
             dispatchClick(el);
-            return true;
+            return { ok: true, kind: 'action', verified: null };
           },
           select: function (sel, valOrLabel) {
             var el = page.q(sel); if (!el) throw new Error('元素未找到: ' + sel);
-            if (el.tagName === 'SELECT') {
-              // 被自定义组件接管的隐藏原生 select：直接赋值不会同步组件 UI，改为给明确提示
-              if (!isVisible(el) && hasWidgetFor(el)) {
-                throw new Error('该原生 SELECT 被自定义组件接管且已隐藏，直接赋值无效。请改用 page.selectOption(组件可见部分选择器, 文本)');
-              }
-              return selectNativeOption(el, String(valOrLabel));
-            }
-            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, String(valOrLabel));
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-            return true;
+            if (el.disabled) throw new Error('元素已禁用，不能选择: ' + sel);
+            var w = resolveWidget(el);
+            if (w.native) return selectNativeOption(w.native, String(valOrLabel));
+            if (w.decorated) return selectNativeOption(w.decorated, String(valOrLabel));
+            if (el.tagName === 'SELECT') return selectNativeOption(el, String(valOrLabel));
+            var ewin = el.ownerDocument && el.ownerDocument.defaultView || window;
+            Object.getOwnPropertyDescriptor(ewin.HTMLInputElement.prototype, 'value').set.call(el, String(valOrLabel));
+            el.dispatchEvent(new ewin.Event('input', { bubbles: true, composed: true }));
+            el.dispatchEvent(new ewin.Event('change', { bubbles: true, composed: true }));
+            return { ok: true, kind: 'mutation', expected: String(valOrLabel), actual: String(el.value), verified: String(el.value) === String(valOrLabel) };
           },
           upload: async function (sel, fileKey) {
-            var el = page.q(sel);
-            if (!el || !(el instanceof HTMLInputElement) || (el.type || '').toLowerCase() !== 'file') throw new Error('文件上传控件未找到: ' + sel);
-            var dataUrl = await page.getFile(fileKey);
-            if (!dataUrl) throw new Error('未找到附加文件: ' + fileKey);
-            var r = await fetch(dataUrl);
-            var blob = await r.blob();
-            var fname = await page.getFileName(fileKey);
-            var file = new File([blob], (fname && fname.name) || 'upload.pdf', { type: blob.type || 'application/octet-stream' });
-            var dt = new DataTransfer();
-            dt.items.add(file);
-            el.files = dt.files;
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-            return file.name;
+            throw new Error('为保护附件内容，上传必须使用 action=execute 的结构化 upload 操作');
           },
           getText: function (sel) {
             var el = page.q(sel);
             return el ? (el.innerText || el.value || null) : null;
           },
+          // 大型页面快照被截断时，按 label/name/placeholder/aria/text 反查控件。
+          findControls: function (text, max) {
+            var needle = normText(text);
+            if (!needle) return [];
+            var all = queryAllDeep(INTERACTIVE_SELECTOR);
+            var found = [];
+            for (var i = 0; i < all.length; i++) {
+              var el = all[i];
+              var fields = [
+                nearestLabel(el),
+                el.getAttribute && el.getAttribute('aria-label'),
+                el.getAttribute && el.getAttribute('placeholder'),
+                el.getAttribute && el.getAttribute('name'),
+                el.innerText || el.textContent || ''
+              ];
+              var rank = -1;
+              for (var j = 0; j < fields.length; j++) {
+                var r = rankMatch(fields[j], needle);
+                if (r >= 0 && (rank < 0 || r < rank)) rank = r;
+              }
+              if (rank < 0) continue;
+              var us = uniqueSelector(el);
+              if (!us || !us.selector) continue;
+              found.push({
+                rank: rank,
+                selector: us.selector,
+                tag: el.tagName || '',
+                type: el.type || '',
+                label: nearestLabel(el),
+                name: el.name || '',
+                placeholder: el.placeholder || ''
+              });
+            }
+            found.sort(function (a, b) { return a.rank - b.rank; });
+            return found.slice(0, Math.max(1, Math.min(Number(max) || 20, 50)));
+          },
           // 下拉框选项候选选择器：覆盖常见自定义下拉（layui/element-ui/ant/vant/select2/chosen/easyUI/jQuery-UI/bootstrap-select 等）
           optionSelector: function () {
             return OPTION_SEL;
           },
-          // 收集当前可见的下拉选项（轮询等待异步渲染）。返回 [{t:文本(≤50), v:value, s:selector}, ...]，最多 max 条
+          // 已展开弹层的可见选项（可能混入其它下拉）。新代码请用 listOptions(触发器, 500)。
           optionTexts: async function (max) {
-            var limit = max || 200;
+            var limit = Math.max(1, Math.min(Number(max) || MAX_LIST_OPTIONS, MAX_LIST_OPTIONS));
             var deadline = Date.now() + 3000;
-            function collect() {
-              var arr = collectOptions(limit, true); // 只读查询一次性返回，selector 字段对外可见故带计算
-              var out = [];
-              for (var i = 0; i < arr.length; i++) out.push({ t: arr[i].text.slice(0, 50), v: arr[i].value, s: arr[i].selector });
-              return out;
-            }
-            var arr = collect();
+            var arr = collectOpenPopupOptions(limit, true);
             while (arr.length === 0 && Date.now() < deadline) {
               await page.sleep(200);
-              arr = collect();
+              arr = collectOpenPopupOptions(limit, true);
             }
-            return arr;
+            return serializeOptions(arr, limit);
+          },
+          // 打开指定下拉并滚动收割最多 max（默认 500）项，供模型挑选。不点击选项。
+          listOptions: async function (triggerSel, max) {
+            var limit = Math.max(1, Math.min(Number(max) || MAX_LIST_OPTIONS, MAX_LIST_OPTIONS));
+            var el = page.q(triggerSel);
+            if (!el) throw new Error('下拉触发器未找到: ' + triggerSel);
+            var w = resolveWidget(el);
+            if (w.native) {
+              var native = nativeOptionList(w.native, limit);
+              return catalogPayload(native.list, { max: limit, truncated: native.truncated, searchAvailable: false, opened: true, via: 'native' });
+            }
+            if (w.decorated && w.decorated.options && w.decorated.options.length) {
+              var deco = nativeOptionList(w.decorated, limit);
+              return catalogPayload(deco.list, {
+                max: limit, truncated: deco.truncated, searchAvailable: false, opened: true, via: 'decorated'
+              });
+            }
+            var opened = await ensureOpenDropdown(w.trigger);
+            var list = await harvestOptions(w.trigger, limit);
+            return catalogPayload(list, {
+              max: limit,
+              opened: opened,
+              searchAvailable: !!findSearchInput(w.trigger),
+              truncated: list.length >= limit
+            });
+          },
+          // 在本控件搜索框输入 query，等待列表刷新后重新收割最多 max 项。
+          filterSelect: async function (triggerSel, query, max) {
+            var q = String(query || '').trim();
+            if (!q) throw new Error('filterSelect: 过滤词为空');
+            var limit = Math.max(1, Math.min(Number(max) || MAX_LIST_OPTIONS, MAX_LIST_OPTIONS));
+            var el = page.q(triggerSel);
+            if (!el) throw new Error('下拉触发器未找到: ' + triggerSel);
+            var w = resolveWidget(el);
+            if (w.native) {
+              var native = nativeOptionList(w.native, limit);
+              return catalogPayload(native.list, {
+                max: limit, truncated: native.truncated, searchAvailable: false, opened: true,
+                query: q, reason: 'nativeSelectHasNoFilter'
+              });
+            }
+            if (w.decorated && w.decorated.options && w.decorated.options.length) {
+              var deco = nativeOptionList(w.decorated, limit);
+              return catalogPayload(deco.list, {
+                max: limit, truncated: deco.truncated, searchAvailable: false, opened: true,
+                query: q, reason: 'decoratedSelectListedFromSource'
+              });
+            }
+            var opened = await ensureOpenDropdown(w.trigger);
+            var typed = await applyFilterQuery(w.trigger, q);
+            var list = await harvestOptions(w.trigger, limit);
+            return catalogPayload(list, {
+              max: limit,
+              opened: opened,
+              searchAvailable: typed || !!findSearchInput(w.trigger),
+              truncated: list.length >= limit,
+              query: q,
+              reason: typed ? '' : 'noSearchInput'
+            });
           },
           // 按文本匹配并点击唯一最优可见选项（精确>前缀>包含；轮询等待）。
           // 命中返回 {ok,text,value,selector}；多个不同候选时抛错并列出候选（宁缺毋滥，不盲选）；未命中抛错并附样本
@@ -786,13 +1655,13 @@
             var deadline = Date.now() + timeout;
             var scrolled = 0;
             while (true) {
-              var list = collectOptions(400);
+              var list = collectOpenPopupOptions(400);
               var r = chooseMatch(list, raw);
               if (r && r.winner) {
                 withSel(r.winner);
                 try { r.winner.el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
                 dispatchClick(r.winner.el);
-                return { ok: true, text: r.winner.text, value: r.winner.value, selector: r.winner.selector };
+                return { ok: true, kind: 'action', text: r.winner.text, value: r.winner.value, selector: r.winner.selector, verified: null };
               }
               if (r && r.ambiguous) {
                 throw new Error('“' + raw + '”匹配到多个不同选项：' + r.ambiguous.join(' | ') + '。请用更完整的名称重试。');
@@ -803,7 +1672,6 @@
                 throw new Error('未找到匹配“' + text + '”的可见下拉选项（可能未展开、异步未渲染完，或文本不完全匹配）。' +
                   (sample.length ? '当前可见部分候选：' + sample.join(' | ') : '当前无任何可见选项。'));
               }
-              // 有选项但无匹配：尝试滚动加载懒渲染的后续选项，再轮询
               if (list.length && scrolled < 6 && scrollOptionArea(list)) scrolled++;
               await page.sleep(200);
             }
@@ -815,7 +1683,7 @@
             var raw = String(text || '').trim();
             var deadline = Date.now() + timeout;
             while (true) {
-              var list = collectOptions(400);
+              var list = collectOpenPopupOptions(400);
               var r = chooseMatch(list, raw);
               if (r && r.winner) { withSel(r.winner); return { selector: r.winner.selector, text: r.winner.text, value: r.winner.value }; }
               if (r && r.ambiguous) return { ambiguous: r.ambiguous };
@@ -823,85 +1691,103 @@
               await page.sleep(200);
             }
           },
-          // 一站式选择下拉项：展开触发器 → （可选）输入关键词搜索过滤 → 唯一最优匹配 → 滚动加载 → 点击 → 验证。
-          // 返回 {ok:true, via, text, value, selector, verified, searchUsed}；歧义/未命中抛错并附候选或样本。
+          // 按模型给出的目标文本选择：先收割最多 500 项匹配；匹配不到且可搜索时用通用片段过滤后再匹配。
+          // 唯一命中则点击；歧义或仍未命中则返回本控件选项目录（kind=query），交给模型决定下一项/过滤词。
           selectOption: async function (triggerSel, text, opts) {
             var o = opts || {};
-            var timeout = o.timeout || 6000;
             var raw = String(text || '').trim();
             if (!raw) throw new Error('selectOption: 目标文本为空');
-            var trigger = page.q(triggerSel);
-            if (!trigger) throw new Error('下拉触发器未找到: ' + triggerSel);
-            // 原生 SELECT：未被自定义组件接管时直接走赋值路径
-            var sel = trigger.tagName === 'SELECT' ? trigger
-              : (trigger.closest ? trigger.closest('select') : null);
-            if (sel && isVisible(sel) && !hasWidgetFor(sel)) return selectNativeOption(sel, raw);
-            if (sel && !isVisible(sel)) {
-              var w = widgetForHiddenSelect(sel);
-              if (w) trigger = w;
+            var el = page.q(triggerSel);
+            if (!el) throw new Error('下拉触发器未找到: ' + triggerSel);
+            var w = resolveWidget(el);
+            if (w.native) return selectNativeOption(w.native, raw);
+            if (w.decorated && w.decorated.options && w.decorated.options.length) {
+              try { return selectNativeOption(w.decorated, raw); } catch (e) { /* 静态 option 未命中时再走弹层搜索 */ }
             }
-            var deadline = Date.now() + timeout;
-            var searchUsed = false;
-            var scrolled = 0;
-            var opened = false;
-            var emptyRounds = 0;
-            while (true) {
-              var list = collectOptions(400);
-              if (list.length === 0 && !opened) {
-                dispatchClick(trigger); // 展开（只在尚未展开时点击，避免重复点击收拢）
-                opened = true;
-                await page.sleep(150);
-                if (Date.now() >= deadline) break;
-                continue;
+
+            var trigger = w.trigger;
+            var queries = filterQueries(raw);
+            var opened = await ensureOpenDropdown(trigger);
+            var searchAvailable = !!findSearchInput(trigger);
+            var harvested = await harvestOptions(trigger, MAX_LIST_OPTIONS);
+            var usedQuery = '';
+
+            function matchHarvest(list) {
+              var ambiguous = null;
+              for (var i = 0; i < queries.length; i++) {
+                var r = chooseMatch(list, queries[i]);
+                if (r && r.winner) return r;
+                if (r && r.ambiguous && !ambiguous) ambiguous = r;
               }
-              if (list.length === 0 && opened) {
-                // 自动补全型（jQuery-UI autocomplete / easyUI combobox 等）：需要键入关键词才渲染选项
-                emptyRounds++;
-                if (emptyRounds >= 3 && !searchUsed) {
-                  var si0 = findSearchInput(trigger);
-                  if (si0) { typeInto(si0, raw); searchUsed = true; }
-                }
-                if (Date.now() >= deadline) break;
-                await page.sleep(200);
-                continue;
-              }
-              if (list.length) {
-                var r = chooseMatch(list, raw);
-                if (r && r.winner) {
-                  withSel(r.winner);
-                  try { r.winner.el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
-                  dispatchClick(r.winner.el);
-                  await page.sleep(150);
-                  // 选中信号：弹层收拢 / aria-selected / 常见选中类名
-                  var stillOpen = collectOptions(200).length > 0;
-                  var cls = String(r.winner.el.className || '');
-                  var marked = /selected|layui-this|is-checked|chosen/.test(cls) ||
-                    (r.winner.el.getAttribute && r.winner.el.getAttribute('aria-selected') === 'true');
-                  return { ok: true, via: 'custom', text: r.winner.text, value: r.winner.value,
-                    selector: r.winner.selector, verified: !!(marked || !stillOpen), searchUsed: searchUsed };
-                }
-                if (r && r.ambiguous) {
-                  throw new Error('“' + raw + '”匹配到多个不同选项：' + r.ambiguous.join(' | ') +
-                    '。请用更完整的名称重试，或向用户确认具体名称。');
-                }
-                // 有选项但无匹配：先试搜索过滤，再滚动加载
-                if (!searchUsed) {
-                  var si = findSearchInput(trigger);
-                  if (si) { typeInto(si, raw); searchUsed = true; await page.sleep(300); continue; }
-                }
-                if (scrolled < 6 && scrollOptionArea(list)) { scrolled++; continue; }
-              }
-              if (Date.now() >= deadline) break;
-              await page.sleep(200);
+              return ambiguous;
             }
-            var tail = collectOptions(200);
-            var diag = [];
-            for (var d = 0; d < tail.length && diag.length < 15; d++) diag.push(tail[d].text);
-            throw new Error('选择“' + raw + '”失败：' + (opened ? '下拉已展开但' : '下拉未能展开且') +
-              '未找到匹配项' + (searchUsed ? '（已用关键词搜索过滤）' : '') + '。' +
-              (diag.length ? '当前可见部分候选：' + diag.join(' | ') : '当前无任何可见选项，请检查触发器选择器是否正确。'));
+
+            async function clickWinner(winner) {
+              withSel(winner);
+              try { winner.el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+              dispatchClick(winner.el);
+              var verifyUntil = Date.now() + 800;
+              var verified = false;
+              while (Date.now() < verifyUntil) {
+                var cls = String(winner.el.className || '');
+                var marked = /selected|layui-this|is-checked|chosen|ant-select-item-option-selected/.test(cls) ||
+                  (winner.el.getAttribute && winner.el.getAttribute('aria-selected') === 'true');
+                var triggerValue = '';
+                try { triggerValue = String(('value' in trigger ? trigger.value : '') || trigger.innerText || trigger.textContent || ''); } catch (e) {}
+                var triggerMatched = rankMatch(triggerValue, raw) >= 0 || rankMatch(triggerValue, winner.text) >= 0;
+                var optionClosed = !winner.el.isConnected || !isVisible(winner.el);
+                verified = !!(marked || triggerMatched || optionClosed);
+                if (verified) break;
+                await page.sleep(100);
+              }
+              return { ok: true, kind: 'mutation', via: 'custom', text: winner.text, value: winner.value,
+                selector: winner.selector, verified: verified, searchUsed: !!usedQuery };
+            }
+
+            var matched = matchHarvest(harvested);
+            if (matched && matched.winner) return await clickWinner(matched.winner);
+            if (matched && matched.ambiguous) {
+              return catalogPayload(harvested, {
+                ok: false, reason: 'ambiguous', opened: opened, searchAvailable: searchAvailable,
+                truncated: harvested.length >= MAX_LIST_OPTIONS, query: usedQuery
+              });
+            }
+
+            if (searchAvailable) {
+              for (var qi = 0; qi < queries.length; qi++) {
+                usedQuery = queries[qi];
+                var typed = await applyFilterQuery(trigger, usedQuery);
+                if (!typed) break;
+                harvested = await harvestOptions(trigger, MAX_LIST_OPTIONS);
+                matched = matchHarvest(harvested);
+                if (matched && matched.winner) return await clickWinner(matched.winner);
+                if (matched && matched.ambiguous) {
+                  return catalogPayload(harvested, {
+                    ok: false, reason: 'ambiguous', opened: opened, searchAvailable: true,
+                    truncated: harvested.length >= MAX_LIST_OPTIONS, query: usedQuery
+                  });
+                }
+              }
+            }
+
+            return catalogPayload(harvested, {
+              ok: false,
+              reason: harvested.length ? 'notFound' : (opened ? 'emptyList' : 'notOpened'),
+              opened: opened,
+              searchAvailable: searchAvailable,
+              truncated: harvested.length >= MAX_LIST_OPTIONS,
+              query: usedQuery
+            });
           },
-          sleep: function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); },
+          sleep: function (ms) {
+            return new Promise(function (resolve, reject) {
+              var start = Date.now();
+              var t = setInterval(function () {
+                if (scriptAborted) { clearInterval(t); reject(new Error('已停止')); return; }
+                if (Date.now() - start >= ms) { clearInterval(t); resolve(); }
+              }, 50);
+            });
+          },
           // 幂等勾选/取消复选框：target 为选择器或 {text:'文本'}；want 默认 true。
           // 先读当前状态，已是目标状态则不点击——label/包装器点击是 toggle，
           // 盲点击会把已勾选项点成取消。返回 {ok,changed,checked,verified[,note]}。
@@ -912,7 +1798,7 @@
               // 按可见文本定位复选框（歧义抛候选，宁缺毋滥）
               var raw = String(target.text || '').trim();
               if (!raw) throw new Error('setChecked: 目标文本为空');
-              var all = document.querySelectorAll(CHECKBOX_SEL);
+              var all = queryAllDeep(CHECKBOX_SEL);
               var cands = [];
               for (var i = 0; i < all.length; i++) {
                 var e = all[i];
@@ -939,7 +1825,7 @@
             }
             var cur = readBoxChecked(el);
             if (cur === wantB) {
-              return { ok: true, changed: false, checked: cur, verified: true, note: '已是目标状态，未点击' };
+              return { ok: true, kind: 'mutation', changed: false, checked: cur, verified: true, note: '已是目标状态，未点击' };
             }
             dispatchClick(boxClickTarget(el));
             // 等框架把模型状态回写到 input.checked/类名（iView/element 等异步同步）
@@ -947,7 +1833,7 @@
               await page.waitFor(function () { return readBoxChecked(el) === wantB; }, { timeout: 1500, poll: 100 });
             } catch (e) {}
             var now = readBoxChecked(el);
-            return { ok: true, changed: now !== cur, checked: now, verified: now === wantB };
+            return { ok: true, kind: 'mutation', changed: now !== cur, checked: now, verified: now === wantB };
           },
           waitFor: function (test, opts) {
             var o = opts || {};
@@ -958,11 +1844,12 @@
               if (typeof test === 'function') {
                 try { return !!test(); } catch (e) { return false; }
               }
-              try { return !!document.querySelector(test); } catch (e) { return false; }
+              try { return !!queryDeep(test); } catch (e) { return false; }
             }
             if (check()) return Promise.resolve(true);
             return new Promise(function (resolve, reject) {
               var timer = setInterval(function () {
+                if (scriptAborted) { clearInterval(timer); reject(new Error('已停止')); return; }
                 if (check()) { clearInterval(timer); resolve(true); return; }
                 if (Date.now() >= deadline) { clearInterval(timer); reject(new Error('waitFor 超时（' + timeout + 'ms）')); }
               }, poll);
@@ -975,11 +1862,59 @@
             window.__assistantLogs.push(parts.join(' '));
             return parts.length;
           },
-          getFile: function (key) { return window.__assistantPage.__io.getFile(key); },
-          getFileName: function (key) { return window.__assistantPage.__io.getFileName(key); }
+          getFile: function () { throw new Error('附件内容不可在页面 MAIN world 中读取'); },
+          getFileName: function () { throw new Error('附件内容不可在页面 MAIN world 中读取'); }
         };
+      return page;
+    }
+
+    async function runOperations(operations) {
+      scriptAborted = false;
+      var allowed = {
+        setVal: 1, click: 1, select: 1, getText: 1, findControls: 1,
+        optionTexts: 1, clickOptionByText: 1, findOption: 1, selectOption: 1,
+        listOptions: 1, filterSelect: 1,
+        setChecked: 1, sleep: 1, waitFor: 1, probe: 1
+      };
+      var page = createPageApi();
+      var list = Array.isArray(operations) ? operations : [];
+      var results = [];
+      try {
+        for (var i = 0; i < list.length; i++) {
+          if (scriptAborted) throw new Error('已停止');
+          var item = list[i] || {};
+          var op = String(item.op || '');
+          if (!Object.prototype.hasOwnProperty.call(allowed, op) || typeof page[op] !== 'function') {
+            throw new Error('不支持的结构化操作: ' + op);
+          }
+          var args = Array.isArray(item.args) ? item.args : [];
+          var value = await page[op].apply(page, args);
+          results.push({ op: op, value: value });
+        }
+        return {
+          ok: true,
+          result: JSON.stringify({ kind: 'batch', results: results }),
+          probe: probeSignals(),
+          logs: window.__assistantLogs || []
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          error: (e && e.stack) ? e.stack : String(e),
+          probe: probeSignals(),
+          logs: window.__assistantLogs || []
+        };
+      }
+    }
+
+    // 仅保留旧配置兼容。新任务使用 runOperations，避免 strict CSP 页面禁止 new Function。
+    async function runScript(source) {
+      scriptAborted = false;
+      try {
+        var page = createPageApi();
         var fn = new Function('page', 'return (async()=>{\n' + source + '\n})();');
         var result = await fn(page);
+        if (scriptAborted) return { ok: false, error: '已停止', probe: probeSignals(), logs: window.__assistantLogs || [] };
         window.__assistantLogs = window.__assistantLogs || [];
         return { ok: true, result: JSON.stringify(result !== undefined ? result : null), probe: probeSignals(), logs: window.__assistantLogs };
       } catch (e) {
@@ -1008,6 +1943,11 @@
         runScript(script || '').then(function (res) {
           respond(res, res && res.ok !== false);
         });
+      } else if (cmd === 'runOps') {
+        var operations = detail.payload && detail.payload.operations;
+        runOperations(operations || []).then(function (res) {
+          respond(res, res && res.ok !== false);
+        });
       }
     }
     // 只监听捕获阶段一次即可：事件直接 dispatch 到 document 上时，
@@ -1016,8 +1956,14 @@
     document.addEventListener('__ds_req', onReq, true);
 
     window.__assistantPage = {
+      version: BRIDGE_VERSION,
       snapshot: snapshot,
       runScript: runScript,
+      runOperations: runOperations,
+      dispose: function () {
+        document.removeEventListener('__ds_req', onReq, true);
+        document.removeEventListener('__ds_abort', onAbortSignal);
+      },
       __io: {
         getFile: function (key) { return dsReq('getFile', { key: key }).then(function (d) { return d && d.data != null ? d.data : null; }); },
         getFileName: function (key) { return dsReq('getFileName', { key: key }).then(function (d) { return d ? d.data : null; }); }
@@ -1025,9 +1971,11 @@
     };
   }
 
-  if (window.__assistantPage) {
-    // 已安装，跳过
-  } else {
-    install();
-  }
+  if (window.__assistantPage && window.__assistantPage.version === BRIDGE_VERSION) return;
+  try {
+    if (window.__assistantPage && typeof window.__assistantPage.dispose === 'function') {
+      window.__assistantPage.dispose();
+    }
+  } catch (e) {}
+  install();
 })();
