@@ -11,10 +11,11 @@
   if (window.__assistantPanelInjected) return;
   window.__assistantPanelInjected = true;
 
-  // ============ 构建标识（应用名栏显示 分支号-版本号） ============
-  const BUILD_BRANCH = 'dev';
-  const BUILD_VERSION = '0.3.0';
-  const BUILD_TAG = BUILD_BRANCH + '-' + BUILD_VERSION;
+  // 与 manifest 保持单一版本源，避免面板显示 0.3.0、扩展实际为 2.1.0。
+  const BUILD_VERSION = (chrome.runtime && chrome.runtime.getManifest)
+    ? chrome.runtime.getManifest().version
+    : 'unknown';
+  const BUILD_TAG = 'v' + BUILD_VERSION;
 
   // ============ CSS（CSP 安全：通过构造的 CSSStyleSheet 注入） ============
   const CSS_STRING = `
@@ -129,7 +130,7 @@
       border: 1px solid #e6e8f0;
       border-radius: 12px;
       margin: 8px 12px 0;
-      padding: 12px;
+      padding: 12px 12px 80px 12px;
       box-shadow: 0 4px 16px rgba(35, 40, 58, 0.06);
       display: flex;
       flex-direction: column;
@@ -206,10 +207,20 @@
       gap: 6px;
     }
     .provider-row {
-      display: grid;
-      grid-template-columns: 1fr 1.4fr 1fr 1.4fr auto;
+      display: flex;
+      flex-direction: column;
       gap: 5px;
-      align-items: center;
+      padding: 8px;
+      border: 1px solid #e8ebf5;
+      border-radius: 8px;
+      background: #fff;
+    }
+    .provider-field {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      font-size: 11px;
+      color: #5a6072;
     }
     .provider-row input {
       border: 1px solid #d8dbe7;
@@ -219,14 +230,14 @@
       outline: none;
       background: #fff;
       font-family: inherit;
-      min-width: 0;
     }
     .provider-row input:focus {
       border-color: #4f7cff;
       box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.15);
     }
     .provider-del {
-      padding: 5px 8px;
+      align-self: flex-end;
+      padding: 5px 12px;
       font-size: 12px;
       border-radius: 7px;
     }
@@ -239,8 +250,8 @@
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
-      padding-top: 4px;
-      border-top: 1px dashed #e8ebf5;
+      padding-bottom: 8px;
+      border-bottom: 1px dashed #e8ebf5;
     }
     .config-io .io-hint {
       width: 100%;
@@ -285,6 +296,18 @@
     }
     .btn.primary:hover {
       box-shadow: 0 4px 12px rgba(79, 124, 255, 0.4);
+    }
+    .btn.stop {
+      background: #c0392b;
+      border: none;
+      color: #fff;
+      font-weight: 600;
+      align-self: stretch;
+      min-width: 60px;
+    }
+    .btn.stop:hover {
+      background: #a93226;
+      box-shadow: 0 4px 12px rgba(192, 57, 43, 0.35);
     }
     .btn:disabled {
       opacity: 0.6;
@@ -487,6 +510,10 @@
       border-color: #4f7cff;
       background: #f2f5ff;
     }
+    .attach-btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
     .tag-row {
       display: flex;
       gap: 8px;
@@ -555,6 +582,9 @@
   // ============ 状态 ============
   let origin = '';
   let running = false;
+  let stopping = false;
+  let stopWatchId = null;
+  let runningBeforeDisconnect = false;
   const attachedFiles = []; // {key,name,type,size,dataUrl}
   let fileSeq = 0;
   let transcript = []; // {role,text}
@@ -566,6 +596,8 @@
   let currentConfig = null; // 最新配置（用于重建标签下拉）
 
   const MAX_FILES_BYTES = 5 * 1024 * 1024; // 5MB dataUrl 总字节上限
+  const MAX_SINGLE_FILE_BYTES = 8 * 1024 * 1024;
+  const MAX_RUNTIME_FILES_BYTES = 16 * 1024 * 1024;
 
   // ============ DOM 构建（shadow root） ============
   const host = document.createElement('div');
@@ -617,6 +649,12 @@
   // 构建一个 provider 行（名称/Base URL/API Key/模型ID + 删除）
   function addProviderRow(container, data) {
     const row = mk('div', 'provider-row');
+    const makeField = (labelText, input) => {
+      const label = mk('label', 'provider-field');
+      label.appendChild(document.createTextNode(labelText));
+      label.appendChild(input);
+      return label;
+    };
     const name = mk('input', null, { type: 'text', placeholder: '名称', value: (data && data.name) || '' });
     name.dataset.field = 'name';
     const baseURL = mk('input', null, { type: 'text', placeholder: 'Base URL', value: (data && data.baseURL) || '' });
@@ -625,12 +663,12 @@
     apiKey.dataset.field = 'apiKey';
     const models = mk('input', null, { type: 'text', placeholder: '模型ID（逗号分隔）', value: (data && data.models) || '' });
     models.dataset.field = 'models';
-    const del = mk('button', 'btn provider-del', { type: 'button', textContent: '删除', title: '删除该 provider' });
+    const del = mk('button', 'btn provider-del', { type: 'button', textContent: '✕ 删除', title: '删除该 provider' });
     del.addEventListener('click', () => { row.remove(); });
-    row.appendChild(name);
-    row.appendChild(baseURL);
-    row.appendChild(apiKey);
-    row.appendChild(models);
+    row.appendChild(makeField('名称', name));
+    row.appendChild(makeField('Base URL', baseURL));
+    row.appendChild(makeField('API Key', apiKey));
+    row.appendChild(makeField('模型ID（逗号分隔）', models));
     row.appendChild(del);
     container.appendChild(row);
     return row;
@@ -683,6 +721,20 @@
       return label;
     };
 
+    // 配置导入/导出（置于面板顶部）：下载当前配置 JSON / 上传恢复配置（免重装后重新填 API）
+    const configIo = mk('div', 'config-io');
+    configIo.appendChild(mk('div', 'io-hint', { textContent: '导出当前配置为 JSON 备份，或上传 JSON 恢复配置（重装插件后无需重填 API）。' }));
+    const downloadConfigBtn = mk('button', 'btn', { type: 'button', textContent: '⬇ 下载配置' });
+    const uploadConfigBtn = mk('button', 'btn', { type: 'button', textContent: '⬆ 上传配置' });
+    const uploadConfigInput = mk('input');
+    uploadConfigInput.type = 'file';
+    uploadConfigInput.accept = '.json,application/json';
+    uploadConfigInput.style.display = 'none';
+    configIo.appendChild(downloadConfigBtn);
+    configIo.appendChild(uploadConfigBtn);
+    configIo.appendChild(uploadConfigInput);
+    settingsPanel.appendChild(configIo);
+
     // 文本模型 Providers
     const textSection = mk('div', 'provider-section');
     textSection.appendChild(mk('div', 'provider-heading', { textContent: '文本模型 Providers（OpenAI 兼容，可多个 / LiteLLM）' }));
@@ -719,20 +771,6 @@
     const settingsStatus = mk('div', 'settings-status');
     settingsPanel.appendChild(settingsStatus);
 
-    // 配置导入/导出：下载可编辑的样例 JSON / 上传恢复配置（免重装后重新填 API）
-    const configIo = mk('div', 'config-io');
-    configIo.appendChild(mk('div', 'io-hint', { textContent: '导出当前配置为 JSON 备份，或上传 JSON 恢复配置（重装插件后无需重填 API）。' }));
-    const downloadConfigBtn = mk('button', 'btn', { type: 'button', textContent: '⬇ 下载配置' });
-    const uploadConfigBtn = mk('button', 'btn', { type: 'button', textContent: '⬆ 上传配置' });
-    const uploadConfigInput = mk('input');
-    uploadConfigInput.type = 'file';
-    uploadConfigInput.accept = '.json,application/json';
-    uploadConfigInput.style.display = 'none';
-    configIo.appendChild(downloadConfigBtn);
-    configIo.appendChild(uploadConfigBtn);
-    configIo.appendChild(uploadConfigInput);
-    settingsPanel.appendChild(configIo);
-
     const connStatus = mk('div', 'conn-status', { textContent: '正在连接…' });
 
     const attachArea = mk('section', 'attach-area hidden');
@@ -753,11 +791,13 @@
     const userInput = mk('textarea');
     userInput.id = 'userInput';
     userInput.rows = 2;
-    userInput.placeholder = '描述操作，例如：为张三提交事假申请并上传附件\n也可每行输入一条指令，如：\n进入成果反馈页面\n填写事假申请并上传附件';
-    const sendBtn = mk('button', 'btn primary send-btn', { textContent: '发送' });
+    userInput.placeholder = '描述完整工作要求，例如：根据附件为张三提交事假申请\n如需多条独立任务，请每行使用编号或项目符号：\n1. 进入成果反馈页面\n2. 填写申请并上传附件';
+    const sendBtn = mk('button', 'btn primary send-btn', { type: 'button', textContent: '发送' });
+    const stopBtn = mk('button', 'btn stop hidden', { type: 'button', textContent: '停止', title: '停止当前正在执行的任务' });
     inputRow.appendChild(attachBtn);
     inputRow.appendChild(userInput);
     inputRow.appendChild(sendBtn);
+    inputRow.appendChild(stopBtn);
 
     // 输入行下方：两个模型标签选择器（文本 / OCR），切换立即持久化
     const tagRow = mk('div', 'tag-row');
@@ -789,7 +829,7 @@
       systemPromptText, systemPromptOcr, maxSteps, saveBtn, testBtn, settingsStatus,
       downloadConfigBtn, uploadConfigBtn, uploadConfigInput,
       connStatus, attachArea, chips, fileInput, attachBtn,
-      messages, userInput, sendBtn,
+      messages, userInput, sendBtn, stopBtn,
       textTagSelect, ocrTagSelect
     };
   }
@@ -800,9 +840,21 @@
   function storeSet(obj) {
     return new Promise((resolve) => {
       try {
-        chrome.storage.local.set(obj, () => { void chrome.runtime.lastError; resolve(); });
+        chrome.storage.local.set(obj, () => {
+          const err = chrome.runtime.lastError;
+          if (err) {
+            console.warn('storage.local 写入失败:', err.message);
+            if (els && els.connStatus) {
+              els.connStatus.textContent = '本地存储失败：' + err.message + '（请清理对话或附件）';
+              els.connStatus.classList.add('error');
+            }
+            resolve(false);
+          } else {
+            resolve(true);
+          }
+        });
       } catch (e) {
-        resolve();
+        resolve(false);
       }
     });
   }
@@ -823,7 +875,11 @@
   // ============ 会话持久化 ============
   function persistTranscript() {
     if (!canPersist()) return;
-    storeSet({ [trKey()]: transcript });
+    const compact = transcript.slice(-200).map((m) => ({
+      role: m.role,
+      text: String(m.text || '').slice(0, 4000)
+    }));
+    storeSet({ [trKey()]: compact });
   }
   function filesTotalBytes() {
     let total = 0;
@@ -834,11 +890,17 @@
   }
   function persistFiles() {
     if (!canPersist()) return;
-    // 若总体积超上限，仅保留元数据（刷新后需重新添加才能上传）
-    const over = filesTotalBytes() > MAX_FILES_BYTES;
-    const toStore = attachedFiles.map((f) => over
-      ? { key: f.key, name: f.name, type: f.type, size: f.size, kind: f.kind }
-      : { key: f.key, name: f.name, type: f.type, size: f.size, dataUrl: f.dataUrl, kind: f.kind });
+    // 在预算内逐个保存；一个大 PDF 不应连带清空其它小附件。
+    let used = 0;
+    const toStore = attachedFiles.map((f) => {
+      const meta = { key: f.key, name: f.name, type: f.type, size: f.size, kind: f.kind };
+      const len = f.dataUrl ? f.dataUrl.length : 0;
+      if (len && used + len <= MAX_FILES_BYTES) {
+        used += len;
+        meta.dataUrl = f.dataUrl;
+      }
+      return meta;
+    });
     storeSet({ [fileKey()]: toStore });
   }
 
@@ -913,7 +975,10 @@
       const badge = mk('span', 'chip-badge ' + kindBadgeClass(kind), { textContent: kindBadge(kind), title: '类别：' + kind });
       const name = mk('span', 'chip-name', { textContent: f.name || '' });
       name.title = f.name || '';
-      const size = mk('span', 'chip-size', { textContent: fileSizeLabel(f.size || 0) });
+      const size = mk('span', 'chip-size', {
+        textContent: fileSizeLabel(f.size || 0) + (!f.dataUrl ? ' · 需重加' : ''),
+        title: !f.dataUrl ? '附件内容未持久化，请移除后重新添加' : ''
+      });
       const remove = mk('button', 'chip-remove', { textContent: '✕', title: '移除' });
       remove.addEventListener('click', () => {
         attachedFiles.splice(idx, 1);
@@ -942,10 +1007,24 @@
     const arr = Array.from(fileList || []);
     for (const file of arr) {
       try {
+        if ((file.size || 0) > MAX_SINGLE_FILE_BYTES) {
+          addBubble('error', '附件过大，单个文件最多 8MB：' + file.name);
+          continue;
+        }
+        const currentBytes = attachedFiles.reduce((sum, f) => sum + (f.size || 0), 0);
+        if (currentBytes + (file.size || 0) > MAX_RUNTIME_FILES_BYTES) {
+          addBubble('error', '附件总大小最多 16MB；未添加：' + file.name);
+          continue;
+        }
         const dataUrl = await readFileAsDataUrl(file);
         const kind = classifyFile(file.name, file.type);
+        if (attachedFiles.some((f) => f.name === file.name && f.size === file.size && f.dataUrl === dataUrl)) {
+          addBubble('status', '已忽略重复附件：' + file.name);
+          continue;
+        }
         attachedFiles.push({
-          key: 'f' + (++fileSeq),
+          // key 只是上传句柄；加入时间和随机段，避免刷新/新会话复用 f1 导致缓存串件
+          key: 'f' + Date.now().toString(36) + '-' + (++fileSeq).toString(36) + '-' + Math.random().toString(36).slice(2, 8),
           name: file.name,
           type: file.type || '',
           size: file.size || 0,
@@ -959,7 +1038,7 @@
     renderChips();
     persistFiles();
     if (filesTotalBytes() > MAX_FILES_BYTES) {
-      addBubble('status', '附件总体积较大，刷新页面后可能需要重新添加才能上传。');
+      addBubble('status', '附件总体积超过本地持久化预算；当前页面可正常使用，但刷新后未保存内容的附件需要重新添加。');
     }
     els.fileInput.value = '';
   }
@@ -1013,10 +1092,24 @@
   }
 
   // ============ 发送 ============
+  function clearStopWatch() {
+    if (stopWatchId) { clearTimeout(stopWatchId); stopWatchId = null; }
+  }
+
   function setRunning(v) {
     running = v;
+    if (!v) {
+      stopping = false;
+      clearStopWatch();
+    }
     els.sendBtn.disabled = v;
     els.userInput.disabled = v;
+    if (els.attachBtn) els.attachBtn.disabled = v;
+    if (els.stopBtn) {
+      els.stopBtn.classList.toggle('hidden', !v);
+      els.stopBtn.disabled = !v || stopping;
+      els.stopBtn.textContent = stopping ? '停止中' : '停止';
+    }
     if (v) {
       els.sendBtn.textContent = '运行中';
     } else {
@@ -1029,6 +1122,11 @@
     const text = els.userInput.value.trim();
     const hasFiles = attachedFiles.length > 0;
     if (!text && !hasFiles) return;
+    const missing = attachedFiles.filter((f) => !f.dataUrl);
+    if (missing.length) {
+      addBubble('error', '以下附件内容已在刷新后丢失，请移除并重新添加：' + missing.map((f) => f.name).join('、'));
+      return;
+    }
     if (!port || portDead || !origin) {
       addBubble('error', '尚未连接后台，请重新打开扩展。');
       return;
@@ -1043,7 +1141,10 @@
       addBubble('status', '已上传附件：' + attachedFiles.map((f) => f.name).join('、'));
     }
 
-    const files = attachedFiles.map((f) => ({ key: f.key, name: f.name, type: f.type, dataUrl: f.dataUrl, kind: f.kind }));
+    const files = attachedFiles.map((f) => ({
+      key: f.key, name: f.name, type: f.type, size: f.size,
+      dataUrl: f.dataUrl, kind: f.kind
+    }));
     try {
       port.postMessage({ cmd: 'runTask', task: text, files: files });
     } catch (e) {
@@ -1055,16 +1156,31 @@
     els.userInput.focus();
   }
 
-  function sendAsCancel() {
-    if (!running) return;
+  function requestStop() {
+    if (!running || stopping) return;
+    stopping = true;
+    if (els.stopBtn) {
+      els.stopBtn.disabled = true;
+      els.stopBtn.textContent = '停止中';
+    }
     try {
-      port.postMessage({ cmd: 'cancel' });
+      if (port && !portDead) port.postMessage({ cmd: 'cancel' });
     } catch (e) {}
-    addBubble('status', '已请求取消…');
-    setRunning(false);
+    addBubble('status', '正在停止当前任务…');
+    clearStopWatch();
+    // 后台若卡在无法中断的页面脚本里，超时后仍恢复输入，避免面板锁死
+    stopWatchId = setTimeout(() => {
+      stopWatchId = null;
+      if (running) {
+        addBubble('status', '停止已发出；若页面脚本仍在收尾，输入已恢复。');
+        setRunning(false);
+        els.userInput.focus();
+      }
+    }, 12000);
   }
 
   function clearAll() {
+    if (running) requestStop();
     try {
       if (port && !portDead) port.postMessage({ cmd: 'clearHistory' });
     } catch (e) {}
@@ -1156,107 +1272,51 @@
     return { provider: val.slice(0, idx), model: val.slice(idx + 1) };
   }
 
-  // ============ 配置导入 / 导出 ============
-  // apiKey 脱敏掩码：导出的 JSON 不落明文密钥；再导入时同名 provider 自动沿用现有密钥
-  const KEY_MASK = '********';
-  function maskProviders(list) {
-    return (list || []).map((p) => ({
-      name: p.name || 'provider',
-      baseURL: p.baseURL || '',
-      apiKey: p.apiKey ? KEY_MASK : '',
-      models: p.models || ''
-    }));
-  }
-  // 从当前已保存配置中找回同名 provider 的密钥（导入掩码占位时保留旧钥）
-  function preserveKey(kind, name) {
-    const list = (currentConfig && (kind === 'ocr' ? currentConfig.ocrProviders : currentConfig.textProviders)) || [];
-    const hit = list.find((p) => p && p.name === name);
-    return hit && hit.apiKey ? hit.apiKey : '';
-  }
-
-  // 导出当前配置为 JSON（空配置时即带默认 prompt 的可编辑样例）
-  function exportConfig() {
-    const cfg = collectConfig();
-    // 补全默认 system prompt，使空配置下载后也是完整可编辑样例
-    const defs = (currentConfig && currentConfig.defaults) || {};
-    if (!cfg.systemPromptText && defs.systemPromptText) cfg.systemPromptText = defs.systemPromptText;
-    if (!cfg.systemPromptOcr && defs.systemPromptOcr) cfg.systemPromptOcr = defs.systemPromptOcr;
-    const payload = {
-      textProviders: maskProviders(cfg.textProviders),
-      ocrProviders: maskProviders(cfg.ocrProviders),
-      selectedTextTag: cfg.selectedTextTag || null,
-      selectedOcrTag: cfg.selectedOcrTag || null,
-      systemPromptText: cfg.systemPromptText || '',
-      systemPromptOcr: cfg.systemPromptOcr || '',
-      maxSteps: cfg.maxSteps || 15
-    };
-    const json = JSON.stringify(payload, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
+  // ============ 配置导入 / 导出（后台为权威：校验/合并/落库/刷新） ============
+  // 导出：后台 exportPayload 返回严格 7 键 JSON（含 apiKey 明文，重装免重配）；面板仅用 Blob+<a download> 落盘。
+  // 导入：面板原样把文件文本交给后台 importConfig → validateImportConfig 校验/合并 → 回推 configImported + 新 config。
+  function downloadJsonText(json, filename) {
     try {
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'webpage-assistant-config.json';
+      a.download = filename;
       a.style.display = 'none';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 1000);
     } catch (e) {
       addBubble('error', '下载配置失败：' + String(e && e.message || e));
     }
-    setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 1000);
-    els.settingsStatus.textContent = '已导出配置 JSON（apiKey 已脱敏；重新导入时同名 provider 自动沿用现有密钥）';
   }
 
-  // 规范化上传的 JSON：兼容旧配置 {apiBase,apiKey,model,systemPrompt}
-  function normalizeUploadedConfig(obj) {
-    if (!obj || typeof obj !== 'object') return null;
-    const defs = (currentConfig && currentConfig.defaults) || {};
-
-    let textProviders = Array.isArray(obj.textProviders) ? obj.textProviders : [];
-    if (textProviders.length === 0 && (obj.apiBase || obj.model)) {
-      textProviders = [{ name: '默认', baseURL: obj.apiBase || '', apiKey: obj.apiKey || '', models: obj.model || '' }];
+  function exportConfig() {
+    if (!port || portDead) {
+      els.settingsStatus.textContent = '导出失败：未连接后台';
+      return;
     }
-    let ocrProviders = Array.isArray(obj.ocrProviders) ? obj.ocrProviders : [];
-
-    const resolveKey = (kind) => (p) => {
-      // 掩码占位：沿用现有同名 provider 的密钥；无则置空待用户手填
-      const key = (p.apiKey === KEY_MASK) ? preserveKey(kind, p.name || 'provider') : (p.apiKey || '');
-      return {
-        name: p.name || 'provider', baseURL: p.baseURL || p.apiBase || '',
-        apiKey: key, models: p.models || p.model || ''
-      };
-    };
-    return {
-      textProviders: textProviders.map(resolveKey('text')),
-      ocrProviders: ocrProviders.map(resolveKey('ocr')),
-      selectedTextTag: obj.selectedTextTag || null,
-      selectedOcrTag: obj.selectedOcrTag || null,
-      systemPromptText: obj.systemPromptText || obj.systemPrompt || defs.systemPromptText || '',
-      systemPromptOcr: obj.systemPromptOcr || defs.systemPromptOcr || '',
-      maxSteps: Number(obj.maxSteps) || 15
-    };
+    try { port.postMessage({ cmd: 'exportConfig' }); } catch (e) {
+      els.settingsStatus.textContent = '导出失败：' + String(e && e.message || e);
+    }
   }
 
   async function importConfig(file) {
     if (!file) return;
-    try {
-      const text = await file.text();
-      const obj = JSON.parse(text);
-      const norm = normalizeUploadedConfig(obj);
-      if (!norm) throw new Error('JSON 不是有效的配置对象');
-      // 即时回填面板
-      fillSettings(norm);
-      // 持久化到 background
-      try {
-        port.postMessage({ cmd: 'saveConfig', config: norm });
-        els.settingsStatus.textContent = '已导入并保存配置 ✓';
-      } catch (e) {
-        els.settingsStatus.textContent = '已导入到面板，但保存失败：' + String(e && e.message || e);
-      }
-    } catch (e) {
+    let text;
+    try { text = await file.text(); } catch (e) {
+      els.settingsStatus.textContent = '读取文件失败：' + String(e && e.message || e);
+      els.uploadConfigInput.value = '';
+      return;
+    }
+    if (!port || portDead) {
+      els.settingsStatus.textContent = '导入失败：未连接后台';
+      els.uploadConfigInput.value = '';
+      return;
+    }
+    try { port.postMessage({ cmd: 'importConfig', raw: String(text) }); } catch (e) {
       els.settingsStatus.textContent = '导入失败：' + String(e && e.message || e);
-      addBubble('error', '导入配置失败：' + String(e && e.message || e));
     }
     els.uploadConfigInput.value = '';
   }
@@ -1269,7 +1329,7 @@
   }
 
   // ============ 消息分发 ============
-  function handleReady(msg) {
+  async function handleReady(msg) {
     if (msg.origin) origin = msg.origin;
     if (origin) {
       if (msg.injectError) {
@@ -1283,10 +1343,18 @@
         // 重连后只刷新状态与配置，不重载已渲染会话
         reconnecting = false;
       } else {
-        loadPersisted();
+        await loadPersisted();
       }
       // SW 重启后 visibleTabs 会丢失，若面板可见则重新上报
       if (!host.hidden) reportVisibility(true);
+      if (runningBeforeDisconnect && !msg.taskRunning) {
+        addBubble('error', '浏览器后台已重启，之前的运行中任务已中断，请确认页面状态后重新发送。');
+        setRunning(false);
+      }
+      runningBeforeDisconnect = false;
+      try {
+        if (port && !portDead) port.postMessage({ cmd: 'panelHydrated' });
+      } catch (e) {}
     } else {
       els.connStatus.textContent = location.href ? location.href : '（无页面信息）';
     }
@@ -1318,13 +1386,40 @@
     els.userInput.focus();
   }
 
+  function handleCancelled(msg) {
+    if (!running && !stopping) return;
+    const text = msg && msg.summary != null ? String(msg.summary) : '已停止当前任务';
+    addBubble('system', text);
+    setRunning(false);
+    els.userInput.focus();
+  }
+
   function dispatch(type, msg) {
     try {
       switch (type) {
         case 'ready': handleReady(msg); break;
+        case 'taskState':
+          if (msg.running) setRunning(true);
+          break;
         case 'config': handleConfig(msg); break;
         case 'configSaved':
           els.settingsStatus.textContent = msg.ok ? '已保存 ✓' : '保存失败';
+          break;
+        case 'configExport':
+          if (typeof msg.json === 'string') {
+            downloadJsonText(msg.json, 'assistant-config.json');
+            els.settingsStatus.textContent = '已导出配置 JSON ✓（含完整 provider/密钥/提示词，可重装后导入恢复）';
+          }
+          break;
+        case 'configImported':
+          if (msg.ok) {
+            els.settingsStatus.textContent = '已导入并保存配置 ✓';
+            addBubble('status', '已导入配置并生效');
+          } else {
+            const em = '导入配置失败：' + (msg.error || '文件无效');
+            els.settingsStatus.textContent = em;
+            addBubble('error', em);
+          }
           break;
         case 'tagSaved':
           // 标签已持久化；无需额外动作（下拉已即时反映）
@@ -1347,6 +1442,7 @@
         case 'ask': handleAsk(msg); break;
         case 'done': handleDone(msg); break;
         case 'error': handleError(msg); break;
+        case 'cancelled': handleCancelled(msg); break;
         case 'historyCleared':
           if (msg.ok) {
             clearMessagesDOM();
@@ -1398,6 +1494,7 @@
       });
       port.onDisconnect.addListener(() => {
         void chrome.runtime.lastError;
+        runningBeforeDisconnect = running;
         portDead = true;
         setRunning(false);
         stopHeartbeat();
@@ -1414,15 +1511,10 @@
     if (reconnectTimerId) return;
     if (!reconnecting) addBubble('status', '连接已断开，正在重连…');
     reconnecting = true;
-    const delays = [1000, 2000, 4000, 8000, 16000];
+    const delays = [1000, 2000, 4000, 8000, 16000, 30000, 60000];
     let attempt = 0;
     function tryReconnect() {
       reconnectTimerId = null;
-      if (attempt >= delays.length) {
-        reconnecting = false;
-        addBubble('status', '连接已断开，请重新打开扩展');
-        return;
-      }
       const ok = connectPort();
       if (ok) {
         // background 会发 ready → handleReady 见 reconnecting=true 则跳过 loadPersisted
@@ -1488,11 +1580,12 @@
     });
     els.sendBtn.addEventListener('click', () => {
       if (running) {
-        sendAsCancel();
+        requestStop();
       } else {
         sendMessage();
       }
     });
+    els.stopBtn.addEventListener('click', () => requestStop());
     els.userInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -1505,6 +1598,7 @@
     // chrome.runtime.onMessage：仅响应 showPanel，其余忽略
     try {
       chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+        if (msg && (msg.cmd === 'processPdf' || msg.cmd === 'pdfFirstPageToPng' || msg.cmd === 'abortRun')) return;
         if (msg && msg.cmd === 'showPanel') {
           showPanel();
           try { sendResponse({ ok: true }); } catch (e) {}
@@ -1523,8 +1617,8 @@
     openPort();
 
     // bfcache 恢复：页面从前进/后退缓存恢复时，端口已断开，需主动重连
-    window.addEventListener('pageshow', (e) => {
-      if (e.persisted && (portDead || !port)) {
+    window.addEventListener('pageshow', () => {
+      if (portDead || !port) {
         triggerReconnect();
       }
     });
