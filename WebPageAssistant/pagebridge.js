@@ -617,6 +617,7 @@
           cls: cls,
           dataAct: dataAct,
           icon: icon,
+          title: el.getAttribute ? (el.getAttribute('title') || '').slice(0, 60) : '',
           box: box,
           widget: box ? boxWidgetOf(el) : undefined,
           checked: box ? readBoxChecked(el) : undefined,
@@ -1535,7 +1536,7 @@
             var el = page.q(sel);
             return el ? (el.innerText || el.value || null) : null;
           },
-          // 大型页面快照被截断时，按 label/name/placeholder/aria/text 反查控件。
+          // 大型页面快照被截断时，按 label/name/placeholder/aria/title/text 反查控件。
           findControls: function (text, max) {
             var needle = normText(text);
             if (!needle) return [];
@@ -1548,6 +1549,7 @@
                 el.getAttribute && el.getAttribute('aria-label'),
                 el.getAttribute && el.getAttribute('placeholder'),
                 el.getAttribute && el.getAttribute('name'),
+                el.getAttribute && el.getAttribute('title'),
                 el.innerText || el.textContent || ''
               ];
               var rank = -1;
@@ -1565,7 +1567,8 @@
                 type: el.type || '',
                 label: nearestLabel(el),
                 name: el.name || '',
-                placeholder: el.placeholder || ''
+                placeholder: el.placeholder || '',
+                title: (el.getAttribute && el.getAttribute('title')) || ''
               });
             }
             found.sort(function (a, b) { return a.rank - b.rank; });
