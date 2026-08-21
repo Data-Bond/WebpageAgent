@@ -5,7 +5,7 @@
   'use strict';
 
   var INSTALLED = '__assistantPage';
-  var BRIDGE_VERSION = '2.5.0';
+  var BRIDGE_VERSION = '2.6.0';
 
   function install() {
     var scriptAborted = false;
@@ -242,6 +242,239 @@
         }
       }
       return '';
+    }
+
+    var CAPTCHA_RE = /验证码|校验码|captcha|vcode|verifycode|authcode|checkcode|imgcode|security.?code/i;
+
+    function srcKindOf(src) {
+      var s = String(src || '');
+      if (/^data:image\//i.test(s)) return 'data';
+      if (/^blob:/i.test(s)) return 'blob';
+      if (/^https?:\/\//i.test(s) || s.charAt(0) === '/') return 'http';
+      return s ? 'other' : 'empty';
+    }
+
+    function looksCaptcha(el) {
+      if (!el) return false;
+      var bits = [
+        el.id,
+        el.className,
+        el.alt,
+        el.getAttribute && el.getAttribute('title'),
+        el.getAttribute && el.getAttribute('aria-label'),
+        nearestLabel(el)
+      ].join(' ');
+      return CAPTCHA_RE.test(bits);
+    }
+
+    function cssDataUrl(el) {
+      try {
+        var win = el.ownerDocument && el.ownerDocument.defaultView || window;
+        var st = win.getComputedStyle && win.getComputedStyle(el);
+        var bg = (st && st.backgroundImage) || '';
+        var m = String(bg).match(/url\(\s*['"]?(data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+)['"]?\s*\)/i);
+        if (m) return m[1];
+      } catch (e) {}
+      return '';
+    }
+
+    function viewportRect(el) {
+      var r = el.getBoundingClientRect();
+      var x = r.x;
+      var y = r.y;
+      var dpr = 1;
+      try {
+        var win = el.ownerDocument && el.ownerDocument.defaultView || window;
+        dpr = (window.top && window.top.devicePixelRatio) || win.devicePixelRatio || 1;
+        var frame = win.frameElement;
+        while (frame) {
+          var fr = frame.getBoundingClientRect();
+          x += fr.x;
+          y += fr.y;
+          win = frame.ownerDocument && frame.ownerDocument.defaultView;
+          frame = win && win.frameElement;
+        }
+      } catch (e) {}
+      return { x: x, y: y, w: r.width, h: r.height, dpr: dpr };
+    }
+
+    function canvasToDataUrl(canvas) {
+      try {
+        return canvas.toDataURL('image/png');
+      } catch (e) {
+        throw new Error('canvas 无法导出（可能跨域污染）: ' + (e && e.message || e));
+      }
+    }
+
+    function imgToPixels(img) {
+      var src = img.currentSrc || img.src || (img.getAttribute && img.getAttribute('src')) || '';
+      if (/^data:image\//i.test(src)) return { dataUrl: src, via: 'img-data' };
+      var w = img.naturalWidth || img.width || 0;
+      var h = img.naturalHeight || img.height || 0;
+      if (w >= 1 && h >= 1) {
+        try {
+          var doc = img.ownerDocument || document;
+          var c = doc.createElement('canvas');
+          c.width = w;
+          c.height = h;
+          var ctx = c.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0);
+          return { dataUrl: canvasToDataUrl(c), via: 'img-draw' };
+        } catch (e) {}
+      }
+      return { dataUrl: '', via: 'img-geom' };
+    }
+
+    function scoreCaptureCandidate(n) {
+      var s = 0;
+      var tag = (n.tagName || '').toUpperCase();
+      if (looksCaptcha(n)) s += 50;
+      if (isVisible(n)) s += 20;
+      if (tag === 'IMG') {
+        var src = n.currentSrc || n.src || '';
+        if (/^data:image\//i.test(src)) s += 30;
+      }
+      if (tag === 'CANVAS') s += 15;
+      try {
+        var r = n.getBoundingClientRect();
+        if (r.width >= 40 && r.width <= 240 && r.height >= 16 && r.height <= 90) s += 25;
+      } catch (e) {}
+      return s;
+    }
+
+    function pickBestImage(nodes) {
+      var best = null;
+      var bestScore = -1;
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        var s = scoreCaptureCandidate(n);
+        if (s > bestScore) { bestScore = s; best = n; }
+      }
+      return best;
+    }
+
+    function findCaptureTarget(el) {
+      var tag = (el.tagName || '').toUpperCase();
+      if (tag === 'IMG' || tag === 'CANVAS') return el;
+      if (cssDataUrl(el)) return el;
+      var inner = [];
+      try { inner = el.querySelectorAll ? Array.from(el.querySelectorAll('img, canvas')) : []; } catch (e) { inner = []; }
+      if (inner.length) {
+        var best = pickBestImage(inner);
+        if (best) return best;
+      }
+      var painted = [];
+      try { painted = el.querySelectorAll ? Array.from(el.querySelectorAll('*')) : []; } catch (e) { painted = []; }
+      for (var j = 0; j < painted.length && j < 80; j++) {
+        if (cssDataUrl(painted[j])) return painted[j];
+      }
+      return el;
+    }
+
+    function collectPageImages() {
+      var nodes = queryAllDeep('img, canvas');
+      var extras = queryAllDeep('[class*="captcha"], [id*="captcha"], [class*="vcode"], [id*="vcode"], [class*="verifyCode"], [alt*="验证码"], [alt*="校验码"]');
+      var seen = new Set();
+      var scored = [];
+      function consider(el) {
+        if (!el || seen.has(el)) return;
+        seen.add(el);
+        var tag = (el.tagName || '').toUpperCase();
+        var visible = false;
+        try { visible = isVisible(el); } catch (e) {}
+        var captcha = looksCaptcha(el);
+        if (!visible && !captcha) return;
+        var us;
+        try { us = uniqueSelector(el); } catch (e) { us = null; }
+        if (!us || !us.selector) return;
+        var src = '';
+        var w = 0;
+        var h = 0;
+        try {
+          var rect = el.getBoundingClientRect();
+          w = Math.round(rect.width || 0);
+          h = Math.round(rect.height || 0);
+        } catch (e) {}
+        if (tag === 'IMG') {
+          src = el.currentSrc || el.src || (el.getAttribute && el.getAttribute('src')) || '';
+          w = w || el.naturalWidth || el.width || 0;
+          h = h || el.naturalHeight || el.height || 0;
+        } else if (tag === 'CANVAS') {
+          w = w || el.width || 0;
+          h = h || el.height || 0;
+        }
+        if (!captcha && w < 16 && h < 16) return;
+        var inForm = false;
+        try { inForm = !!(el.closest && el.closest('form')); } catch (e) {}
+        var kind = tag === 'CANVAS' ? 'canvas' : (cssDataUrl(el) ? 'data' : srcKindOf(src));
+        var score = 0;
+        if (captcha) score += 100;
+        if (inForm) score += 40;
+        if (kind === 'data') score += 30;
+        if (tag === 'CANVAS') score += 20;
+        if (visible) score += 10;
+        scored.push({
+          score: score,
+          entry: {
+            tag: tag,
+            selector: us.selector,
+            unique: !!us.unique,
+            alt: String(el.alt || '').slice(0, 60),
+            title: (el.getAttribute && el.getAttribute('title') || '').slice(0, 60),
+            id: el.id || '',
+            cls: String(el.className || '').trim().slice(0, 80),
+            srcKind: kind,
+            w: Math.round(w),
+            h: Math.round(h),
+            captcha: captcha,
+            inForm: inForm,
+            hidden: !visible
+          }
+        });
+      }
+      for (var i = 0; i < nodes.length; i++) consider(nodes[i]);
+      for (var k = 0; k < extras.length; k++) consider(extras[k]);
+      scored.sort(function (a, b) { return b.score - a.score; });
+      return scored.slice(0, 20).map(function (s) { return s.entry; });
+    }
+
+    async function captureImage(sel) {
+      var el = queryDeep(sel);
+      if (!el) throw new Error('元素未找到: ' + sel);
+      var target = findCaptureTarget(el);
+      try { if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
+      await new Promise(function (resolve) { setTimeout(resolve, 60); });
+      var tag = (target.tagName || '').toUpperCase();
+      var pixels = { dataUrl: '', via: 'geom' };
+      if (tag === 'IMG') pixels = imgToPixels(target);
+      else if (tag === 'CANVAS') {
+        try { pixels = { dataUrl: canvasToDataUrl(target), via: 'canvas' }; }
+        catch (e) { pixels = { dataUrl: '', via: 'canvas-tainted' }; }
+      } else {
+        var bg = cssDataUrl(target);
+        if (bg) pixels = { dataUrl: bg, via: 'css-data' };
+      }
+      var geom = viewportRect(target);
+      if ((!pixels.dataUrl) && (geom.w < 8 || geom.h < 8)) {
+        throw new Error('未找到可识别图片（img/canvas/BASE64 背景），且目标区域过小: ' + sel);
+      }
+      if ((!pixels.dataUrl) && (geom.w > 480 || geom.h > 240)) {
+        throw new Error('目标区域过大且未读到内嵌图片像素。请对快照 images[] 中的 img/canvas 调用 page.ocr: ' + sel);
+      }
+      if (pixels.dataUrl && pixels.dataUrl.length > 6 * 1024 * 1024) {
+        throw new Error('页面图片过大，拒绝 OCR');
+      }
+      return {
+        ok: true,
+        via: pixels.via,
+        selector: String(sel).slice(0, 300),
+        tag: tag,
+        dataUrl: pixels.dataUrl || '',
+        geom: geom,
+        likelyCaptcha: !!(looksCaptcha(target) || looksCaptcha(el) || CAPTCHA_RE.test(String(sel)))
+      };
     }
 
     function isInteractive(tag, type) {
@@ -657,6 +890,7 @@
         statusMessages: statusMessages(),
         framesSummary: framesSummary(),
         formDigest: formDigest(),
+        images: collectPageImages(),
         elements: elements
       }));
     }
@@ -1841,8 +2075,11 @@
           waitFor: function (test, opts) {
             var o = opts || {};
             var poll = o.poll || 200;
-            var timeout = o.timeout || 5000;
+            var timeout = Number(o.timeout);
+            if (!(timeout > 0)) timeout = 5000;
+            if (timeout > 8000) timeout = 8000;
             var deadline = Date.now() + timeout;
+            var sel = (typeof test === 'string') ? String(test) : '';
             function check() {
               if (typeof test === 'function') {
                 try { return !!test(); } catch (e) { return false; }
@@ -1854,7 +2091,17 @@
               var timer = setInterval(function () {
                 if (scriptAborted) { clearInterval(timer); reject(new Error('已停止')); return; }
                 if (check()) { clearInterval(timer); resolve(true); return; }
-                if (Date.now() >= deadline) { clearInterval(timer); reject(new Error('waitFor 超时（' + timeout + 'ms）')); }
+                if (Date.now() >= deadline) {
+                  clearInterval(timer);
+                  // 超时是“没等到”，不是脚本崩溃；回结构化结果供引擎/模型继续判断
+                  resolve({
+                    ok: false,
+                    timedOut: true,
+                    timeout: timeout,
+                    selector: sel.slice(0, 200),
+                    found: false
+                  });
+                }
               }, poll);
             });
           },
@@ -1950,6 +2197,13 @@
         var operations = detail.payload && detail.payload.operations;
         runOperations(operations || []).then(function (res) {
           respond(res, res && res.ok !== false);
+        });
+      } else if (cmd === 'captureImage') {
+        var capSel = detail.payload && detail.payload.selector;
+        captureImage(capSel || '').then(function (res) {
+          respond(res, res && res.ok !== false);
+        }).catch(function (err) {
+          respond({ ok: false, error: String(err && err.message || err) }, false);
         });
       }
     }

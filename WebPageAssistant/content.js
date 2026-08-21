@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  var CONTENT_VERSION = '2.5.0';
+  var CONTENT_VERSION = '2.6.0';
   if (window.__dsContentLoaded === CONTENT_VERSION) return;
   try {
     if (typeof window.__dsContentDispose === 'function') window.__dsContentDispose();
@@ -205,6 +205,20 @@
           sendResponse(data);
         }).catch(function (e) {
           sendResponse({ ok: false, error: String(e && e.message || e) });
+        });
+        return true;
+
+      } else if (cmd === 'captureImage') {
+        dsReq('captureImage', { selector: msg.selector || '' }, 20000).then(function (res) {
+          var data = res && res.data;
+          if (res && res.ok !== false && data && typeof data === 'object') {
+            sendResponse(data);
+          } else {
+            var errMsg = '';
+            if (data && typeof data === 'object' && data.error) errMsg = data.error;
+            else errMsg = String(data || '截取页面图片失败');
+            sendResponse({ ok: false, error: errMsg || '截取页面图片失败' });
+          }
         });
         return true;
 

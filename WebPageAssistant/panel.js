@@ -11,7 +11,7 @@
   if (window.__assistantPanelInjected) return;
   window.__assistantPanelInjected = true;
 
-  // 与 manifest 保持单一版本源，避免面板显示 0.3.0、扩展实际为 2.1.0。
+  // 与 manifest 保持单一版本源，避免面板显示旧版本、扩展实际为另一版本。
   const BUILD_VERSION = (chrome.runtime && chrome.runtime.getManifest)
     ? chrome.runtime.getManifest().version
     : 'unknown';
@@ -25,7 +25,7 @@
       top: 20px;
       right: 20px;
       z-index: 2147483647;
-      width: 384px;
+      width: 520px;
       height: 560px;
       max-height: calc(100vh - 40px);
       display: flex;
@@ -86,6 +86,45 @@
       gap: 8px;
       min-width: 0;
     }
+    .conn-lamp-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+      margin-left: 2px;
+      padding: 2px 8px 2px 6px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.16);
+    }
+    .conn-lamp {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #c5cad6;
+      flex-shrink: 0;
+    }
+    .conn-lamp.connected {
+      background: #3dce7a;
+      box-shadow: 0 0 6px rgba(61, 206, 122, 0.7);
+    }
+    .conn-lamp.disconnected {
+      background: #ff6b5b;
+    }
+    .conn-lamp.connecting,
+    .conn-lamp.reconnecting {
+      background: #f0c14b;
+      animation: conn-pulse 1s ease-in-out infinite;
+    }
+    .conn-lamp-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.95);
+      white-space: nowrap;
+    }
+    @keyframes conn-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
     .header-right {
       display: flex;
       align-items: center;
@@ -137,7 +176,7 @@
       gap: 8px;
       flex-shrink: 0;
       min-height: 0;
-      max-height: calc(min(560px, 100vh - 40px) - 210px);
+      max-height: calc(min(560px, 100vh - 40px) - 250px);
       overflow-y: auto;
       overscroll-behavior: contain;
     }
@@ -222,7 +261,8 @@
       font-size: 11px;
       color: #5a6072;
     }
-    .provider-row input {
+    .provider-row input,
+    .provider-row select {
       border: 1px solid #d8dbe7;
       border-radius: 7px;
       padding: 6px 8px;
@@ -231,7 +271,8 @@
       background: #fff;
       font-family: inherit;
     }
-    .provider-row input:focus {
+    .provider-row input:focus,
+    .provider-row select:focus {
       border-color: #4f7cff;
       box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.15);
     }
@@ -302,8 +343,6 @@
       border: none;
       color: #fff;
       font-weight: 600;
-      align-self: stretch;
-      min-width: 60px;
     }
     .btn.stop:hover {
       background: #a93226;
@@ -483,27 +522,31 @@
       to { transform: translateY(0); opacity: 1; }
     }
     .input-row {
-      display: flex;
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr) auto;
       gap: 8px;
       padding: 10px 12px;
       background: #ffffff;
       border-top: 1px solid #e6e8f0;
       flex-shrink: 0;
-      align-items: flex-end;
+      align-items: stretch;
     }
     .attach-btn {
-      width: 38px;
-      height: 38px;
+      width: 100%;
+      height: auto;
+      min-height: 0;
+      margin: 0;
+      padding: 0;
       border: 1px solid #d8dbe7;
       background: #fbfcfe;
       border-radius: 10px;
       font-size: 18px;
       line-height: 1;
       cursor: pointer;
-      flex-shrink: 0;
-      display: inline-flex;
+      display: flex;
       align-items: center;
       justify-content: center;
+      align-self: stretch;
       transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
     }
     .attach-btn:hover {
@@ -554,7 +597,9 @@
       box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.15);
     }
     #userInput {
-      flex: 1;
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
       resize: none;
       border: 1px solid #d8dbe7;
       border-radius: 10px;
@@ -573,9 +618,246 @@
     .send-btn {
       align-self: stretch;
       min-width: 60px;
+      height: auto;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
     }
     .hidden {
       display: none !important;
+    }
+    .skill-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      background: #eef2ff;
+      border-bottom: 1px solid #e0e5f5;
+      flex-shrink: 0;
+    }
+    .skill-bar .btn {
+      padding: 5px 10px;
+      font-size: 12px;
+    }
+    .skill-lib-toolbar {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .skill-lib-filters {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .filter-btn {
+      padding: 4px 10px;
+      font-size: 12px;
+    }
+    .filter-btn.active {
+      background: linear-gradient(135deg, #4f7cff 0%, #6a5cff 100%);
+      border: none;
+      color: #fff;
+      font-weight: 600;
+    }
+    .skill-search {
+      width: 100%;
+      border: 1px solid #d8dbe7;
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+      background: #fbfcfe;
+    }
+    .skill-search:focus {
+      border-color: #4f7cff;
+      box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.15);
+    }
+    .skill-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-height: 72px;
+      max-height: 220px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+    .skill-list::-webkit-scrollbar {
+      width: 6px;
+    }
+    .skill-list::-webkit-scrollbar-thumb {
+      background: #c9cedb;
+      border-radius: 3px;
+    }
+    .skill-empty {
+      font-size: 12px;
+      color: #8a90a6;
+      text-align: center;
+      padding: 16px 8px;
+    }
+    .skill-card {
+      border: 1px solid #e8ebf5;
+      border-radius: 8px;
+      padding: 8px;
+      background: #fff;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .skill-card.match {
+      border-color: #8fd4aa;
+      background: #f4fbf7;
+    }
+    .skill-card-top {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+    }
+    .skill-card-name {
+      font-size: 12px;
+      font-weight: 700;
+      color: #2b2f3a;
+      flex: 1;
+      min-width: 0;
+      word-break: break-word;
+    }
+    .skill-card-url {
+      font-size: 11px;
+      color: #6a7080;
+      word-break: break-all;
+    }
+    .skill-card-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .skill-card-actions .btn {
+      padding: 4px 8px;
+      font-size: 11px;
+    }
+    .skill-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 999px;
+      flex-shrink: 0;
+      line-height: 1.4;
+    }
+    .skill-badge.need {
+      background: #fde8d6;
+      color: #b5651d;
+    }
+    .skill-badge.match {
+      background: #e6f4ea;
+      color: #1e7d4f;
+    }
+    .skill-lib-footer {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding-top: 6px;
+      border-top: 1px dashed #e8ebf5;
+    }
+    .skill-lib-status {
+      width: 100%;
+      font-size: 11px;
+      color: #6a5cff;
+      min-height: 14px;
+      word-break: break-word;
+    }
+    .modal-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(20, 30, 70, 0.38);
+      z-index: 30;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .modal {
+      background: #fff;
+      border-radius: 12px;
+      padding: 14px;
+      width: 100%;
+      max-height: 100%;
+      overflow-y: auto;
+      box-shadow: 0 12px 32px rgba(20, 30, 70, 0.25);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .modal h3 {
+      display: block;
+      font-size: 14px;
+      font-weight: 700;
+      color: #2b2f3a;
+    }
+    .modal label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12px;
+      color: #5a6072;
+    }
+    .modal input,
+    .modal textarea,
+    .modal select {
+      border: 1px solid #d8dbe7;
+      border-radius: 8px;
+      padding: 7px 9px;
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+      background: #fbfcfe;
+    }
+    .modal input:focus,
+    .modal textarea:focus,
+    .modal select:focus {
+      border-color: #4f7cff;
+      box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.15);
+    }
+    .modal textarea {
+      resize: vertical;
+      min-height: 80px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    .modal label.modal-check {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #5a6072;
+    }
+    .modal label.modal-check input {
+      width: auto;
+      margin: 0;
+    }
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      margin-top: 4px;
+    }
+    .modal-warn {
+      font-size: 12px;
+      color: #8a6d1a;
+      background: #fff8e6;
+      border: 1px solid #f3e3b0;
+      border-radius: 8px;
+      padding: 8px 10px;
+      word-break: break-all;
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+    .modal-error {
+      font-size: 12px;
+      color: #c0392b;
+      min-height: 14px;
     }
   `;
 
@@ -594,6 +876,12 @@
   let heartbeatId = null;
   let reconnectTimerId = null;
   let currentConfig = null; // 最新配置（用于重建标签下拉）
+  let cachedSkills = [];
+  const selectedSkillIds = {};
+  let pendingTriggerSkill = null;
+  let connHintEl = null;
+  const CONN_HINT_RECONNECT = '连接已断开，正在重连…';
+  const CONN_HINT_CONNECTED = '已连接';
 
   const MAX_FILES_BYTES = 5 * 1024 * 1024; // 5MB dataUrl 总字节上限
   const MAX_SINGLE_FILE_BYTES = 8 * 1024 * 1024;
@@ -632,7 +920,7 @@
     const ext = dot >= 0 ? n.slice(dot + 1) : '';
     if (['md', 'markdown', 'txt', 'log', 'text', 'csv', 'json'].indexOf(ext) >= 0) return 'text';
     if (ext === 'pdf' || mime === 'application/pdf') return 'pdf';
-    if (['png', 'jpg', 'jpeg'].indexOf(ext) >= 0 || mime.indexOf('image/') === 0) return 'image';
+    if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tif', 'tiff'].indexOf(ext) >= 0 || mime.indexOf('image/') === 0) return 'image';
     return 'other';
   }
   function kindBadge(kind) {
@@ -646,8 +934,44 @@
     return 'upload';
   }
 
-  // 构建一个 provider 行（名称/Base URL/API Key/模型ID + 删除）
-  function addProviderRow(container, data) {
+  const TEXT_PROVIDER_TYPES = [
+    { id: 'Standard-TXT', label: 'Standard-TXT', modelsHint: '模型ID，逗号分隔', urlHint: 'OpenAI 兼容 Base URL，如 https://api.moonshot.cn/v1' }
+  ];
+  const OCR_PROVIDER_TYPES = [
+    { id: 'Standard-IMG', label: 'Standard-IMG', modelsHint: '视觉模型ID，如 kimi-k2.6、qwen-vl-ocr', urlHint: 'OpenAI 兼容视觉 Base URL，如 https://api.moonshot.cn/v1' },
+    { id: 'OCR-SCnet', label: 'OCR-SCnet', defaultBaseURL: 'https://api.scnet.cn/api/llm/v1/ocr/recognize', defaultModels: 'GENERAL', modelsHint: 'GENERAL,ID_CARD,VAT_INVOICE', urlHint: 'https://api.scnet.cn/api/llm/v1/ocr/recognize' },
+    { id: 'MinerU', label: 'MinerU', defaultModels: 'MinerU', modelsHint: 'MinerU', urlHint: 'MinerU /file_parse 端点' }
+  ];
+  const PROVIDER_TYPE_ALIASES = {
+    LiteLLM: 'Standard-TXT',
+    KIMI: 'Standard-TXT',
+    'OCR-KIMI': 'Standard-IMG',
+    'OCR-Qwen': 'Standard-IMG',
+    'OCR-Vision': 'Standard-IMG'
+  };
+  function providerTypesOf(kind) {
+    return kind === 'ocr' ? OCR_PROVIDER_TYPES : TEXT_PROVIDER_TYPES;
+  }
+  function canonicalizeProviderType(raw, kind) {
+    const list = providerTypesOf(kind);
+    let id = String(raw || '').trim();
+    if (PROVIDER_TYPE_ALIASES[id]) id = PROVIDER_TYPE_ALIASES[id];
+    if (list.some((t) => t.id === id)) return id;
+    return list[0].id;
+  }
+  function providerTypeMeta(id, kind) {
+    const list = providerTypesOf(kind);
+    const canon = canonicalizeProviderType(id, kind);
+    return list.find((t) => t.id === canon) || list[0];
+  }
+
+  // 构建一个 provider 行（类型 / 名称 / Base URL / API Key / 模型ID + 删除）
+  function addProviderRow(container, data, kind) {
+    const isOcr = kind === 'ocr';
+    const types = providerTypesOf(isOcr ? 'ocr' : 'text');
+    const kindKey = isOcr ? 'ocr' : 'text';
+    const initialType = canonicalizeProviderType(data && data.providerType, kindKey);
+    let meta = providerTypeMeta(initialType, kindKey);
     const row = mk('div', 'provider-row');
     const makeField = (labelText, input) => {
       const label = mk('label', 'provider-field');
@@ -655,41 +979,80 @@
       label.appendChild(input);
       return label;
     };
+    const typeSel = mk('select');
+    typeSel.dataset.field = 'providerType';
+    typeSel.title = '固定枚举，不可自定义';
+    typeSel.required = true;
+    types.forEach((t) => {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = t.label;
+      typeSel.appendChild(opt);
+    });
+    typeSel.value = meta.id;
     const name = mk('input', null, { type: 'text', placeholder: '名称', value: (data && data.name) || '' });
     name.dataset.field = 'name';
-    const baseURL = mk('input', null, { type: 'text', placeholder: 'Base URL', value: (data && data.baseURL) || '' });
+    const baseURL = mk('input', null, {
+      type: 'text',
+      placeholder: meta.urlHint || 'Base URL',
+      value: (data && data.baseURL) || ''
+    });
     baseURL.dataset.field = 'baseURL';
     const apiKey = mk('input', null, { type: 'password', placeholder: 'API Key', value: (data && data.apiKey) || '' });
     apiKey.dataset.field = 'apiKey';
-    const models = mk('input', null, { type: 'text', placeholder: '模型ID（逗号分隔）', value: (data && data.models) || '' });
+    const models = mk('input', null, {
+      type: 'text',
+      placeholder: meta.modelsHint || '模型ID（逗号分隔）',
+      value: (data && data.models) || ''
+    });
     models.dataset.field = 'models';
+    if (!(data && data.baseURL) && meta.defaultBaseURL) baseURL.value = meta.defaultBaseURL;
+    if (!(data && data.models) && meta.defaultModels) models.value = meta.defaultModels;
+    let lastDefaultUrl = meta.defaultBaseURL || '';
+    let lastDefaultModels = meta.defaultModels || '';
+    typeSel.addEventListener('change', () => {
+      meta = providerTypeMeta(typeSel.value, kindKey);
+      baseURL.placeholder = meta.urlHint || 'Base URL';
+      models.placeholder = meta.modelsHint || '模型ID（逗号分隔）';
+      const urlNow = baseURL.value.trim();
+      if (!urlNow || urlNow === lastDefaultUrl) {
+        baseURL.value = meta.defaultBaseURL || '';
+      }
+      const modelsNow = models.value.trim();
+      if (!modelsNow || modelsNow === lastDefaultModels) {
+        models.value = meta.defaultModels || '';
+      }
+      lastDefaultUrl = meta.defaultBaseURL || '';
+      lastDefaultModels = meta.defaultModels || '';
+    });
     const del = mk('button', 'btn provider-del', { type: 'button', textContent: '✕ 删除', title: '删除该 provider' });
     del.addEventListener('click', () => { row.remove(); });
+    row.appendChild(makeField('类型 providerType', typeSel));
     row.appendChild(makeField('名称', name));
     row.appendChild(makeField('Base URL', baseURL));
     row.appendChild(makeField('API Key', apiKey));
-    row.appendChild(makeField('模型ID（逗号分隔）', models));
+    row.appendChild(makeField(isOcr ? '模型ID / ocrType（逗号分隔）' : '模型ID（逗号分隔）', models));
     row.appendChild(del);
     container.appendChild(row);
     return row;
   }
 
   // 读取容器内所有 provider 行
-  function collectProviders(container) {
+  function collectProviders(container, kind) {
     const rows = container.querySelectorAll('.provider-row');
     const out = [];
     rows.forEach((row) => {
       const get = (f) => {
-        const el = row.querySelector('input[data-field="' + f + '"]');
-        return el ? el.value.trim() : '';
+        const el = row.querySelector('[data-field="' + f + '"]');
+        return el ? String(el.value || '').trim() : '';
       };
       const name = get('name');
+      const providerType = canonicalizeProviderType(get('providerType'), kind);
       const baseURL = get('baseURL');
       const apiKey = get('apiKey');
       const models = get('models');
-      // 至少有 baseURL 或 models 才算有效行
       if (baseURL || models) {
-        out.push({ name: name || 'provider', baseURL, apiKey, models });
+        out.push({ name: name || 'provider', providerType, baseURL, apiKey, models });
       }
     });
     return out;
@@ -709,8 +1072,20 @@
     const headerLeft = mk('div', 'header-left');
     headerLeft.appendChild(title);
     headerLeft.appendChild(buildBadge);
+    const connLampWrap = mk('div', 'conn-lamp-wrap');
+    const connLamp = mk('span', 'conn-lamp connecting', { title: '连接中' });
+    const connLampLabel = mk('span', 'conn-lamp-label', { textContent: '连接中' });
+    connLampWrap.appendChild(connLamp);
+    connLampWrap.appendChild(connLampLabel);
+    headerLeft.appendChild(connLampWrap);
     header.appendChild(headerLeft);
     header.appendChild(headerRight);
+
+    const skillBar = mk('div', 'skill-bar');
+    const saveSkillBtn = mk('button', 'btn primary', { type: 'button', textContent: '存为 WEB-SKILL', title: '把本次对话中的用户任务存为可复用技能' });
+    const skillLibBtn = mk('button', 'btn', { type: 'button', textContent: 'WEB-SKILL 库', title: '查看、导出或触发已保存的技能' });
+    skillBar.appendChild(saveSkillBtn);
+    skillBar.appendChild(skillLibBtn);
 
     const settingsPanel = mk('section', 'settings-panel hidden');
     settingsPanel.id = 'settingsPanel';
@@ -737,7 +1112,7 @@
 
     // 文本模型 Providers
     const textSection = mk('div', 'provider-section');
-    textSection.appendChild(mk('div', 'provider-heading', { textContent: '文本模型 Providers（OpenAI 兼容，可多个 / LiteLLM）' }));
+    textSection.appendChild(mk('div', 'provider-heading', { textContent: '文本模型 Providers（类型仅 Standard-TXT：OpenAI 兼容 /chat/completions，Base URL / 模型ID 自行填写）' }));
     const textProvidersList = mk('div', 'provider-list');
     textSection.appendChild(textProvidersList);
     const addTextProviderBtn = mk('button', 'btn add-provider', { type: 'button', textContent: '＋ 添加 provider' });
@@ -749,7 +1124,7 @@
 
     // PDF-OCR 模型 Providers
     const ocrSection = mk('div', 'provider-section');
-    ocrSection.appendChild(mk('div', 'provider-heading', { textContent: 'PDF-OCR 模型 Providers（视觉模型 image_url，或 MinerU multipart）' }));
+    ocrSection.appendChild(mk('div', 'provider-heading', { textContent: 'OCR Providers（类型必选：Standard-IMG 为视觉 chat；OCR-SCnet 为 multipart；MinerU 为文档解析）' }));
     const ocrProvidersList = mk('div', 'provider-list');
     ocrSection.appendChild(ocrProvidersList);
     const addOcrProviderBtn = mk('button', 'btn add-provider', { type: 'button', textContent: '＋ 添加 provider' });
@@ -771,6 +1146,86 @@
     const settingsStatus = mk('div', 'settings-status');
     settingsPanel.appendChild(settingsStatus);
 
+    const skillLibrary = mk('section', 'settings-panel skill-library hidden');
+    skillLibrary.id = 'skillLibrary';
+    const skillLibToolbar = mk('div', 'skill-lib-toolbar');
+    const skillSearch = mk('input', 'skill-search', { type: 'search', placeholder: '搜索名称、URL 或正文…' });
+    const skillLibFilters = mk('div', 'skill-lib-filters');
+    const skillFilterAll = mk('button', 'btn filter-btn active', { type: 'button', textContent: '全部' });
+    const skillFilterMatch = mk('button', 'btn filter-btn', { type: 'button', textContent: '当前页匹配' });
+    skillLibFilters.appendChild(skillFilterAll);
+    skillLibFilters.appendChild(skillFilterMatch);
+    skillLibToolbar.appendChild(skillSearch);
+    skillLibToolbar.appendChild(skillLibFilters);
+    skillLibrary.appendChild(skillLibToolbar);
+    const skillList = mk('div', 'skill-list');
+    skillLibrary.appendChild(skillList);
+    const skillLibFooter = mk('div', 'skill-lib-footer');
+    const importSkillsBtn = mk('button', 'btn', { type: 'button', textContent: '导入' });
+    const exportSelectedBtn = mk('button', 'btn', { type: 'button', textContent: '导出选中' });
+    const exportAllBtn = mk('button', 'btn', { type: 'button', textContent: '导出全部' });
+    const importSkillsInput = mk('input');
+    importSkillsInput.type = 'file';
+    importSkillsInput.accept = '.json,application/json';
+    importSkillsInput.style.display = 'none';
+    skillLibFooter.appendChild(importSkillsBtn);
+    skillLibFooter.appendChild(exportSelectedBtn);
+    skillLibFooter.appendChild(exportAllBtn);
+    skillLibFooter.appendChild(importSkillsInput);
+    const skillLibStatus = mk('div', 'skill-lib-status');
+    skillLibFooter.appendChild(skillLibStatus);
+    skillLibrary.appendChild(skillLibFooter);
+
+    const saveSkillModal = mk('div', 'modal-backdrop hidden');
+    const saveSkillDialog = mk('div', 'modal');
+    saveSkillDialog.appendChild(mk('h3', null, { textContent: '存为 WEB-SKILL' }));
+    const saveSkillName = mk('input', null, { type: 'text', placeholder: '技能名称', maxLength: 80 });
+    saveSkillDialog.appendChild(mkLabel('名称', saveSkillName));
+    const saveSkillUrl = mk('input', null, { type: 'url', placeholder: 'https://…' });
+    saveSkillDialog.appendChild(mkLabel('适用页面 URL（关键字段）', saveSkillUrl));
+    const saveSkillMatch = mk('select');
+    const matchOpts = [
+      ['origin+path', '同源同路径（忽略查询串）'],
+      ['origin', '仅同源'],
+      ['exact', '完整 URL（含查询串）']
+    ];
+    matchOpts.forEach((pair) => {
+      const opt = mk('option', null, { value: pair[0], textContent: pair[1] });
+      saveSkillMatch.appendChild(opt);
+    });
+    saveSkillDialog.appendChild(mkLabel('URL 匹配方式', saveSkillMatch));
+    const saveSkillNeedRow = mk('label', 'modal-check');
+    const saveSkillNeedsInput = mk('input', null, { type: 'checkbox' });
+    saveSkillNeedRow.appendChild(saveSkillNeedsInput);
+    saveSkillNeedRow.appendChild(document.createTextNode('需要个性化数据或参数'));
+    saveSkillDialog.appendChild(saveSkillNeedRow);
+    const saveSkillHint = mk('input', null, { type: 'text', placeholder: '例如：请替换姓名、工号后再发送', maxLength: 500 });
+    saveSkillDialog.appendChild(mkLabel('参数说明（可选）', saveSkillHint));
+    const saveSkillPrompt = mk('textarea', null, { rows: 6, placeholder: '触发时写入聊天输入框的正文' });
+    saveSkillDialog.appendChild(mkLabel('技能正文', saveSkillPrompt));
+    const saveSkillError = mk('div', 'modal-error');
+    saveSkillDialog.appendChild(saveSkillError);
+    const saveSkillActions = mk('div', 'modal-actions');
+    const saveSkillCancel = mk('button', 'btn', { type: 'button', textContent: '取消' });
+    const saveSkillConfirm = mk('button', 'btn primary', { type: 'button', textContent: '保存' });
+    saveSkillActions.appendChild(saveSkillCancel);
+    saveSkillActions.appendChild(saveSkillConfirm);
+    saveSkillDialog.appendChild(saveSkillActions);
+    saveSkillModal.appendChild(saveSkillDialog);
+
+    const confirmModal = mk('div', 'modal-backdrop hidden');
+    const confirmDialog = mk('div', 'modal');
+    confirmDialog.appendChild(mk('h3', null, { textContent: '页面不匹配' }));
+    const confirmWarn = mk('div', 'modal-warn');
+    confirmDialog.appendChild(confirmWarn);
+    const confirmActions = mk('div', 'modal-actions');
+    const confirmCancel = mk('button', 'btn', { type: 'button', textContent: '取消' });
+    const confirmOk = mk('button', 'btn primary', { type: 'button', textContent: '仍要载入' });
+    confirmActions.appendChild(confirmCancel);
+    confirmActions.appendChild(confirmOk);
+    confirmDialog.appendChild(confirmActions);
+    confirmModal.appendChild(confirmDialog);
+
     const connStatus = mk('div', 'conn-status', { textContent: '正在连接…' });
 
     const attachArea = mk('section', 'attach-area hidden');
@@ -779,7 +1234,7 @@
     const fileInput = mk('input');
     fileInput.type = 'file';
     fileInput.multiple = true;
-    fileInput.accept = '.md,.markdown,.txt,.log,.text,.csv,.json,.pdf,.png,.jpg,.jpeg';
+    fileInput.accept = '.md,.markdown,.txt,.log,.text,.csv,.json,.pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff';
     fileInput.style.display = 'none';
     attachArea.appendChild(chips);
     attachArea.appendChild(fileInput);
@@ -792,12 +1247,10 @@
     userInput.id = 'userInput';
     userInput.rows = 2;
     userInput.placeholder = '描述完整工作要求，例如：根据附件为张三提交事假申请\n如需多条独立任务，请每行使用编号或项目符号：\n1. 进入成果反馈页面\n2. 填写申请并上传附件';
-    const sendBtn = mk('button', 'btn primary send-btn', { type: 'button', textContent: '发送' });
-    const stopBtn = mk('button', 'btn stop hidden', { type: 'button', textContent: '停止', title: '停止当前正在执行的任务' });
+    const sendBtn = mk('button', 'btn primary send-btn', { type: 'button', textContent: '发送', title: '发送' });
     inputRow.appendChild(attachBtn);
     inputRow.appendChild(userInput);
     inputRow.appendChild(sendBtn);
-    inputRow.appendChild(stopBtn);
 
     // 输入行下方：两个模型标签选择器（文本 / OCR），切换立即持久化
     const tagRow = mk('div', 'tag-row');
@@ -809,27 +1262,39 @@
     const ocrTagField = mk('div', 'tag-field');
     ocrTagField.appendChild(mk('label', null, { textContent: 'OCR模型' }));
     const ocrTagSelect = mk('select', 'tag-select');
-    ocrTagSelect.title = '选择 PDF-OCR 模型标签（provider名 / 模型ID）';
+    ocrTagSelect.title = '选择 OCR 模型：视觉模型ID、MinerU，或SCNet ocrType（如 GENERAL / ID_CARD）';
     ocrTagField.appendChild(ocrTagSelect);
     tagRow.appendChild(textTagField);
     tagRow.appendChild(ocrTagField);
 
     shadow.appendChild(header);
+    shadow.appendChild(skillBar);
     shadow.appendChild(settingsPanel);
+    shadow.appendChild(skillLibrary);
     shadow.appendChild(connStatus);
     shadow.appendChild(attachArea);
     shadow.appendChild(messages);
     shadow.appendChild(inputRow);
     shadow.appendChild(tagRow);
+    shadow.appendChild(saveSkillModal);
+    shadow.appendChild(confirmModal);
 
     return {
       header, settingsBtn, closeBtn, clearBtn,
+      connLamp, connLampLabel,
+      skillBar, saveSkillBtn, skillLibBtn,
       settingsPanel, textProvidersList, ocrProvidersList,
       addTextProviderBtn, addOcrProviderBtn,
       systemPromptText, systemPromptOcr, maxSteps, saveBtn, testBtn, settingsStatus,
       downloadConfigBtn, uploadConfigBtn, uploadConfigInput,
+      skillLibrary, skillSearch, skillFilterAll, skillFilterMatch, skillList,
+      importSkillsBtn, exportSelectedBtn, exportAllBtn, importSkillsInput, skillLibStatus,
+      saveSkillModal, saveSkillName, saveSkillUrl, saveSkillMatch,
+      saveSkillNeedsInput, saveSkillHint, saveSkillPrompt, saveSkillError,
+      saveSkillCancel, saveSkillConfirm,
+      confirmModal, confirmWarn, confirmCancel, confirmOk,
       connStatus, attachArea, chips, fileInput, attachBtn,
-      messages, userInput, sendBtn, stopBtn,
+      messages, userInput, sendBtn,
       textTagSelect, ocrTagSelect
     };
   }
@@ -873,9 +1338,16 @@
   function canPersist() { return origin !== ''; }
 
   // ============ 会话持久化 ============
+  function isConnHintMessage(m) {
+    if (!m) return false;
+    if (m.role !== 'status' && m.role !== 'system') return false;
+    const t = String(m.text || '');
+    return t === CONN_HINT_RECONNECT || t === CONN_HINT_CONNECTED;
+  }
+
   function persistTranscript() {
     if (!canPersist()) return;
-    const compact = transcript.slice(-200).map((m) => ({
+    const compact = transcript.filter((m) => !isConnHintMessage(m)).slice(-200).map((m) => ({
       role: m.role,
       text: String(m.text || '').slice(0, 4000)
     }));
@@ -921,6 +1393,7 @@
 
   function clearMessagesDOM() {
     els.messages.textContent = '';
+    connHintEl = null;
   }
 
   // ============ 渲染持久化的会话 ============
@@ -933,14 +1406,17 @@
     clearMessagesDOM();
     transcript = [];
     if (Array.isArray(savedTr)) {
+      let stripped = false;
       for (const m of savedTr) {
         if (m && m.role && m.text != null) {
+          if (isConnHintMessage(m)) { stripped = true; continue; }
           const div = mk('div', 'bubble ' + m.role);
           div.textContent = String(m.text);
           els.messages.appendChild(div);
           transcript.push({ role: m.role, text: String(m.text) });
         }
       }
+      if (stripped) persistTranscript();
     }
     scrollDown();
 
@@ -1074,7 +1550,7 @@
       let top = drag.origTop + dy;
       const vw = window.innerWidth;
       const vh = window.innerHeight;
-      const pw = host.offsetWidth || 384;
+      const pw = host.offsetWidth || 520;
       const ph = host.offsetHeight || 560;
       left = Math.max(-20, Math.min(vw - pw + 20, left));
       top = Math.max(-20, Math.min(vh - ph + 20, top));
@@ -1102,18 +1578,20 @@
       stopping = false;
       clearStopWatch();
     }
-    els.sendBtn.disabled = v;
     els.userInput.disabled = v;
     if (els.attachBtn) els.attachBtn.disabled = v;
-    if (els.stopBtn) {
-      els.stopBtn.classList.toggle('hidden', !v);
-      els.stopBtn.disabled = !v || stopping;
-      els.stopBtn.textContent = stopping ? '停止中' : '停止';
-    }
     if (v) {
-      els.sendBtn.textContent = '运行中';
+      els.sendBtn.textContent = stopping ? '停止中' : '停止';
+      els.sendBtn.title = stopping ? '正在停止…' : '停止当前正在执行的任务';
+      els.sendBtn.classList.add('stop');
+      els.sendBtn.classList.remove('primary');
+      els.sendBtn.disabled = stopping;
     } else {
       els.sendBtn.textContent = '发送';
+      els.sendBtn.title = '发送';
+      els.sendBtn.classList.add('primary');
+      els.sendBtn.classList.remove('stop');
+      els.sendBtn.disabled = false;
     }
   }
 
@@ -1159,10 +1637,9 @@
   function requestStop() {
     if (!running || stopping) return;
     stopping = true;
-    if (els.stopBtn) {
-      els.stopBtn.disabled = true;
-      els.stopBtn.textContent = '停止中';
-    }
+    els.sendBtn.disabled = true;
+    els.sendBtn.textContent = '停止中';
+    els.sendBtn.title = '正在停止…';
     try {
       if (port && !portDead) port.postMessage({ cmd: 'cancel' });
     } catch (e) {}
@@ -1197,8 +1674,8 @@
   // ============ 配置 ============
   function collectConfig() {
     return {
-      textProviders: collectProviders(els.textProvidersList),
-      ocrProviders: collectProviders(els.ocrProvidersList),
+      textProviders: collectProviders(els.textProvidersList, 'text'),
+      ocrProviders: collectProviders(els.ocrProvidersList, 'ocr'),
       systemPromptText: els.systemPromptText.value,
       systemPromptOcr: els.systemPromptOcr.value,
       maxSteps: Number(els.maxSteps.value) || 15,
@@ -1215,9 +1692,9 @@
     els.ocrProvidersList.textContent = '';
     const textProviders = Array.isArray(cfg.textProviders) ? cfg.textProviders : [];
     const ocrProviders = Array.isArray(cfg.ocrProviders) ? cfg.ocrProviders : [];
-    if (textProviders.length === 0) addProviderRow(els.textProvidersList, { name: '默认' });
-    textProviders.forEach((p) => addProviderRow(els.textProvidersList, p));
-    ocrProviders.forEach((p) => addProviderRow(els.ocrProvidersList, p));
+    if (textProviders.length === 0) addProviderRow(els.textProvidersList, { name: '默认', providerType: 'Standard-TXT' }, 'text');
+    textProviders.forEach((p) => addProviderRow(els.textProvidersList, p, 'text'));
+    ocrProviders.forEach((p) => addProviderRow(els.ocrProvidersList, p, 'ocr'));
 
     // system prompts：空值用 defaults 预填
     const defs = cfg.defaults || {};
@@ -1288,7 +1765,7 @@
       document.body.removeChild(a);
       setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 1000);
     } catch (e) {
-      addBubble('error', '下载配置失败：' + String(e && e.message || e));
+      addBubble('error', '下载失败：' + String(e && e.message || e));
     }
   }
 
@@ -1321,11 +1798,315 @@
     els.uploadConfigInput.value = '';
   }
 
+  // ============ WEB-SKILL ============
+  function collectUserPrompt() {
+    return transcript
+      .filter((m) => m && m.role === 'user')
+      .map((m) => String(m.text || ''))
+      .filter((t) => t.trim().length > 0)
+      .join('\n\n');
+  }
+
+  function defaultSkillName(prompt) {
+    const t = String(prompt || '').replace(/\s+/g, ' ').trim();
+    if (!t) return '';
+    return t.length > 32 ? t.slice(0, 32) : t;
+  }
+
+  function promptHasPlaceholders(text) {
+    return /\{\{[^}]+\}\}/.test(String(text || ''));
+  }
+
+  function setSkillLibraryOpen(open) {
+    if (open) {
+      els.settingsPanel.classList.add('hidden');
+      els.skillLibrary.classList.remove('hidden');
+      requestSkillList();
+    } else {
+      els.skillLibrary.classList.add('hidden');
+    }
+  }
+
+  function requestSkillList() {
+    if (!port || portDead) {
+      els.skillLibStatus.textContent = '未连接后台';
+      return;
+    }
+    try { port.postMessage({ cmd: 'listWebSkills' }); } catch (e) {
+      els.skillLibStatus.textContent = '读取技能库失败';
+    }
+  }
+
+  function compactUrl(url) {
+    try {
+      const u = new URL(url);
+      return u.host + u.pathname + (u.search ? u.search : '');
+    } catch (e) {
+      return String(url || '');
+    }
+  }
+
+  function skillUrlMatches(skill, currentHref) {
+    let saved;
+    let cur;
+    try { saved = new URL(skill && skill.pageUrl || ''); saved.hash = ''; } catch (e) { return false; }
+    try { cur = new URL(currentHref || ''); cur.hash = ''; } catch (e) { return false; }
+    const mode = (skill && skill.urlMatch) || 'origin+path';
+    if (mode === 'origin') return saved.origin === cur.origin;
+    if (mode === 'exact') return saved.href === cur.href;
+    return saved.origin === cur.origin && saved.pathname === cur.pathname;
+  }
+
+  function selectedSkillIdList() {
+    return Object.keys(selectedSkillIds).filter((id) => selectedSkillIds[id]);
+  }
+
+  function renderSkillList() {
+    const current = location.href;
+    const q = String(els.skillSearch.value || '').trim().toLowerCase();
+    const onlyMatch = els.skillFilterMatch.classList.contains('active');
+    const list = cachedSkills.slice().sort((a, b) => {
+      const ma = skillUrlMatches(a, current) ? 1 : 0;
+      const mb = skillUrlMatches(b, current) ? 1 : 0;
+      if (ma !== mb) return mb - ma;
+      return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+    }).filter((s) => {
+      if (onlyMatch && !skillUrlMatches(s, current)) return false;
+      if (!q) return true;
+      const hay = ((s.name || '') + ' ' + (s.pageUrl || '') + ' ' + (s.prompt || '')).toLowerCase();
+      return hay.indexOf(q) >= 0;
+    });
+
+    els.skillList.textContent = '';
+    if (list.length === 0) {
+      els.skillList.appendChild(mk('div', 'skill-empty', {
+        textContent: cachedSkills.length ? '没有符合条件的技能' : '还没有 WEB-SKILL，可从当前对话保存或导入 JSON'
+      }));
+      return;
+    }
+    list.forEach((skill) => {
+      const match = skillUrlMatches(skill, current);
+      const card = mk('div', 'skill-card' + (match ? ' match' : ''));
+      const top = mk('div', 'skill-card-top');
+      const check = mk('input', null, { type: 'checkbox' });
+      check.checked = !!selectedSkillIds[skill.id];
+      check.title = '选择以便导出';
+      check.addEventListener('change', () => {
+        if (check.checked) selectedSkillIds[skill.id] = true;
+        else delete selectedSkillIds[skill.id];
+      });
+      const name = mk('div', 'skill-card-name', { textContent: skill.name || '(未命名)' });
+      top.appendChild(check);
+      top.appendChild(name);
+      if (match) top.appendChild(mk('span', 'skill-badge match', { textContent: '适用本页' }));
+      if (skill.needsInput) top.appendChild(mk('span', 'skill-badge need', { textContent: '需参数' }));
+      card.appendChild(top);
+      card.appendChild(mk('div', 'skill-card-url', { textContent: compactUrl(skill.pageUrl) }));
+      const actions = mk('div', 'skill-card-actions');
+      const triggerBtn = mk('button', 'btn primary', { type: 'button', textContent: '触发' });
+      const exportOneBtn = mk('button', 'btn', { type: 'button', textContent: '导出' });
+      const delBtn = mk('button', 'btn', { type: 'button', textContent: '删除' });
+      triggerBtn.addEventListener('click', () => triggerSkill(skill));
+      exportOneBtn.addEventListener('click', () => exportSkills([skill.id]));
+      delBtn.addEventListener('click', () => deleteSkill(skill));
+      actions.appendChild(triggerBtn);
+      actions.appendChild(exportOneBtn);
+      actions.appendChild(delBtn);
+      card.appendChild(actions);
+      els.skillList.appendChild(card);
+    });
+  }
+
+  function applySkillToInput(skill) {
+    els.userInput.value = skill && skill.prompt != null ? String(skill.prompt) : '';
+    els.userInput.focus();
+    els.skillLibrary.classList.add('hidden');
+    hideConfirmModal();
+    if (skill && skill.needsInput) {
+      const hint = String(skill.inputHint || '').trim();
+      addBubble('system', hint || '此技能需要补充个性化参数/数据或附件后再发送');
+    }
+  }
+
+  function hideConfirmModal() {
+    pendingTriggerSkill = null;
+    els.confirmModal.classList.add('hidden');
+  }
+
+  function triggerSkill(skill) {
+    if (!skill) return;
+    const current = location.href;
+    if (skillUrlMatches(skill, current)) {
+      applySkillToInput(skill);
+      return;
+    }
+    pendingTriggerSkill = skill;
+    els.confirmWarn.textContent =
+      '该 WEB-SKILL 适用于：\n' + (skill.pageUrl || '(无)') +
+      '\n\n当前页面：\n' + current +
+      '\n\n页面不匹配。确认后仍可将提示词载入输入框，但操作目标页可能不同。';
+    els.confirmModal.classList.remove('hidden');
+  }
+
+  function hideSaveSkillModal() {
+    els.saveSkillModal.classList.add('hidden');
+    els.saveSkillError.textContent = '';
+  }
+
+  function openSaveSkillModal() {
+    const prompt = collectUserPrompt();
+    if (!prompt) {
+      addBubble('error', '还没有用户任务可保存。请先发送至少一条任务，再存为 WEB-SKILL。');
+      return;
+    }
+    els.saveSkillName.value = defaultSkillName(prompt);
+    els.saveSkillUrl.value = location.href || '';
+    els.saveSkillMatch.value = 'origin+path';
+    els.saveSkillPrompt.value = prompt;
+    const needs = promptHasPlaceholders(prompt);
+    els.saveSkillNeedsInput.checked = needs;
+    els.saveSkillHint.value = '';
+    els.saveSkillError.textContent = '';
+    els.settingsPanel.classList.add('hidden');
+    els.saveSkillModal.classList.remove('hidden');
+    els.saveSkillName.focus();
+  }
+
+  function submitSaveSkill() {
+    const name = String(els.saveSkillName.value || '').trim();
+    const pageUrl = String(els.saveSkillUrl.value || '').trim();
+    const prompt = String(els.saveSkillPrompt.value || '');
+    if (!name) { els.saveSkillError.textContent = '请填写技能名称'; return; }
+    if (!pageUrl) { els.saveSkillError.textContent = '请填写适用页面 URL'; return; }
+    if (!prompt.trim()) { els.saveSkillError.textContent = '技能正文不能为空'; return; }
+    if (!port || portDead) { els.saveSkillError.textContent = '未连接后台'; return; }
+    els.saveSkillError.textContent = '';
+    try {
+      port.postMessage({
+        cmd: 'saveWebSkill',
+        skill: {
+          name: name,
+          pageUrl: pageUrl,
+          urlMatch: els.saveSkillMatch.value || 'origin+path',
+          needsInput: !!els.saveSkillNeedsInput.checked,
+          inputHint: String(els.saveSkillHint.value || '').trim(),
+          prompt: prompt
+        }
+      });
+    } catch (e) {
+      els.saveSkillError.textContent = '保存失败：' + String(e && e.message || e);
+    }
+  }
+
+  function deleteSkill(skill) {
+    if (!skill || !skill.id) return;
+    if (!port || portDead) {
+      els.skillLibStatus.textContent = '未连接后台';
+      return;
+    }
+    try { port.postMessage({ cmd: 'deleteWebSkill', id: skill.id }); } catch (e) {
+      els.skillLibStatus.textContent = '删除失败';
+    }
+  }
+
+  function exportSkills(ids) {
+    if (!port || portDead) {
+      els.skillLibStatus.textContent = '未连接后台';
+      return;
+    }
+    try { port.postMessage({ cmd: 'exportWebSkills', ids: ids }); } catch (e) {
+      els.skillLibStatus.textContent = '导出失败';
+    }
+  }
+
+  async function importSkillsFile(file) {
+    if (!file) return;
+    let text;
+    try { text = await file.text(); } catch (e) {
+      els.skillLibStatus.textContent = '读取文件失败：' + String(e && e.message || e);
+      els.importSkillsInput.value = '';
+      return;
+    }
+    if (!port || portDead) {
+      els.skillLibStatus.textContent = '导入失败：未连接后台';
+      els.importSkillsInput.value = '';
+      return;
+    }
+    try { port.postMessage({ cmd: 'importWebSkills', raw: String(text) }); } catch (e) {
+      els.skillLibStatus.textContent = '导入失败：' + String(e && e.message || e);
+    }
+    els.importSkillsInput.value = '';
+  }
+
+  function setSkillFilter(mode) {
+    if (mode === 'match') {
+      els.skillFilterAll.classList.remove('active');
+      els.skillFilterMatch.classList.add('active');
+    } else {
+      els.skillFilterMatch.classList.remove('active');
+      els.skillFilterAll.classList.add('active');
+    }
+    renderSkillList();
+  }
+
+  // ============ 连接指示 / 重连 ============
+  function isPanelVisible() {
+    return !host.hidden;
+  }
+
+  function setConnState(state) {
+    const labels = {
+      connected: '已连接',
+      disconnected: '未连接',
+      reconnecting: '重连中',
+      connecting: '连接中'
+    };
+    const label = labels[state] || '未连接';
+    if (els.connLamp) {
+      els.connLamp.className = 'conn-lamp ' + state;
+      els.connLamp.title = label;
+    }
+    if (els.connLampLabel) els.connLampLabel.textContent = label;
+  }
+
+  function upsertConnHint(text, kind) {
+    const role = kind || 'status';
+    if (!connHintEl || !connHintEl.isConnected) {
+      connHintEl = mk('div', 'bubble ' + role, { textContent: String(text) });
+      els.messages.appendChild(connHintEl);
+    } else {
+      connHintEl.className = 'bubble ' + role;
+      connHintEl.textContent = String(text);
+    }
+    scrollDown();
+  }
+
+  function stopReconnectTimer() {
+    if (reconnectTimerId) {
+      clearTimeout(reconnectTimerId);
+      reconnectTimerId = null;
+    }
+  }
+
   // ============ 面板显示 ============
   function showPanel() {
     host.hidden = false;
     els.userInput.focus();
     reportVisibility(true);
+    if (portDead || !port) {
+      triggerReconnect();
+    } else {
+      startHeartbeat();
+      setConnState(reconnecting ? 'reconnecting' : 'connected');
+    }
+  }
+
+  function hidePanel() {
+    host.hidden = true;
+    stopHeartbeat();
+    stopReconnectTimer();
+    reconnecting = false;
+    reportVisibility(false);
   }
 
   // ============ 消息分发 ============
@@ -1335,16 +2116,21 @@
       if (msg.injectError) {
         els.connStatus.textContent = location.href + ' ｜ 注入失败：' + msg.injectError;
         els.connStatus.classList.add('error');
+        els.connStatus.classList.remove('ok');
       } else {
         els.connStatus.textContent = location.href + ' ｜ 已注入';
         els.connStatus.classList.add('ok');
+        els.connStatus.classList.remove('error');
       }
+      const wasReconnecting = reconnecting;
       if (reconnecting) {
         // 重连后只刷新状态与配置，不重载已渲染会话
         reconnecting = false;
       } else {
         await loadPersisted();
       }
+      setConnState('connected');
+      if (wasReconnecting) upsertConnHint(CONN_HINT_CONNECTED, 'system');
       // SW 重启后 visibleTabs 会丢失，若面板可见则重新上报
       if (!host.hidden) reportVisibility(true);
       if (runningBeforeDisconnect && !msg.taskRunning) {
@@ -1357,6 +2143,7 @@
       } catch (e) {}
     } else {
       els.connStatus.textContent = location.href ? location.href : '（无页面信息）';
+      setConnState(portDead ? 'disconnected' : 'connecting');
     }
   }
 
@@ -1451,6 +2238,53 @@
             renderChips();
           }
           break;
+        case 'webSkills':
+          cachedSkills = Array.isArray(msg.skills) ? msg.skills : [];
+          renderSkillList();
+          break;
+        case 'webSkillSaved':
+          if (msg.ok) {
+            hideSaveSkillModal();
+            cachedSkills = Array.isArray(msg.skills) ? msg.skills : cachedSkills;
+            renderSkillList();
+            addBubble('system', '已保存 WEB-SKILL' + (msg.skill && msg.skill.name ? '：' + msg.skill.name : ''));
+          } else if (!els.saveSkillModal.classList.contains('hidden')) {
+            els.saveSkillError.textContent = msg.error || '保存失败';
+          } else {
+            addBubble('error', '保存 WEB-SKILL 失败：' + (msg.error || '未知错误'));
+          }
+          break;
+        case 'webSkillDeleted':
+          if (msg.ok) {
+            if (msg.id) delete selectedSkillIds[msg.id];
+            cachedSkills = Array.isArray(msg.skills) ? msg.skills : cachedSkills;
+            renderSkillList();
+            els.skillLibStatus.textContent = '已删除';
+          } else {
+            els.skillLibStatus.textContent = '删除失败：' + (msg.error || '');
+          }
+          break;
+        case 'webSkillsExport':
+          if (msg.ok && typeof msg.json === 'string') {
+            const n = msg.count != null ? msg.count : 1;
+            downloadJsonText(msg.json, n === 1 ? 'web-skill.json' : 'web-skill-pack.json');
+            els.skillLibStatus.textContent = '已导出 ' + n + ' 条 WEB-SKILL';
+          } else {
+            els.skillLibStatus.textContent = '导出失败：' + (msg.error || '未知错误');
+          }
+          break;
+        case 'webSkillsImported':
+          if (msg.ok) {
+            cachedSkills = Array.isArray(msg.skills) ? msg.skills : cachedSkills;
+            renderSkillList();
+            const n = msg.imported != null ? msg.imported : 0;
+            els.skillLibStatus.textContent = '已导入 ' + n + ' 条（同 id 已作为新条目）';
+            addBubble('status', '已导入 ' + n + ' 条 WEB-SKILL');
+          } else {
+            els.skillLibStatus.textContent = '导入失败：' + (msg.error || '文件无效');
+            addBubble('error', '导入 WEB-SKILL 失败：' + (msg.error || '文件无效'));
+          }
+          break;
         default:
           break;
       }
@@ -1470,7 +2304,12 @@
 
   function startHeartbeat() {
     stopHeartbeat();
+    if (!isPanelVisible()) return;
     heartbeatId = setInterval(() => {
+      if (!isPanelVisible()) {
+        stopHeartbeat();
+        return;
+      }
       try {
         port.postMessage({ cmd: 'ping' });
       } catch (e) {
@@ -1498,7 +2337,13 @@
         portDead = true;
         setRunning(false);
         stopHeartbeat();
-        triggerReconnect();
+        if (isPanelVisible()) {
+          triggerReconnect();
+        } else {
+          stopReconnectTimer();
+          reconnecting = false;
+          setConnState('disconnected');
+        }
       });
       startHeartbeat();
       return true;
@@ -1508,18 +2353,31 @@
   }
 
   function triggerReconnect() {
+    if (!isPanelVisible()) {
+      stopReconnectTimer();
+      reconnecting = false;
+      setConnState('disconnected');
+      return;
+    }
     if (reconnectTimerId) return;
-    if (!reconnecting) addBubble('status', '连接已断开，正在重连…');
+    setConnState('reconnecting');
+    upsertConnHint(CONN_HINT_RECONNECT, 'status');
     reconnecting = true;
     const delays = [1000, 2000, 4000, 8000, 16000, 30000, 60000];
     let attempt = 0;
     function tryReconnect() {
       reconnectTimerId = null;
+      if (!isPanelVisible()) {
+        reconnecting = false;
+        setConnState('disconnected');
+        return;
+      }
       const ok = connectPort();
       if (ok) {
         // background 会发 ready → handleReady 见 reconnecting=true 则跳过 loadPersisted
       } else {
         attempt++;
+        setConnState('reconnecting');
         reconnectTimerId = setTimeout(tryReconnect, delays[Math.min(attempt, delays.length - 1)]);
       }
     }
@@ -1527,9 +2385,11 @@
   }
 
   function openPort() {
+    setConnState('connecting');
     const ok = connectPort();
     if (!ok) {
       portDead = true;
+      setConnState('disconnected');
       addBubble('error', '无法连接后台：请重新打开扩展');
     }
   }
@@ -1537,11 +2397,59 @@
   // ============ 事件绑定 ============
   function wireEvents() {
     els.settingsBtn.addEventListener('click', () => {
+      const opening = els.settingsPanel.classList.contains('hidden');
       els.settingsPanel.classList.toggle('hidden');
+      if (opening) els.skillLibrary.classList.add('hidden');
     });
     els.closeBtn.addEventListener('click', () => {
-      host.hidden = true;
-      reportVisibility(false);
+      hidePanel();
+    });
+    els.saveSkillBtn.addEventListener('click', () => openSaveSkillModal());
+    els.skillLibBtn.addEventListener('click', () => {
+      const opening = els.skillLibrary.classList.contains('hidden');
+      setSkillLibraryOpen(opening);
+    });
+    els.saveSkillCancel.addEventListener('click', () => hideSaveSkillModal());
+    els.saveSkillConfirm.addEventListener('click', () => submitSaveSkill());
+    els.saveSkillPrompt.addEventListener('input', () => {
+      if (promptHasPlaceholders(els.saveSkillPrompt.value)) els.saveSkillNeedsInput.checked = true;
+    });
+    els.saveSkillModal.addEventListener('click', (e) => {
+      if (e.target === els.saveSkillModal) hideSaveSkillModal();
+    });
+    els.confirmCancel.addEventListener('click', () => hideConfirmModal());
+    els.confirmOk.addEventListener('click', () => {
+      const skill = pendingTriggerSkill;
+      if (skill) applySkillToInput(skill);
+      else hideConfirmModal();
+    });
+    els.confirmModal.addEventListener('click', (e) => {
+      if (e.target === els.confirmModal) hideConfirmModal();
+    });
+    els.skillSearch.addEventListener('input', () => renderSkillList());
+    els.skillFilterAll.addEventListener('click', () => setSkillFilter('all'));
+    els.skillFilterMatch.addEventListener('click', () => setSkillFilter('match'));
+    els.importSkillsBtn.addEventListener('click', () => els.importSkillsInput.click());
+    els.importSkillsInput.addEventListener('change', () => {
+      if (els.importSkillsInput.files && els.importSkillsInput.files[0]) {
+        importSkillsFile(els.importSkillsInput.files[0]);
+      }
+    });
+    els.exportSelectedBtn.addEventListener('click', () => {
+      const ids = selectedSkillIdList();
+      if (ids.length === 0) {
+        els.skillLibStatus.textContent = '请先勾选要导出的技能';
+        return;
+      }
+      exportSkills(ids);
+    });
+    els.exportAllBtn.addEventListener('click', () => {
+      const ids = cachedSkills.map((s) => s.id).filter(Boolean);
+      if (ids.length === 0) {
+        els.skillLibStatus.textContent = '技能库为空';
+        return;
+      }
+      exportSkills(ids);
     });
     els.saveBtn.addEventListener('click', () => {
       try {
@@ -1556,8 +2464,8 @@
         els.settingsStatus.textContent = '测试失败：未连接';
       }
     });
-    els.addTextProviderBtn.addEventListener('click', () => addProviderRow(els.textProvidersList, { name: 'provider' }));
-    els.addOcrProviderBtn.addEventListener('click', () => addProviderRow(els.ocrProvidersList, { name: 'provider' }));
+    els.addTextProviderBtn.addEventListener('click', () => addProviderRow(els.textProvidersList, { name: 'provider', providerType: 'Standard-TXT' }, 'text'));
+    els.addOcrProviderBtn.addEventListener('click', () => addProviderRow(els.ocrProvidersList, { name: 'OCR', providerType: 'Standard-IMG' }, 'ocr'));
     els.downloadConfigBtn.addEventListener('click', () => exportConfig());
     els.uploadConfigBtn.addEventListener('click', () => els.uploadConfigInput.click());
     els.uploadConfigInput.addEventListener('change', () => {
@@ -1585,7 +2493,6 @@
         sendMessage();
       }
     });
-    els.stopBtn.addEventListener('click', () => requestStop());
     els.userInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -1613,11 +2520,13 @@
     document.body.appendChild(host);
     wireEvents();
     els.connStatus.textContent = '正在连接…';
+    setConnState('connecting');
     host.hidden = true;
     openPort();
 
-    // bfcache 恢复：页面从前进/后退缓存恢复时，端口已断开，需主动重连
+    // bfcache 恢复：页面从前进/后退缓存恢复时，端口已断开，需主动重连（仅面板可见时）
     window.addEventListener('pageshow', () => {
+      if (!isPanelVisible()) return;
       if (portDead || !port) {
         triggerReconnect();
       }
@@ -1626,7 +2535,10 @@
     window.addEventListener('pagehide', (e) => {
       if (e.persisted) {
         stopHeartbeat();
+        stopReconnectTimer();
         portDead = true;
+        reconnecting = false;
+        setConnState('disconnected');
       }
     });
   }
