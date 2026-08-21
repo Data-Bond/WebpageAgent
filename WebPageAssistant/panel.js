@@ -947,21 +947,35 @@
     KIMI: 'Standard-TXT',
     'OCR-KIMI': 'Standard-IMG',
     'OCR-Qwen': 'Standard-IMG',
-    'OCR-Vision': 'Standard-IMG'
+    'OCR-Vision': 'Standard-IMG',
+    MinerU: 'MinerU',
+    mineru: 'MinerU',
+    'mineru-parse': 'MinerU'
   };
   function providerTypesOf(kind) {
     return kind === 'ocr' ? OCR_PROVIDER_TYPES : TEXT_PROVIDER_TYPES;
   }
-  function canonicalizeProviderType(raw, kind) {
+  function looksLikeMinerUModel(id) {
+    const s = String(id || '').trim();
+    return /^mineru(\b|[-_./]|$)/i.test(s);
+  }
+  function mineruHintFrom(hint) {
+    if (!hint) return false;
+    if (typeof hint === 'string') return looksLikeMinerUModel(hint);
+    if (looksLikeMinerUModel(hint.model) || looksLikeMinerUModel(hint.name)) return true;
+    return String(hint.models || '').split(',').some((s) => looksLikeMinerUModel(s.trim()));
+  }
+  function canonicalizeProviderType(raw, kind, hint) {
     const list = providerTypesOf(kind);
     let id = String(raw || '').trim();
     if (PROVIDER_TYPE_ALIASES[id]) id = PROVIDER_TYPE_ALIASES[id];
     if (list.some((t) => t.id === id)) return id;
+    if (kind === 'ocr' && mineruHintFrom(hint)) return 'MinerU';
     return list[0].id;
   }
-  function providerTypeMeta(id, kind) {
+  function providerTypeMeta(id, kind, hint) {
     const list = providerTypesOf(kind);
-    const canon = canonicalizeProviderType(id, kind);
+    const canon = canonicalizeProviderType(id, kind, hint);
     return list.find((t) => t.id === canon) || list[0];
   }
 
@@ -970,7 +984,7 @@
     const isOcr = kind === 'ocr';
     const types = providerTypesOf(isOcr ? 'ocr' : 'text');
     const kindKey = isOcr ? 'ocr' : 'text';
-    const initialType = canonicalizeProviderType(data && data.providerType, kindKey);
+    const initialType = canonicalizeProviderType(data && data.providerType, kindKey, data);
     let meta = providerTypeMeta(initialType, kindKey);
     const row = mk('div', 'provider-row');
     const makeField = (labelText, input) => {
@@ -1047,10 +1061,10 @@
         return el ? String(el.value || '').trim() : '';
       };
       const name = get('name');
-      const providerType = canonicalizeProviderType(get('providerType'), kind);
+      const models = get('models');
+      const providerType = canonicalizeProviderType(get('providerType'), kind, { name: name, models: models });
       const baseURL = get('baseURL');
       const apiKey = get('apiKey');
-      const models = get('models');
       if (baseURL || models) {
         out.push({ name: name || 'provider', providerType, baseURL, apiKey, models });
       }

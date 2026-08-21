@@ -16,6 +16,7 @@ const DEFAULT_CONFIG = {
 };
 
 // providerType 只能是下列固定枚举，由设置里下拉选择；未知/旧别名会规范到对应标准类型，不按 URL 猜测。
+// 旧 OCR 配置无 providerType 时：模型 ID 为 MinerU* 则回退 MinerU，其余回退 Standard-IMG。
 // protocol: openai-chat | openai-vision | scnet-recognize | mineru-parse
 const TEXT_PROVIDER_TYPES = [
   { id: 'Standard-TXT', label: 'Standard-TXT', protocol: 'openai-chat', defaultBaseURL: '', modelsHint: '模型ID，逗号分隔' }
@@ -30,29 +31,46 @@ const PROVIDER_TYPE_ALIASES = {
   KIMI: 'Standard-TXT',
   'OCR-KIMI': 'Standard-IMG',
   'OCR-Qwen': 'Standard-IMG',
-  'OCR-Vision': 'Standard-IMG'
+  'OCR-Vision': 'Standard-IMG',
+  MinerU: 'MinerU',
+  mineru: 'MinerU',
+  'mineru-parse': 'MinerU'
 };
 
 function providerTypeList(kind) {
   return kind === 'ocr' ? OCR_PROVIDER_TYPES : TEXT_PROVIDER_TYPES;
 }
 
-function providerTypeMeta(id, kind) {
+function looksLikeMinerUModel(id) {
+  const s = String(id || '').trim();
+  return /^mineru(\b|[-_./]|$)/i.test(s);
+}
+
+function mineruHintFrom(hint) {
+  if (!hint) return false;
+  if (typeof hint === 'string') return looksLikeMinerUModel(hint);
+  if (looksLikeMinerUModel(hint.model) || looksLikeMinerUModel(hint.name)) return true;
+  return String(hint.models || '').split(',').some((s) => looksLikeMinerUModel(s.trim()));
+}
+
+function providerTypeMeta(id, kind, hint) {
   const list = providerTypeList(kind);
-  const canon = canonicalizeProviderType(id, kind);
+  const canon = canonicalizeProviderType(id, kind, hint);
   return list.find((t) => t.id === canon) || list[0];
 }
 
-function canonicalizeProviderType(raw, kind) {
+function canonicalizeProviderType(raw, kind, hint) {
   const list = providerTypeList(kind);
   let id = String(raw || '').trim();
   if (PROVIDER_TYPE_ALIASES[id]) id = PROVIDER_TYPE_ALIASES[id];
   if (list.some((t) => t.id === id)) return id;
+  // 旧 OCR 配置常有 MinerU* 模型、无 providerType；缺失时按模型 ID 回退，不按 URL 猜测。
+  if (kind === 'ocr' && mineruHintFrom(hint)) return 'MinerU';
   return list[0].id;
 }
 
 function ocrProtocol(tag) {
-  return providerTypeMeta(tag && tag.providerType, 'ocr').protocol;
+  return providerTypeMeta(tag && tag.providerType, 'ocr', tag).protocol;
 }
 
 function storageGet(keys) {
@@ -113,16 +131,23 @@ function storageSet(obj) {
   });
 }
 
-// 把单个 provider 配置标准化（兜底字段 + providerType）
+// 把单个 provider 配置标准化（兜底字段 + providerType）。
+// OCR 必须把 name/models 作为 hint 传入：旧配置常缺 providerType，
+// 若不带 hint 会先被写成 Standard-IMG，后续 resolveTag/ocrProtocol 看到合法类型就不再看模型 ID。
 function normalizeProvider(p, kind) {
   if (!p || typeof p !== 'object') return null;
   const k = kind === 'ocr' ? 'ocr' : 'text';
+  const models = String(p.models || p.model || '').trim();
   return {
     name: String(p.name || '').trim() || 'provider',
-    providerType: canonicalizeProviderType(p.providerType, k),
+    providerType: canonicalizeProviderType(p.providerType, k, {
+      name: p.name,
+      models: models,
+      model: p.model
+    }),
     baseURL: String(p.baseURL || p.apiBase || '').trim(),
     apiKey: String(p.apiKey || '').trim(),
-    models: String(p.models || p.model || '').trim()
+    models: models
   };
 }
 
@@ -178,7 +203,7 @@ function resolveTag(cfg, kind) {
   function asTag(prov, modelId) {
     return {
       name: prov.name,
-      providerType: canonicalizeProviderType(prov.providerType, kind),
+      providerType: canonicalizeProviderType(prov.providerType, kind, { name: prov.name, models: prov.models, model: modelId }),
       baseURL: prov.baseURL,
       apiKey: prov.apiKey,
       model: modelId
@@ -2014,7 +2039,13 @@ async function ocrPageSelector(tabId, args, ctx) {
     };
   }
   postMsg({ type: 'status', text: '正在读取页面图片并 OCR：' + String(selector).slice(0, 80) });
+  if (isUserCancelled(null, cancelRef)) {
+    return { ok: false, kind: 'query', cancelled: true, error: '已停止' };
+  }
   const cap = await sendToContentRetry(tabId, { cmd: 'captureImage', selector: selector });
+  if (isUserCancelled(null, cancelRef)) {
+    return { ok: false, kind: 'query', cancelled: true, error: '已停止' };
+  }
   if (cap && cap.__error) {
     return { ok: false, kind: 'query', error: '截取页面图片失败：' + cap.__error };
   }
@@ -2031,6 +2062,9 @@ async function ocrPageSelector(tabId, args, ctx) {
   const extraInstruction = hint || (likelyCaptcha
     ? '这是网页验证码图片。只输出图中的验证码字符，保留原始大小写、数字和符号，不要空格、换行和任何解释。'
     : '');
+  if (isUserCancelled(null, cancelRef)) {
+    return { ok: false, kind: 'query', cancelled: true, error: '已停止' };
+  }
   const reporter = makeApiReporter(postMsg);
   const fileName = 'page:' + String(selector).slice(0, 40);
   try {
@@ -2113,12 +2147,30 @@ async function runOperationsSafe(tabId, operations, ctx) {
   let lastProbe = null;
   let navigated = false;
   const pageOps = [];
+  const cancelRef = ctx && ctx.cancelRef;
+
+  function stoppedResult() {
+    pageOps.length = 0;
+    return {
+      resp: {
+        ok: false,
+        cancelled: true,
+        error: '已停止',
+        result: JSON.stringify({ kind: 'batch', results: results }),
+        probe: lastProbe
+      },
+      navigated: navigated,
+      cancelled: true
+    };
+  }
 
   async function flushPageOps() {
+    if (isUserCancelled(null, cancelRef)) return stoppedResult();
     if (!pageOps.length) return true;
     const batch = pageOps.slice();
     pageOps.length = 0;
     const execution = await runPageOpsBatch(tabId, batch);
+    if (isUserCancelled(null, cancelRef)) return stoppedResult();
     if (execution.navigated) navigated = true;
     const resp = execution.resp;
     if (resp && resp.probe) lastProbe = resp.probe;
@@ -2134,12 +2186,16 @@ async function runOperationsSafe(tabId, operations, ctx) {
   }
 
   for (let i = 0; i < list.length; i++) {
+    if (isUserCancelled(null, cancelRef)) return stoppedResult();
     const item = list[i] || {};
     if (String(item.op || '') === 'ocr') {
       const flushed = await flushPageOps();
       if (flushed !== true) return flushed;
       const ocrVal = await ocrPageSelector(tabId, item.args, ctx);
       results.push({ op: 'ocr', value: ocrVal });
+      if ((ocrVal && ocrVal.cancelled) || isUserCancelled(null, cancelRef)) {
+        return stoppedResult();
+      }
       continue;
     }
     pageOps.push(item);
@@ -2635,7 +2691,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
       // 导航安全执行：结构化操作不依赖 eval/CSP；两种路径均不自动重试，避免重复副作用
       const execution = await runOperationsSafe(tabId, parsed.operations, { postMsg, cancelRef, origin });
       const { resp: runResp, navigated } = execution;
-      if (cancelRef.cancelled) {
+      if (cancelRef.cancelled || execution.cancelled) {
         return await notifyCancelled(postMsg, cancelRef, origin, messages);
       }
 
