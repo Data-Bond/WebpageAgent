@@ -5,7 +5,7 @@
   'use strict';
 
   var INSTALLED = '__assistantPage';
-  var BRIDGE_VERSION = '2.6.0';
+  var BRIDGE_VERSION = '2.7.0';
 
   function install() {
     var scriptAborted = false;
@@ -438,6 +438,246 @@
       for (var k = 0; k < extras.length; k++) consider(extras[k]);
       scored.sort(function (a, b) { return b.score - a.score; });
       return scored.slice(0, 20).map(function (s) { return s.entry; });
+    }
+
+    var TEXT_ACTION_MAX = 100;
+    var TEXT_ACTION_DUP_MAX = 8;
+    var TEXT_ACTION_MIN_LEN = 2;
+    var TEXT_ACTION_MAX_LEN = 32;
+    var CLICK_BY_TEXT_MAX_LEN = 80;
+    var EMPTY_STATE_SEL = '.no-data, .not-tip, .empty, .empty-state';
+    var TEXT_ACTION_SCAN_SEL = 'span, a, p, em, strong, b, i, u, small, label, li, button, div, h1, h2, h3, h4, h5, h6, td, th';
+    var TEXT_SKIP_TAGS = {
+      SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, SVG: 1, PATH: 1, META: 1, LINK: 1,
+      BR: 1, HR: 1, IMG: 1, CANVAS: 1, INPUT: 1, SELECT: 1, TEXTAREA: 1, IFRAME: 1, VIDEO: 1, AUDIO: 1
+    };
+
+    function compactText(s) {
+      return String(s == null ? '' : s).replace(/\s+/g, '');
+    }
+
+    function classNameOf(el) {
+      try {
+        return String(el.className && el.className.toString ? el.className : (el.className || '')).trim().slice(0, 80);
+      } catch (e) { return ''; }
+    }
+
+    function ownText(el) {
+      if (!el || !el.childNodes) return '';
+      var parts = [];
+      var nodes = el.childNodes;
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i].nodeType === 3) {
+          var t = String(nodes[i].nodeValue || '').replace(/\s+/g, ' ').trim();
+          if (t) parts.push(t);
+        }
+      }
+      return parts.join(' ').trim();
+    }
+
+    function isWrapperEl(el) {
+      if (!el || !el.children || el.children.length !== 1) return false;
+      var a = compactText(el.innerText || el.textContent);
+      var b = compactText(el.children[0].innerText || el.children[0].textContent);
+      return a.length > 0 && a === b;
+    }
+
+    function inEmptyState(el) {
+      try { return !!(el.closest && el.closest(EMPTY_STATE_SEL)); }
+      catch (e) { return false; }
+    }
+
+    function isPointerCursor(el) {
+      try {
+        var win = el.ownerDocument && el.ownerDocument.defaultView || window;
+        var st = win.getComputedStyle && win.getComputedStyle(el);
+        return !!(st && String(st.cursor || '').toLowerCase() === 'pointer');
+      } catch (e) { return false; }
+    }
+
+    function inMainColumn(el) {
+      try { return !!(el.closest && el.closest('main, .content, .section, .file-list')); }
+      catch (e) { return false; }
+    }
+
+    function inNavAside(el) {
+      try { return !!(el.closest && el.closest('nav, aside')); }
+      catch (e) { return false; }
+    }
+
+    function elementsUnder(root, selector) {
+      if (!root || root === document || root.nodeType === 9) return queryAllDeep(selector);
+      var out = [];
+      var seen = new Set();
+      function consider(el) {
+        if (!el || seen.has(el)) return;
+        seen.add(el);
+        out.push(el);
+      }
+      try {
+        if (root.nodeType === 1 && root.matches && selector && root.matches(selector)) consider(root);
+      } catch (e) {}
+      var list = safeAll(root, selector);
+      for (var i = 0; i < list.length; i++) consider(list[i]);
+      var all = safeAll(root, '*');
+      for (var j = 0; j < all.length; j++) {
+        var el = all[j];
+        if (el.shadowRoot) {
+          var inner = elementsUnder(el.shadowRoot, selector);
+          for (var k = 0; k < inner.length; k++) consider(inner[k]);
+        }
+        if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+          try {
+            if (el.contentDocument) {
+              var framed = elementsUnder(el.contentDocument, selector);
+              for (var f = 0; f < framed.length; f++) consider(framed[f]);
+            }
+          } catch (e) {}
+        }
+      }
+      return out;
+    }
+
+    function classifyTextActionEl(el) {
+      if (!el) return null;
+      var tag = (el.tagName || '').toUpperCase();
+      if (TEXT_SKIP_TAGS[tag]) return null;
+      var text = ownText(el);
+      if (!text) return null;
+      if (text.length < TEXT_ACTION_MIN_LEN || text.length > TEXT_ACTION_MAX_LEN) return null;
+      if (!isVisible(el)) return null;
+      if (isWrapperEl(el)) return null;
+      var empty = inEmptyState(el);
+      var pointer = isPointerCursor(el);
+      if (!pointer && !empty) return null;
+      var score = 0;
+      if (pointer) score += 20;
+      if (empty) score += 40;
+      if (inMainColumn(el)) score += 15;
+      if (inNavAside(el)) score -= 20;
+      return { text: text, pointer: pointer, score: score };
+    }
+
+    function collectPageTextActions() {
+      var nodes = queryAllDeep(TEXT_ACTION_SCAN_SEL);
+      var scored = [];
+      for (var i = 0; i < nodes.length; i++) {
+        var info = classifyTextActionEl(nodes[i]);
+        if (!info) continue;
+        scored.push({
+          score: info.score,
+          el: nodes[i],
+          text: info.text,
+          pointer: info.pointer,
+          key: compactText(info.text)
+        });
+      }
+      scored.sort(function (a, b) { return b.score - a.score; });
+      var seenCount = {};
+      var firstEntry = {};
+      var out = [];
+      var j = 0;
+      for (; j < scored.length && out.length < TEXT_ACTION_MAX; j++) {
+        var item = scored[j];
+        seenCount[item.key] = (seenCount[item.key] || 0) + 1;
+        if (seenCount[item.key] > TEXT_ACTION_DUP_MAX) {
+          if (firstEntry[item.key]) firstEntry[item.key].dup++;
+          continue;
+        }
+        var us;
+        try { us = uniqueSelector(item.el); } catch (e) { us = null; }
+        if (!us || !us.selector) {
+          seenCount[item.key]--;
+          continue;
+        }
+        var entry = {
+          tag: (item.el.tagName || '').toUpperCase(),
+          text: item.text,
+          selector: us.selector,
+          cls: classNameOf(item.el),
+          pointer: !!item.pointer,
+          dup: 0
+        };
+        if (!firstEntry[item.key]) firstEntry[item.key] = entry;
+        out.push(entry);
+      }
+      for (; j < scored.length; j++) {
+        if (firstEntry[scored[j].key]) firstEntry[scored[j].key].dup++;
+      }
+      return out;
+    }
+
+    function collectClickByTextCandidates(root) {
+      var nodes = elementsUnder(root || document, TEXT_ACTION_SCAN_SEL);
+      var out = [];
+      var cap = 2500;
+      for (var i = 0; i < nodes.length && out.length < cap; i++) {
+        var el = nodes[i];
+        var tag = (el.tagName || '').toUpperCase();
+        if (TEXT_SKIP_TAGS[tag]) continue;
+        var text = ownText(el);
+        if (!text || text.length > CLICK_BY_TEXT_MAX_LEN) continue;
+        if (!isVisible(el)) continue;
+        out.push({ el: el, text: text });
+      }
+      return out;
+    }
+
+    function nodeDepth(el) {
+      var d = 0;
+      var n = el;
+      while (n && n.parentNode) {
+        d++;
+        n = n.parentNode;
+        if (d > 64) break;
+      }
+      return d;
+    }
+
+    function chooseClickByText(list, raw) {
+      var needle = normText(raw);
+      if (!needle) return null;
+      var best = -1;
+      var winners = [];
+      for (var i = 0; i < list.length; i++) {
+        var r = rankMatch(list[i].text, needle);
+        if (r < 0) continue;
+        if (best < 0 || r < best) { best = r; winners = [list[i]]; }
+        else if (r === best) winners.push(list[i]);
+      }
+      if (best < 0) return null;
+      winners.sort(function (a, b) {
+        var dl = String(a.text).length - String(b.text).length;
+        if (dl) return dl;
+        return nodeDepth(b.el) - nodeDepth(a.el);
+      });
+      var shortest = String(winners[0].text).length;
+      var tied = [];
+      var distinct = {};
+      for (var j = 0; j < winners.length; j++) {
+        if (String(winners[j].text).length !== shortest) break;
+        tied.push(winners[j]);
+        distinct[normText(winners[j].text)] = true;
+      }
+      if (Object.keys(distinct).length > 1) {
+        var texts = [];
+        for (var k = 0; k < tied.length && texts.length < 12; k++) texts.push(tied[k].text);
+        return { ambiguous: texts };
+      }
+      return { winner: tied[0] };
+    }
+
+    function sampleCandidateTexts(list, max) {
+      var n = Math.max(1, Math.min(Number(max) || 12, 20));
+      var out = [];
+      var seen = {};
+      for (var i = 0; i < list.length && out.length < n; i++) {
+        var t = String(list[i].text || '').trim();
+        if (!t || seen[t]) continue;
+        seen[t] = true;
+        out.push(t);
+      }
+      return out;
     }
 
     async function captureImage(sel) {
@@ -891,6 +1131,7 @@
         framesSummary: framesSummary(),
         formDigest: formDigest(),
         images: collectPageImages(),
+        textActions: collectPageTextActions(),
         elements: elements
       }));
     }
@@ -911,7 +1152,7 @@
       });
     }
 
-    // 对元素节点派发完整鼠标事件序列（含祖先 hover），供 page.click / clickOptionByText / selectOption 共用
+    // 对元素节点派发完整鼠标事件序列（含祖先 hover），供 page.click / clickByText / clickOptionByText / selectOption 共用
     function dispatchClick(el) {
       function fireMouse(type, target, extra) {
         try {
@@ -1771,11 +2012,30 @@
             return el ? (el.innerText || el.value || null) : null;
           },
           // 大型页面快照被截断时，按 label/name/placeholder/aria/title/text 反查控件。
+          // 同时扫描 textActions 同源短文本（pointer / 空状态），避免 Vue span 不在 INTERACTIVE 里。
           findControls: function (text, max) {
             var needle = normText(text);
             if (!needle) return [];
-            var all = queryAllDeep(INTERACTIVE_SELECTOR);
+            var cap = Math.max(1, Math.min(Number(max) || 20, 50));
             var found = [];
+            var seenSel = {};
+            function pushHit(el, rank, extra) {
+              var us = uniqueSelector(el);
+              if (!us || !us.selector || seenSel[us.selector]) return;
+              seenSel[us.selector] = true;
+              found.push(Object.assign({
+                rank: rank,
+                selector: us.selector,
+                tag: el.tagName || '',
+                type: el.type || '',
+                label: nearestLabel(el),
+                name: el.name || '',
+                placeholder: el.placeholder || '',
+                title: (el.getAttribute && el.getAttribute('title')) || '',
+                text: extra && extra.text ? extra.text : ''
+              }, extra && extra.via ? { via: extra.via } : {}));
+            }
+            var all = queryAllDeep(INTERACTIVE_SELECTOR);
             for (var i = 0; i < all.length; i++) {
               var el = all[i];
               var fields = [
@@ -1792,21 +2052,102 @@
                 if (r >= 0 && (rank < 0 || r < rank)) rank = r;
               }
               if (rank < 0) continue;
-              var us = uniqueSelector(el);
-              if (!us || !us.selector) continue;
-              found.push({
-                rank: rank,
-                selector: us.selector,
-                tag: el.tagName || '',
-                type: el.type || '',
-                label: nearestLabel(el),
-                name: el.name || '',
-                placeholder: el.placeholder || '',
-                title: (el.getAttribute && el.getAttribute('title')) || ''
-              });
+              pushHit(el, rank, {});
+            }
+            var textNodes = queryAllDeep(TEXT_ACTION_SCAN_SEL);
+            for (var ti = 0; ti < textNodes.length; ti++) {
+              var info = classifyTextActionEl(textNodes[ti]);
+              if (!info) continue;
+              var tr = rankMatch(info.text, needle);
+              if (tr < 0) continue;
+              pushHit(textNodes[ti], tr, { text: info.text, via: 'textAction' });
             }
             found.sort(function (a, b) { return a.rank - b.rank; });
-            return found.slice(0, Math.max(1, Math.min(Number(max) || 20, 50)));
+            return found.slice(0, cap);
+          },
+          // 按可见自身文本点击最短匹配节点。within 限定子树（用户给的容器 CSS 放这里）。
+          clickByText: function (text, opts) {
+            var raw = String(text == null ? '' : text).trim();
+            if (!raw) throw new Error('clickByText: 文本为空');
+            if (typeof opts === 'string') opts = { within: opts };
+            opts = opts && typeof opts === 'object' && !Array.isArray(opts) ? opts : {};
+            var within = String(opts.within || opts.selector || '').trim();
+            var root = null;
+            if (within) {
+              root = page.q(within);
+              if (!root) throw new Error('clickByText: within 容器未找到: ' + within);
+            }
+            var cands = collectClickByTextCandidates(root);
+            var picked = chooseClickByText(cands, raw);
+            var sample = sampleCandidateTexts(cands, 12);
+            if (!picked) {
+              throw new Error('clickByText: 未找到「' + raw + '」。' +
+                (within ? 'within 内' : '页面上') +
+                '可见短文本示例：' + (sample.length ? sample.join(' / ') : '(无)'));
+            }
+            if (picked.ambiguous) {
+              throw new Error('clickByText: 「' + raw + '」匹配到多个不同文本：' +
+                picked.ambiguous.join(' | ') + '。请缩小 within 或改用更完整文案。');
+            }
+            var el = picked.winner.el;
+            if (el.disabled || (el.getAttribute && el.getAttribute('aria-disabled') === 'true')) {
+              throw new Error('元素已禁用，不能点击: ' + raw);
+            }
+            dispatchClick(el);
+            var us;
+            try { us = uniqueSelector(el); } catch (e) { us = null; }
+            return {
+              ok: true,
+              kind: 'action',
+              text: picked.winner.text,
+              selector: us && us.selector ? us.selector : '',
+              verified: null
+            };
+          },
+          // 按容器查看可见后代短文本（去包装）。文案不在 L0 或用户给了容器时用。
+          inspect: function (selector, opts) {
+            var sel = String(selector == null ? '' : selector).trim();
+            if (!sel) throw new Error('inspect: 缺少容器选择器');
+            opts = opts && typeof opts === 'object' && !Array.isArray(opts) ? opts : {};
+            var maxNodes = Math.max(1, Math.min(Number(opts.maxNodes) || 120, 300));
+            var textLen = Math.max(4, Math.min(Number(opts.textLen) || 32, 80));
+            var root = page.q(sel);
+            if (!root) throw new Error('inspect: 容器未找到: ' + sel);
+            var nodes = [];
+            try {
+              nodes = [root].concat(Array.from(root.querySelectorAll('*')));
+            } catch (e) {
+              nodes = [root];
+            }
+            var out = [];
+            var scanned = 0;
+            for (var i = 0; i < nodes.length; i++) {
+              scanned++;
+              var el = nodes[i];
+              var tag = (el.tagName || '').toUpperCase();
+              if (TEXT_SKIP_TAGS[tag]) continue;
+              if (!isVisible(el)) continue;
+              if (isWrapperEl(el)) continue;
+              var t = ownText(el);
+              if (!t) continue;
+              var us;
+              try { us = uniqueSelector(el); } catch (err) { us = null; }
+              if (!us || !us.selector) continue;
+              out.push({
+                tag: tag,
+                text: t.slice(0, textLen),
+                selector: us.selector,
+                cls: classNameOf(el)
+              });
+              if (out.length >= maxNodes) break;
+            }
+            return {
+              ok: true,
+              selector: sel,
+              count: out.length,
+              truncated: out.length >= maxNodes || scanned < nodes.length,
+              nodes: out
+            };
           },
           // 下拉框选项候选选择器：覆盖常见自定义下拉（layui/element-ui/ant/vant/select2/chosen/easyUI/jQuery-UI/bootstrap-select 等）
           optionSelector: function () {
@@ -2122,6 +2463,7 @@
       scriptAborted = false;
       var allowed = {
         setVal: 1, click: 1, select: 1, getText: 1, findControls: 1,
+        clickByText: 1, inspect: 1,
         optionTexts: 1, clickOptionByText: 1, findOption: 1, selectOption: 1,
         listOptions: 1, filterSelect: 1,
         setChecked: 1, sleep: 1, waitFor: 1, probe: 1

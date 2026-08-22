@@ -5,7 +5,7 @@
 
 (function () {
   const MAX_TEXT_PAGES = 30;
-  const MAX_TEXT_CHARS = 100000;
+  const MAX_TEXT_CHARS = 150000;
   const MAX_RENDER_PAGES = 8;
   const MIN_USEFUL_CHARS = 40;
   const cancelledJobs = new Set();
