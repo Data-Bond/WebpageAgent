@@ -6,6 +6,10 @@ const DEFAULT_SYSTEM_PROMPT_OCR =
 
 const SNAPSHOT_MAX_CHARS = 80000;
 const ATTACHMENT_CONTEXT_MAX_CHARS = 150000;
+const LLM_TEXT_TIMEOUT_BASE_MS = 120000;
+const LLM_TEXT_TIMEOUT_MAX_MS = 300000;
+const LLM_TEXT_TIMEOUT_RETRY = 1;
+const LLM_OCR_TIMEOUT_MS = 120000;
 
 const DEFAULT_CONFIG = {
   textProviders: [],
@@ -93,7 +97,7 @@ const PLAYBOOK_END = '【运行时手册·结束】';
 const RUNTIME_PLAYBOOK =
   PLAYBOOK_BEGIN + '\n' +
   '以下规则优先级高于历史会话中的旧说明：\n' +
-  '【动作输出格式】执行网页动作时必须输出 {"action":"execute","summary":"意图","expect":"预期变化","operations":[{"op":"helper名","args":[参数...]}]}。helper名仅可为 setVal/click/select/upload/getText/findControls/clickByText/inspect/optionTexts/clickOptionByText/findOption/selectOption/listOptions/filterSelect/setChecked/sleep/waitFor/probe/ocr/ocrFill；一次只组合相互依赖且可共同验证的少量操作。禁止输出 plan/script，禁止输出可执行的 document./window. 代码；文件上传必须使用结构化 upload。用户给出的 document.querySelector("css") 或长 CSS 路径只是选择器字符串：抽出中间的 css 作为 click/inspect 的 selector 或 clickByText 的 within，不要写成脚本。\n' +
+  '【动作输出格式】每一轮只输出一个 JSON 对象，禁止在 JSON 前后写中文说明或 Markdown。执行网页动作时必须是 {"action":"execute","summary":"意图","expect":"预期变化","operations":[{"op":"helper名","args":[参数...]}]}。helper名仅可为 setVal/click/select/upload/getText/findControls/clickByText/inspect/optionTexts/clickOptionByText/findOption/selectOption/listOptions/filterSelect/setChecked/sleep/waitFor/probe/ocr/ocrFill；一次只组合相互依赖且可共同验证的少量操作。禁止输出 plan/script，禁止输出可执行的 document./window. 代码；文件上传必须使用结构化 upload。散文或手册摘抄里的 {"op":"upload"} 片段不是合法动作，缺少 action 字段会被丢弃。用户给出的 document.querySelector("css") 或长 CSS 路径只是选择器字符串：抽出中间的 css 作为 click/inspect 的 selector 或 clickByText 的 within，不要写成脚本。\n' +
   'upload 参数格式为 ["文件输入 selector","附件 key"]；控件 multiple=true 时可把第二参数设为 key 数组，一次性上传多个附件，禁止对同一控件连续单文件上传（会覆盖前一个）。\n' +
   'waitFor 在结构化操作中只接受 selector 字符串与可选 {timeout,poll}，不能传函数。timeout 上限 8000ms，超时表示该选择器未出现，不是崩溃。\n' +
   '【waitFor 用法】只等待快照里已经出现过、或你能确定即将出现的 selector。登录、点提交、整页跳转后不要猜测登录后页面的选择器去 waitFor：点击后结束本步，引擎会等待页面稳定并给你下一轮快照。不要用同一个猜测选择器反复 waitFor。\n' +
@@ -112,7 +116,8 @@ const RUNTIME_PLAYBOOK =
   '【复选框/单选框】勾选或取消一律用 page.setChecked(选择器或{text:"目标文本"}, true/false)：它先读当前状态，已是目标状态则不点击（幂等）。禁止对 label/复选框直接 page.click——label 点击是 toggle，会把已勾选项点成取消。快照中此类元素带 box/checked 字段；"选择 X"的语义是"使 X 处于勾选态"，已勾选即完成。勾选/表单值变化会在【变化报告】中显示 formChanged=true。\n' +
   '【页面图片/验证码 OCR】文本模型看不见页面上的图片，包括 BASE64 验证码。快照含 images[]（selector、srcKind=data|http|canvas、captcha，不含像素）。一般读图输出 {op:"ocr",args:[选择器]}：引擎读取该节点或其内部的 img/canvas/BASE64 背景并送给当前 OCR 模型，返回 {ok,text,chars}。禁止 action:ask 让用户看图，禁止把 BASE64 写进操作或上下文。选择器可以是 images[] 里的 img，也可以是包住图片的容器。同一张非验证码图只 OCR 一次。未配置 OCR 模型时向用户说明去设置里添加，不要假装已识别。\n' +
   '【验证码】登录/表单验证码一律 {"op":"ocrFill","args":["captcha",验证码输入框selector,登录按钮selector]} 一步完成截图、识别、填写、提交，禁止拆成 ocr+setVal+click（验证码会过期）。用户名/密码的 setVal 与 ocrFill 放在同一次 execute 的 operations 里，ocrFill 放最后。图片选择器优先用魔术值 "captcha"（执行时现场挑当前页最像验证码的可见图），不要引用早轮快照里的 nth-of-type 路径。验证码一次性：提交后若仍在登录页或有错误提示，先处理弹层（clickByText 关"确定/关闭"），再重新 ocrFill（图片已刷新，禁止复用旧识别结果）。禁止"查找登录按钮"这类空转查询——登录按钮就在快照里。无 OCR 配置时向用户说明，不要假装已识别。\n' +
-  '【短文本点击】空状态「请点击这里 XXX」或快照 textActions[] 里的短文案，用 clickByText("XXX", {within: 容器选择器}) 点中最短匹配节点。禁止对空状态外层容器（.no-data/.not-inner/.block-box 等）直接 click——冒泡到不了子节点 @click。clickOptionByText 仅用于已展开的下拉选项，不要与 clickByText 混用。多层 li/树形菜单里多处同文（如每层都有「更多」）会返回带 selector 的歧义候选，必须用 within 限定到某一枝，禁止盲点最深或最浅一层。\n' +
+  '【短文本点击】空状态「请点击这里 XXX」或快照 textActions[] 里的短文案，用 clickByText("XXX", {within: 容器选择器}) 点中最短匹配节点。within 必须来自当前这一轮快照；页面跳转后禁止沿用旧 nth-of-type。within 找不到时引擎会回退到仍存在的祖先，若文本在整页唯一则点击并返回 withinMissing/pageFallback，多处则报错。禁止对空状态外层容器（.no-data/.not-inner/.block-box 等）直接 click——冒泡到不了子节点 @click。clickOptionByText 仅用于已展开的下拉选项，不要与 clickByText 混用。多层 li/树形菜单里多处同文（如每层都有「更多」）会返回带 selector 的歧义候选，必须用 within 限定到某一枝，禁止盲点最深或最浅一层。\n' +
+  '【文件列表勾选】选择发布文件/数据空间文件列表里，点文件名（p.name）常常是进入目录或预览，不会勾选。勾选控件是行内 checkmark 图标（如 ivu-icon-md-checkmark-circle）。选中某个文件一律 setChecked({text:"完整文件名"}, true)，或 clickByText("完整文件名")——引擎会改点行内勾选图标。不要对文件名 p/li 的 nth-of-type 路径连点。选中后看已选列表/右侧栏是否出现该文件名；没有则不要重复点文件名。文件夹名（无后缀）仍点名称进入，不要当成勾选。\n' +
   '【容器探查】快照含独立的 textActions[]（约 100 条短可点文案，截断时优先于 elements 尾巴保留）。文案不在 L0、或用户给了容器但内部看不清时，调用 inspect(容器选择器) 查看该子树（默认最多 120 个节点），不要对容器本身乱点，也不要为了找控件去输出 plan/script。inspect 对嵌套 ul/ol/[role=tree|group] 默认只列当前层（nestedCollapsed>0 表示还有下层），要看某一枝再 inspect 该子项，不要指望一次扫完整棵多层树。\n' +
   '【系统文件框】若点击后弹出操作系统文件选择框（无法操作），在附近找隐藏的 input[type=file]，改用结构化 upload。不要把「选择数据文件」这类文案自动当成 upload。\n' +
   PLAYBOOK_END;
@@ -551,7 +556,12 @@ async function callChatCompletions(baseURL, apiKey, model, messages, options) {
 
   async function once(payload) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), opts.timeoutMs || 90000);
+    const timeoutMs = opts.timeoutMs || LLM_TEXT_TIMEOUT_BASE_MS;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { controller.abort(); } catch (e) {}
+    }, timeoutMs);
     linkAbort(controller, opts.signal);
     try {
       return await fetch(url, {
@@ -560,6 +570,14 @@ async function callChatCompletions(baseURL, apiKey, model, messages, options) {
         body: JSON.stringify(payload),
         signal: controller.signal
       });
+    } catch (e) {
+      if (isUserCancelled(e) || (opts.signal && opts.signal.aborted)) throw cancelledError();
+      if (timedOut) {
+        const err = new Error('请求大模型超时（' + Math.round(timeoutMs / 1000) + 's）@ ' + url);
+        err.code = 'LLM_TIMEOUT';
+        throw err;
+      }
+      throw new Error('请求大模型网络错误: ' + String(e && e.message || e) + ' @ ' + url);
     } finally {
       clearTimeout(timer);
     }
@@ -570,8 +588,8 @@ async function callChatCompletions(baseURL, apiKey, model, messages, options) {
   try {
     res = await once(chatCompletionsPayload(model, messages, opts, temperature));
   } catch (e) {
-    if (opts.signal && opts.signal.aborted) throw cancelledError();
-    throw new Error('请求大模型超时或网络错误: ' + String(e && e.message || e) + ' @ ' + url);
+    if (isUserCancelled(e) || (opts.signal && opts.signal.aborted)) throw cancelledError();
+    throw e;
   }
   if (opts.signal && opts.signal.aborted) throw cancelledError();
 
@@ -590,8 +608,8 @@ async function callChatCompletions(baseURL, apiKey, model, messages, options) {
       try {
         res = await once(chatCompletionsPayload(model, messages, opts, retryTemp));
       } catch (e) {
-        if (opts.signal && opts.signal.aborted) throw cancelledError();
-        throw new Error('请求大模型超时或网络错误: ' + String(e && e.message || e) + ' @ ' + url);
+        if (isUserCancelled(e) || (opts.signal && opts.signal.aborted)) throw cancelledError();
+        throw e;
       }
       if (opts.signal && opts.signal.aborted) throw cancelledError();
       if (!res.ok) {
@@ -631,6 +649,7 @@ function makeApiReporter(postMsg) {
       if (m.model) parts.push('模型 ' + m.model);
       if (m.bytes != null) parts.push('图像约 ' + m.bytes + ' 字节');
       if (m.chars != null) parts.push('上下文约 ' + m.chars + ' 字符');
+      if (m.timeoutMs != null) parts.push('超时 ' + Math.round(m.timeoutMs / 1000) + 's');
       if (m.maxTokens != null) parts.push('max_tokens=' + m.maxTokens);
       if (m.extra) parts.push(String(m.extra));
       postMsg({ type: 'status', text: (label || '模型') + ' 请求已发出：' + parts.join('，') + (m.url ? '，URL：' + m.url : '') });
@@ -671,6 +690,39 @@ function ocrBreakerRecordFailure(origin) { ocrBreakerState(origin).fails += 1; }
 function ocrBreakerRecordSuccess(origin) { ocrBreakerState(origin).fails = 0; }
 function ocrBreakerReset(origin) { ocrBreaker.delete(origin); }
 
+function estimateMessageChars(messages) {
+  let n = 0;
+  function add(c) {
+    if (typeof c === 'string') n += c.length;
+    else if (Array.isArray(c)) {
+      for (let i = 0; i < c.length; i++) {
+        const p = c[i];
+        if (typeof p === 'string') n += p.length;
+        else if (p && typeof p.text === 'string') n += p.text.length;
+      }
+    }
+  }
+  for (let i = 0; i < (messages || []).length; i++) add(messages[i] && messages[i].content);
+  return n;
+}
+
+function isReasonerModel(model) {
+  return /reasoner|think\b|[-_/]r1\b|\bo1\b|\bo3\b/i.test(String(model || ''));
+}
+
+function llmTimeoutMs(kind, messages, model) {
+  if (kind === 'ocr') return LLM_OCR_TIMEOUT_MS;
+  const chars = estimateMessageChars(messages);
+  let ms = LLM_TEXT_TIMEOUT_BASE_MS + Math.floor(chars / 25000) * 30000;
+  if (isReasonerModel(model)) ms += 60000;
+  if (ms > LLM_TEXT_TIMEOUT_MAX_MS) ms = LLM_TEXT_TIMEOUT_MAX_MS;
+  return ms;
+}
+
+function isLlmTimeout(err) {
+  return !!(err && err.code === 'LLM_TIMEOUT');
+}
+
 // 文本模型调用：每次实时 resolve 当前选中标签（面板切换下拉即对下一次调用生效）
 async function callLLM(messages, kind, reporter, signal) {
   const config = await getConfigMerged();
@@ -678,13 +730,13 @@ async function callLLM(messages, kind, reporter, signal) {
   if (!tag) throw new Error('未配置' + (kind === 'ocr' ? ' OCR ' : '文本') + '模型 provider/模型ID');
   const url = chatCompletionsUrl(tag.baseURL);
   const label = ((kind || 'text') === 'ocr') ? 'OCR' : '文本模型';
+  const timeoutMs = llmTimeoutMs(kind || 'text', messages, tag.model);
   if (reporter) {
-    let chars = 0;
-    for (const m of messages || []) { chars += String((m && m.content) || '').length; }
-    reporter.request(label, { model: tag.model, chars: chars, url: url });
+    let chars = estimateMessageChars(messages);
+    reporter.request(label, { model: tag.model, chars: chars, url: url, timeoutMs: timeoutMs });
   }
   try {
-    const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, { timeoutMs: 90000, signal: signal });
+    const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, { timeoutMs: timeoutMs, signal: signal });
     if (signal && signal.aborted) throw cancelledError();
     if (reporter) reporter.response(label, text);
     return text;
@@ -1506,9 +1558,17 @@ async function inject(tabId) {
   }
 }
 
-function extractJson(text) {
+const AGENT_ACTIONS = { execute: 1, ask: 1, done: 1, plan: 1 };
+const JSON_NUDGE_MAX = 2;
+
+function isAgentAction(obj) {
+  return !!(obj && typeof obj === 'object' && !Array.isArray(obj) &&
+    typeof obj.action === 'string' && AGENT_ACTIONS[obj.action]);
+}
+
+function extractBalancedObject(text, from) {
   if (typeof text !== 'string') return null;
-  const start = text.indexOf('{');
+  const start = text.indexOf('{', from);
   if (start < 0) return null;
   let depth = 0;
   let inStr = false;
@@ -1526,21 +1586,63 @@ function extractJson(text) {
     else if (ch === '}') {
       depth--;
       if (depth === 0) {
-        const candidate = text.slice(start, i + 1);
-        try {
-          return JSON.parse(candidate);
-        } catch (e) {
-          return null;
-        }
+        return { start: start, end: i + 1, raw: text.slice(start, i + 1) };
       }
     }
   }
   return null;
 }
 
+function parseAgentAction(raw) {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  if (!s) return null;
+  try {
+    const obj = JSON.parse(s);
+    return isAgentAction(obj) ? obj : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// 从混有中文说明的模型输出中抽出 execute/ask/done JSON。
+// 旧实现只取第一个 `{...}`：散文里的 {"op":"upload"} 会抢先，导致整段被当成无法解析。
+function extractJson(text) {
+  if (typeof text !== 'string') return null;
+  const re = /```(?:json|jsonc)\s*([\s\S]*?)```/gi;
+  let m;
+  while ((m = re.exec(text))) {
+    const inner = parseAgentAction(m[1]);
+    if (inner) return inner;
+    const nested = extractJsonFromObjects(m[1]);
+    if (nested) return nested;
+  }
+  return extractJsonFromObjects(text);
+}
+
+function extractJsonFromObjects(text) {
+  let from = 0;
+  let fallback = null;
+  while (from < text.length) {
+    const block = extractBalancedObject(text, from);
+    if (!block) break;
+    try {
+      const obj = JSON.parse(block.raw);
+      if (isAgentAction(obj)) {
+        if (obj.action === 'execute' && Array.isArray(obj.operations) && obj.operations.length) {
+          return obj;
+        }
+        if (!fallback) fallback = obj;
+      }
+    } catch (e) {}
+    from = block.start + 1;
+  }
+  return fallback;
+}
+
 function extractCodeFence(text) {
   if (typeof text !== 'string') return null;
-  const m = text.match(/```(?:javascript|js)?\s*([\s\S]*?)```/i);
+  const m = text.match(/```(?:javascript|js)\s*([\s\S]*?)```/i);
   return m ? m[1] : null;
 }
 
@@ -2699,7 +2801,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
 
   const maxSteps = Math.max(1, Math.min(100, Number(config.maxSteps) || DEFAULT_CONFIG.maxSteps));
   const actionLog = sharedActionLog || new Map(); // hash -> { outcome, repeats }
-  let jsonNudged = false;
+  let jsonNudgeCount = 0;
 
   for (let i = 1; i <= maxSteps; i++) {
     if (cancelRef.cancelled) {
@@ -2735,15 +2837,24 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
       : messages.concat([{ role: 'user', content: '【页面快照】\n' + snapshotText }]);
 
     let llmText;
-    try {
-      llmText = await callLLM(contextMessages, 'text', apiReporter, cancelRef && cancelRef.signal);
-    } catch (e) {
-      if (isUserCancelled(e, cancelRef)) {
-        return await notifyCancelled(postMsg, cancelRef, origin, messages);
+    let llmTries = 0;
+    for (;;) {
+      try {
+        llmText = await callLLM(contextMessages, 'text', apiReporter, cancelRef && cancelRef.signal);
+        break;
+      } catch (e) {
+        if (isUserCancelled(e, cancelRef)) {
+          return await notifyCancelled(postMsg, cancelRef, origin, messages);
+        }
+        llmTries += 1;
+        if (isLlmTimeout(e) && llmTries <= LLM_TEXT_TIMEOUT_RETRY) {
+          postMsg({ type: 'status', text: '文本模型超时，正在重试（' + llmTries + '/' + LLM_TEXT_TIMEOUT_RETRY + '）…' });
+          continue;
+        }
+        postMsg({ type: 'error', message: '调用大模型失败：' + String(e && e.message || e) });
+        await saveHistory(origin, messages);
+        return 'error';
       }
-      postMsg({ type: 'error', message: '调用大模型失败：' + String(e && e.message || e) });
-      await saveHistory(origin, messages);
-      return 'error';
     }
     if (cancelRef.cancelled) {
       return await notifyCancelled(postMsg, cancelRef, origin, messages);
@@ -2756,30 +2867,34 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
     } catch (e) {
       parsed = null;
     }
-    if (!parsed || typeof parsed !== 'object') {
+    if (!isAgentAction(parsed)) {
       parsed = extractJson(llmText);
     }
-    if (!parsed || typeof parsed !== 'object') {
+    if (!isAgentAction(parsed)) {
       const code = extractCodeFence(llmText);
       if (code) {
-        parsed = { action: 'plan', script: code, summary: '(从代码块解析)' };
+        const fromFence = parseAgentAction(code) || extractJsonFromObjects(code);
+        if (fromFence) parsed = fromFence;
       }
     }
 
-    if (!parsed || typeof parsed !== 'object' || typeof parsed.action !== 'string') {
-      if (!jsonNudged) {
-        jsonNudged = true;
+    if (!isAgentAction(parsed)) {
+      jsonNudgeCount += 1;
+      if (jsonNudgeCount <= JSON_NUDGE_MAX) {
         messages.push({
           role: 'user',
-          content: '【引擎约束】你的上一条输出不是 JSON。只输出一个 JSON 对象（execute/ask/done 之一），不要输出任何其它文字。'
+          content: jsonNudgeCount === 1
+            ? '【引擎约束】你的上一条输出不是可执行 JSON（或 JSON 被夹在说明文字里且未含 action）。只输出一个 JSON 对象，action 必须是 execute、ask 或 done 之一，不要输出任何其它文字。'
+            : '【引擎约束】仍无法解析。禁止中文解释。立刻只输出一行 JSON：{"action":"execute","summary":"...","expect":"...","operations":[{"op":"...","args":[...]}]} 或 {"action":"ask","question":"..."} 或 {"action":"done","summary":"..."}。'
         });
-        postMsg({ type: 'status', text: '模型输出无法解析，已要求按 JSON 重试' });
+        postMsg({ type: 'status', text: '模型输出无法解析，已要求按 JSON 重试（' + jsonNudgeCount + '/' + JSON_NUDGE_MAX + '）' });
         continue;
       }
       postMsg({ type: 'error', message: '无法解析大模型输出：' + truncate(llmText, 400) });
       await saveHistory(origin, messages);
       return 'error';
     }
+    jsonNudgeCount = 0;
 
     const action = parsed.action;
     const hasStructuredOps = action === 'execute' && Array.isArray(parsed.operations) && parsed.operations.length > 0;

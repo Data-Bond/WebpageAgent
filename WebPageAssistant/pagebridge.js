@@ -5,7 +5,7 @@
   'use strict';
 
   var INSTALLED = '__assistantPage';
-  var BRIDGE_VERSION = '2.9.0';
+  var BRIDGE_VERSION = '2.11.0';
 
   function install() {
     var scriptAborted = false;
@@ -99,7 +99,9 @@
     function isStableId(id) {
       var s = String(id || '').trim();
       if (!s || s.length > 100) return false;
-      if (/^\d+$/.test(s) || /^[0-9a-f]{8}-[0-9a-f-]{20,}$/i.test(s)) return false;
+      // 短数字 id 多为列表下标；雪花/业务数字 id（≥10 位）视为稳定
+      if (/^\d+$/.test(s)) return s.length >= 10;
+      if (/^[0-9a-f]{8}-[0-9a-f-]{20,}$/i.test(s)) return false;
       if (/^(:r\d+:|rc_select_\d+|react-select-\d+|mui-\d+|ember\d+|__\w+\d{5,})$/i.test(s)) return false;
       return true;
     }
@@ -791,6 +793,39 @@
       return texts;
     }
 
+    function isBroadClickRoot(el) {
+      if (!el || el === document || el === document.documentElement || el === document.body) return true;
+      var id = String(el.id || '').toLowerCase();
+      return id === 'app' || id === 'root' || id === '__ai-assistant-root';
+    }
+
+    // 去掉 CSS 子选择器最后一段，供 within 过期时回退到仍存在的祖先。
+    function parentCssPath(sel) {
+      var s = String(sel || '').trim();
+      if (!s) return '';
+      if (s.indexOf(SHADOW_SEP) >= 0 || s.indexOf(FRAME_SEP) >= 0) return '';
+      var parts = s.split(/\s*>\s*/).filter(function (p) { return !!p; });
+      if (parts.length < 2) return '';
+      parts.pop();
+      return parts.join(' > ');
+    }
+
+    function resolveClickByTextRoot(within) {
+      var sel = String(within || '').trim();
+      if (!sel) return { root: null, used: '', missing: false, relaxed: false };
+      var el = queryDeep(sel);
+      if (el && !isBroadClickRoot(el)) return { root: el, used: sel, missing: false, relaxed: false };
+      var cur = sel;
+      for (var hops = 0; hops < 8; hops++) {
+        var parent = parentCssPath(cur);
+        if (!parent || parent === cur) break;
+        cur = parent;
+        el = queryDeep(cur);
+        if (el && !isBroadClickRoot(el)) return { root: el, used: cur, missing: true, relaxed: true };
+      }
+      return { root: null, used: '', missing: true, relaxed: false };
+    }
+
     function chooseClickByText(list, raw) {
       var needle = normText(raw);
       if (!needle) return null;
@@ -1101,6 +1136,7 @@
     }
     // 返回 'checkbox' | 'radio' | ''（该元素是否复选/单选控件或其包装器）
     function boxKindOf(el) {
+      if (isFileSelectRow(el) || fileRowOf(el)) return 'checkbox';
       var inp = innerBoxInput(el);
       if (inp) {
         var t = String(inp.type || '').toLowerCase();
@@ -1114,6 +1150,8 @@
     }
     // 读取勾选状态：优先真实 input.checked（框架会同步），退回 aria-checked / 框架选中类名
     function readBoxChecked(el) {
+      var fileRow = fileRowOf(el) || (isFileSelectRow(el) ? el : null);
+      if (fileRow) return readFileRowChecked(fileRow);
       var inp = innerBoxInput(el);
       if (inp) return !!inp.checked;
       try { if (el.getAttribute && el.getAttribute('aria-checked') === 'true') return true; } catch (e) {}
@@ -1142,6 +1180,12 @@
     // 复选框点击目标：包装器优先——隐藏 input 时点击包裹它的可见 label/框架节点，模拟真实用户操作
     function boxClickTarget(el) {
       if (!el) return el;
+      var fileRow = fileRowOf(el);
+      if (fileRow) {
+        var icon = fileSelectIcon(fileRow);
+        if (icon) return icon;
+        return fileRow;
+      }
       if (el.tagName !== 'INPUT') return el;
       if (isVisible(el)) return el;
       try {
@@ -1149,6 +1193,143 @@
         if (w) return w;
       } catch (e) {}
       return el;
+    }
+
+    // 文件选择器行：点文件名常是进入/预览，勾选在行内 checkmark 图标上。
+    // 例：<li title="a.txt"><i class="ivu-icon ivu-icon-md-checkmark-circle"></i><p class="name">a.txt</p></li>
+    var FILE_SELECT_ICON_SEL =
+      'i[class*="checkmark"], i[class*="ios-checkmark"], i[class*="md-checkmark"], ' +
+      'i[class*="checkbox"], i[class*="md-square"], i[class*="radio-button-off"], ' +
+      'i[class*="ios-radio-button-off"], span.ivu-checkbox, .ivu-checkbox-inner, ' +
+      'i.ivu-icon-md-checkmark-circle, i.ivu-icon-ios-checkmark-circle';
+
+    function fileSelectIcon(row) {
+      if (!row || !row.querySelector) return null;
+      try {
+        var icon = row.querySelector(FILE_SELECT_ICON_SEL);
+        if (icon) return icon;
+      } catch (e) {}
+      return null;
+    }
+
+    function fileRowNameEl(row) {
+      if (!row || !row.querySelector) return null;
+      try {
+        return row.querySelector('p.name, span.name');
+      } catch (e) { return null; }
+    }
+
+    function fileRowLabel(row) {
+      if (!row) return '';
+      var title = '';
+      try { title = String(row.getAttribute && row.getAttribute('title') || '').trim(); } catch (e) {}
+      if (title) return title;
+      var nameEl = fileRowNameEl(row);
+      if (nameEl) {
+        var nt = String(nameEl.textContent || nameEl.innerText || '').replace(/\s+/g, ' ').trim();
+        if (nt) return nt;
+      }
+      return '';
+    }
+
+    function looksLikeFileName(s) {
+      return /\.[A-Za-z0-9]{1,8}$/.test(String(s || '').trim());
+    }
+
+    function isFileSelectRow(el) {
+      if (!el || (el.tagName || '').toUpperCase() !== 'LI') return false;
+      if (innerBoxInput(el)) return false;
+      var nameEl = fileRowNameEl(el);
+      var icon = fileSelectIcon(el);
+      var label = fileRowLabel(el);
+      if (!label) return false;
+      if (nameEl && icon) return true;
+      if (icon && looksLikeFileName(label)) return true;
+      if (nameEl && looksLikeFileName(label)) return true;
+      return false;
+    }
+
+    function fileRowOf(el) {
+      if (!el) return null;
+      if (isFileSelectRow(el)) return el;
+      try {
+        var li = el.closest && el.closest('li');
+        if (li && isFileSelectRow(li)) return li;
+      } catch (e) {}
+      return null;
+    }
+
+    function isFileNameEl(el) {
+      if (!el) return false;
+      var tag = (el.tagName || '').toUpperCase();
+      if (el.classList && el.classList.contains('name')) return true;
+      if ((tag === 'P' || tag === 'SPAN') && fileRowOf(el)) return true;
+      return false;
+    }
+
+    function retargetFileSelectClick(el) {
+      var row = fileRowOf(el);
+      if (!row) return el;
+      var icon = fileSelectIcon(row);
+      if (!icon) return el;
+      if (el === icon) return el;
+      if (el === row || isFileNameEl(el)) return icon;
+      return el;
+    }
+
+    function selectedPaneHasName(label, row) {
+      if (!label) return false;
+      var panes = [];
+      try {
+        var right = document.getElementById('split-right');
+        if (right) panes.push(right);
+      } catch (e) {}
+      var extra = queryAllDeep('[class*="selected-list"], [class*="checked-list"], [class*="choose-list"], .file-selected');
+      for (var i = 0; i < extra.length; i++) panes.push(extra[i]);
+      for (var p = 0; p < panes.length; p++) {
+        var pane = panes[p];
+        if (!pane) continue;
+        try { if (row && pane.contains && pane.contains(row)) continue; } catch (e2) {}
+        var t = '';
+        try { t = String(pane.innerText || pane.textContent || ''); } catch (e3) { t = ''; }
+        if (t && t.indexOf(label) >= 0) return true;
+      }
+      return false;
+    }
+
+    function readFileRowChecked(row) {
+      if (!row) return false;
+      try {
+        if (row.getAttribute && row.getAttribute('aria-selected') === 'true') return true;
+      } catch (e) {}
+      var c = '';
+      try { c = String(row.className || ''); } catch (e) {}
+      if (/\b(selected|actived|is-selected|is-active|checked|chosen|choose)\b/i.test(c)) return true;
+      if (/\b(active|on|cur)\b/i.test(c) && isFileSelectRow(row)) return true;
+      var icon = fileSelectIcon(row);
+      if (icon) {
+        var ic = String(icon.className || '');
+        if (/radio-button-off|square-outline|border/i.test(ic)) return false;
+        try {
+          var par = icon.parentElement;
+          if (par && par.classList && par.classList.contains('ivu-checkbox-checked')) return true;
+        } catch (e2) {}
+      }
+      return selectedPaneHasName(fileRowLabel(row), row);
+    }
+
+    function collectFileSelectRows() {
+      var lis = queryAllDeep('li[title], li');
+      var out = [];
+      var seen = new Set();
+      for (var i = 0; i < lis.length; i++) {
+        var li = lis[i];
+        if (seen.has(li) || !isFileSelectRow(li)) continue;
+        if (!isVisible(li) && !(fileSelectIcon(li) && isVisible(fileSelectIcon(li)))) continue;
+        seen.add(li);
+        out.push(li);
+      }
+      return out;
     }
     // ============ 复选/单选框识别结束 ============
 
@@ -2154,9 +2335,18 @@
           click: function (sel) {
             var el = page.q(sel); if (!el) throw new Error('元素未找到: ' + sel);
             if (el.disabled || el.getAttribute && el.getAttribute('aria-disabled') === 'true') throw new Error('元素已禁用，不能点击: ' + sel);
-            // 派发完整鼠标事件序列（含祖先 hover），兼容悬浮才显示的控件与绑定在 mousedown 上的逻辑
-            dispatchClick(el);
-            return { ok: true, kind: 'action', verified: null };
+            var target = retargetFileSelectClick(el);
+            try { if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+            dispatchClick(target);
+            var us;
+            try { us = uniqueSelector(target); } catch (e2) { us = null; }
+            return {
+              ok: true,
+              kind: 'action',
+              verified: null,
+              selector: us && us.selector ? us.selector : '',
+              retargeted: target !== el
+            };
           },
           select: function (sel, valOrLabel) {
             var el = page.q(sel); if (!el) throw new Error('元素未找到: ' + sel);
@@ -2239,13 +2429,15 @@
             if (typeof opts === 'string') opts = { within: opts };
             opts = opts && typeof opts === 'object' && !Array.isArray(opts) ? opts : {};
             var within = String(opts.within || opts.selector || '').trim();
-            var root = null;
-            if (within) {
-              root = page.q(within);
-              if (!root) throw new Error('clickByText: within 容器未找到: ' + within);
-            }
-            var found = collectClickByTextCandidates(root, raw);
+            var scope = resolveClickByTextRoot(within);
+            var found = collectClickByTextCandidates(scope.root, raw);
             var picked = chooseClickByText(found.list, raw);
+            var pageFallback = false;
+            if (!picked && within && scope.missing) {
+              found = collectClickByTextCandidates(null, raw);
+              picked = chooseClickByText(found.list, raw);
+              pageFallback = true;
+            }
             var sample = found.samples && found.samples.length
               ? found.samples
               : sampleCandidateTexts(found.list, 12);
@@ -2253,16 +2445,26 @@
               if (found.disabled.length) {
                 throw new Error('clickByText: 文本目标已禁用，不能点击: ' + found.disabled.join(' / '));
               }
+              if (within && scope.missing) {
+                throw new Error('clickByText: within 容器未找到: ' + within +
+                  '，且页面上也未找到「' + raw + '」。可见短文本示例：' +
+                  (sample.length ? sample.join(' / ') : '(无)') +
+                  '。请改用当前快照中的选择器，不要沿用跳转前的 nth-of-type。');
+              }
               throw new Error('clickByText: 未找到「' + raw + '」。' +
                 (within ? 'within 内' : '页面上') +
                 '可见短文本示例：' + (sample.length ? sample.join(' / ') : '(无)'));
             }
             if (picked.ambiguous) {
-              throw new Error('clickByText: 「' + raw + '」匹配到多处：' +
+              var extra = (within && (scope.missing || pageFallback))
+                ? 'within 容器未找到: ' + within + '。'
+                : '';
+              throw new Error('clickByText: ' + extra + '「' + raw + '」匹配到多处：' +
                 picked.ambiguous.join(' | ') +
-                '。多层列表请用 within 限定到某一枝，或改用更完整文案。');
+                '。多层列表请用当前快照中的 within 限定到某一枝，或改用更完整文案。');
             }
             var el = picked.winner.el;
+            el = retargetFileSelectClick(el);
             try { el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
             dispatchClick(el);
             var us;
@@ -2272,7 +2474,11 @@
               kind: 'action',
               text: picked.winner.text,
               selector: us && us.selector ? us.selector : '',
-              verified: null
+              verified: null,
+              withinMissing: !!(within && scope.missing),
+              withinRelaxed: !!(scope.relaxed && !pageFallback),
+              withinUsed: pageFallback ? '' : (scope.used || ''),
+              pageFallback: pageFallback
             };
           },
           // 按容器查看可见后代短文本（去包装）。文案不在 L0 或用户给了容器时用。
@@ -2298,8 +2504,10 @@
             function clickableOf(el, tag) {
               var clickable = false;
               try {
+                if (isFileSelectRow(el) || isFileNameEl(el) ||
+                  (fileRowOf(el) && fileSelectIcon(fileRowOf(el)) === el)) clickable = true;
                 var role = el.getAttribute && el.getAttribute('role');
-                clickable = !!CLICK_TAGS[tag] ||
+                clickable = clickable || !!CLICK_TAGS[tag] ||
                   !!(el.getAttribute && el.getAttribute('onclick') != null) ||
                   !!(role && CLICK_ROLES[String(role).toLowerCase()]) ||
                   !!(el.getAttribute && (el.getAttribute('data-file-act') || el.getAttribute('data-act') ||
@@ -2315,11 +2523,16 @@
             function consider(el) {
               if (out.length >= maxNodes) return;
               var tag = (el.tagName || '').toUpperCase();
-              if (TEXT_SKIP_TAGS[tag]) return;
+              if (TEXT_SKIP_TAGS[tag] && tag !== 'I') return;
               if (isInsideAssistant(el)) return;
-              if (!isVisible(el)) return;
-              if (isWrapperEl(el)) return;
+              if (!isVisible(el) && !(fileRowOf(el) && fileSelectIcon(fileRowOf(el)) === el)) return;
+              if (isWrapperEl(el) && !isFileSelectRow(el)) return;
               var t = ownText(el);
+              if (!t) {
+                if (isFileSelectRow(el)) t = fileRowLabel(el);
+                else if (fileRowOf(el) && fileSelectIcon(fileRowOf(el)) === el) t = '[select] ' + fileRowLabel(fileRowOf(el));
+                else return;
+              }
               if (!t) return;
               var us = '';
               if (selectorBudget > 0) {
@@ -2596,12 +2809,22 @@
               if (!raw) throw new Error('setChecked: 目标文本为空');
               var all = queryAllDeep(CHECKBOX_SEL);
               var cands = [];
+              var seenEl = new Set();
               for (var i = 0; i < all.length; i++) {
                 var e = all[i];
                 if (!isVisible(e)) continue;
                 var t = (e.innerText || e.textContent || '').trim();
                 if (!t) continue;
+                seenEl.add(e);
                 cands.push({ el: e, text: t.slice(0, 80), value: String(e.value || '') });
+              }
+              var rows = collectFileSelectRows();
+              for (var ri = 0; ri < rows.length; ri++) {
+                var row = rows[ri];
+                if (seenEl.has(row)) continue;
+                var lab = fileRowLabel(row);
+                if (!lab) continue;
+                cands.push({ el: row, text: lab.slice(0, 80), value: '' });
               }
               var r = chooseMatch(cands, raw);
               if (r && r.winner) {
