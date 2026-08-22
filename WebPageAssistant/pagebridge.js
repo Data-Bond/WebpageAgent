@@ -5,7 +5,7 @@
   'use strict';
 
   var INSTALLED = '__assistantPage';
-  var BRIDGE_VERSION = '2.7.0';
+  var BRIDGE_VERSION = '2.9.0';
 
   function install() {
     var scriptAborted = false;
@@ -180,11 +180,14 @@
       return local;
     }
 
-    function isVisible(el) {
+    function isVisible(el, style) {
       if (!el || !el.ownerDocument) return false;
-      var style = el.ownerDocument.defaultView && el.ownerDocument.defaultView.getComputedStyle
-        ? el.ownerDocument.defaultView.getComputedStyle(el)
-        : null;
+      // 调用方已取到 computed style 时复用，避免同一节点二次强制布局
+      if (style === undefined) {
+        style = el.ownerDocument.defaultView && el.ownerDocument.defaultView.getComputedStyle
+          ? el.ownerDocument.defaultView.getComputedStyle(el)
+          : null;
+      }
       if (style) {
         if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 ||
           style.pointerEvents === 'none') return false;
@@ -245,6 +248,12 @@
     }
 
     var CAPTCHA_RE = /验证码|校验码|captcha|vcode|verifycode|authcode|checkcode|imgcode|security.?code/i;
+    var PAGE_IMAGE_EXTRAS_SEL = '[class*="captcha"], [id*="captcha"], [class*="vcode"], [id*="vcode"], [class*="verifyCode"], [alt*="验证码"], [alt*="校验码"]';
+    var STATUS_NODE_SEL =
+      '[role="alert"], [role="status"], [role="alertdialog"], [aria-live], .alert, .message, .toast, .notification, ' +
+      '.el-message, .el-message-box, .el-dialog__body, .ant-message, .ant-modal-body, .ant-modal-confirm-body, ' +
+      '.layui-layer-msg, .layui-layer-content, .van-toast, .ivu-message, .ivu-notice, .ivu-modal-confirm-content, ' +
+      '.ivu-modal-body, .ivu-modal, .modal-body, .modal-dialog, [role="dialog"], .success, .error';
 
     function srcKindOf(src) {
       var s = String(src || '');
@@ -252,6 +261,28 @@
       if (/^blob:/i.test(s)) return 'blob';
       if (/^https?:\/\//i.test(s) || s.charAt(0) === '/') return 'http';
       return s ? 'other' : 'empty';
+    }
+
+    function ancestorCaptchaText(el, maxDepth) {
+      var n = el;
+      var depth = Math.max(1, Number(maxDepth) || 3);
+      for (var d = 0; d < depth; d++) {
+        n = n && n.parentElement;
+        if (!n) return false;
+        var t = '';
+        try { t = String(n.innerText || '').replace(/\s+/g, ' ').slice(0, 240); } catch (e) { t = ''; }
+        if (CAPTCHA_RE.test(t)) return true;
+      }
+      return false;
+    }
+
+    function captchaShaped(el) {
+      try {
+        var r = el.getBoundingClientRect();
+        var w = r.width || 0;
+        var h = r.height || 0;
+        return w >= 40 && w <= 260 && h >= 16 && h <= 100 && h > 0 && (w / h) >= 1.5;
+      } catch (e) { return false; }
     }
 
     function looksCaptcha(el) {
@@ -264,7 +295,8 @@
         el.getAttribute && el.getAttribute('aria-label'),
         nearestLabel(el)
       ].join(' ');
-      return CAPTCHA_RE.test(bits);
+      if (CAPTCHA_RE.test(bits)) return true;
+      return ancestorCaptchaText(el, 3);
     }
 
     function cssDataUrl(el) {
@@ -373,9 +405,44 @@
       return el;
     }
 
+    function captchaPickScore(el) {
+      var s = 0;
+      var tag = (el.tagName || '').toUpperCase();
+      if (looksCaptcha(el)) s += 100;
+      if (captchaShaped(el)) s += 35;
+      try { if (el.closest && el.closest('form')) s += 40; } catch (e) {}
+      try { if (isVisible(el)) s += 10; } catch (e) {}
+      if (tag === 'IMG') {
+        var src = el.currentSrc || el.src || '';
+        if (/^data:image\//i.test(src)) s += 30;
+      }
+      if (tag === 'CANVAS') s += 20;
+      return s;
+    }
+
+    function pickPageCaptchaImage() {
+      var nodes = queryAllDeep('img, canvas');
+      var extras = queryAllDeep(PAGE_IMAGE_EXTRAS_SEL);
+      var seen = new Set();
+      var best = null;
+      var bestScore = -1;
+      function consider(el) {
+        if (!el || seen.has(el)) return;
+        seen.add(el);
+        var visible = false;
+        try { visible = isVisible(el); } catch (e) {}
+        if (!visible) return;
+        var s = captchaPickScore(el);
+        if (s > bestScore) { bestScore = s; best = el; }
+      }
+      for (var i = 0; i < nodes.length; i++) consider(nodes[i]);
+      for (var k = 0; k < extras.length; k++) consider(extras[k]);
+      return best;
+    }
+
     function collectPageImages() {
       var nodes = queryAllDeep('img, canvas');
-      var extras = queryAllDeep('[class*="captcha"], [id*="captcha"], [class*="vcode"], [id*="vcode"], [class*="verifyCode"], [alt*="验证码"], [alt*="校验码"]');
+      var extras = queryAllDeep(PAGE_IMAGE_EXTRAS_SEL);
       var seen = new Set();
       var scored = [];
       function consider(el) {
@@ -411,6 +478,7 @@
         var kind = tag === 'CANVAS' ? 'canvas' : (cssDataUrl(el) ? 'data' : srcKindOf(src));
         var score = 0;
         if (captcha) score += 100;
+        if (captchaShaped(el)) score += 35;
         if (inForm) score += 40;
         if (kind === 'data') score += 30;
         if (tag === 'CANVAS') score += 20;
@@ -475,24 +543,48 @@
       return parts.join(' ').trim();
     }
 
+    // 嵌套 ul/ol/ARIA tree 的容器。inspect 默认不深入非根下的这些节点，
+    // 避免多层 li 时 querySelectorAll 前序遍历把定额占满在第一枝。
+    function isListContainer(el) {
+      if (!el || el.nodeType !== 1) return false;
+      var tag = (el.tagName || '').toUpperCase();
+      if (tag === 'UL' || tag === 'OL' || tag === 'MENU') return true;
+      try {
+        var role = el.getAttribute && String(el.getAttribute('role') || '').toLowerCase();
+        if (role === 'list' || role === 'tree' || role === 'group') return true;
+      } catch (e) {}
+      return false;
+    }
+
+    function isInsideAssistant(el) {
+      try { return !!(el.closest && el.closest('#__ai-assistant-root')); }
+      catch (e) { return false; }
+    }
+
+    function isDisabledTree(el) {
+      try {
+        if (el.disabled) return true;
+        if (el.getAttribute && el.getAttribute('aria-disabled') === 'true') return true;
+        // 多层 li：禁用常在外层 button/fieldset/li，ownText 命中的是内部 span
+        if (el.closest && el.closest('[disabled], [aria-disabled="true"]')) return true;
+      } catch (e) {}
+      return false;
+    }
+
+    // 不用 innerText：多层 li 上算整棵子树文本会卡主线程。
+    // 无自身文本 + 唯一元素子节点（且子节点不是列表容器）视为包装器。
     function isWrapperEl(el) {
       if (!el || !el.children || el.children.length !== 1) return false;
-      var a = compactText(el.innerText || el.textContent);
-      var b = compactText(el.children[0].innerText || el.children[0].textContent);
-      return a.length > 0 && a === b;
+      if (ownText(el)) return false;
+      var only = el.children[0];
+      if (!only || only.nodeType !== 1) return false;
+      if (isListContainer(only)) return false;
+      return true;
     }
 
     function inEmptyState(el) {
       try { return !!(el.closest && el.closest(EMPTY_STATE_SEL)); }
       catch (e) { return false; }
-    }
-
-    function isPointerCursor(el) {
-      try {
-        var win = el.ownerDocument && el.ownerDocument.defaultView || window;
-        var st = win.getComputedStyle && win.getComputedStyle(el);
-        return !!(st && String(st.cursor || '').toLowerCase() === 'pointer');
-      } catch (e) { return false; }
     }
 
     function inMainColumn(el) {
@@ -542,13 +634,20 @@
       if (!el) return null;
       var tag = (el.tagName || '').toUpperCase();
       if (TEXT_SKIP_TAGS[tag]) return null;
+      if (isInsideAssistant(el)) return null;
       var text = ownText(el);
       if (!text) return null;
       if (text.length < TEXT_ACTION_MIN_LEN || text.length > TEXT_ACTION_MAX_LEN) return null;
-      if (!isVisible(el)) return null;
       if (isWrapperEl(el)) return null;
+      // computed style 只取一次，可见性与 pointer 共用；ownText 已过滤掉无标签的包装 li
+      var st = null;
+      try {
+        var win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+        st = win.getComputedStyle ? win.getComputedStyle(el) : null;
+      } catch (e) {}
+      if (!isVisible(el, st)) return null;
       var empty = inEmptyState(el);
-      var pointer = isPointerCursor(el);
+      var pointer = !!(st && String(st.cursor || '').toLowerCase() === 'pointer');
       if (!pointer && !empty) return null;
       var score = 0;
       if (pointer) score += 20;
@@ -607,20 +706,45 @@
       return out;
     }
 
-    function collectClickByTextCandidates(root) {
+    // 按 needle 分级收集，不按文档序截断「任意可见短文本」。
+    // 多层 li 的目标在 DOM 后部：先走完整扫描，精确/前缀命中优先于包含命中。
+    function collectClickByTextCandidates(root, raw) {
       var nodes = elementsUnder(root || document, TEXT_ACTION_SCAN_SEL);
-      var out = [];
-      var cap = 2500;
-      for (var i = 0; i < nodes.length && out.length < cap; i++) {
+      var exact = [];
+      var prefix = [];
+      var contains = [];
+      var disabled = [];
+      var samples = [];
+      var seenSample = {};
+      var needle = normText(raw || '');
+      var CONTAINS_CAP = 200;
+      for (var i = 0; i < nodes.length; i++) {
         var el = nodes[i];
         var tag = (el.tagName || '').toUpperCase();
         if (TEXT_SKIP_TAGS[tag]) continue;
+        if (isInsideAssistant(el)) continue;
         var text = ownText(el);
         if (!text || text.length > CLICK_BY_TEXT_MAX_LEN) continue;
+        var r = needle ? rankMatch(text, needle) : 0;
+        if (r < 0) {
+          if (!seenSample[text] && samples.length < 12) {
+            seenSample[text] = true;
+            samples.push(text);
+          }
+          continue;
+        }
         if (!isVisible(el)) continue;
-        out.push({ el: el, text: text });
+        if (isDisabledTree(el)) {
+          if (disabled.length < 5) disabled.push(text);
+          continue;
+        }
+        var item = { el: el, text: text };
+        if (r === 0) exact.push(item);
+        else if (r === 1) prefix.push(item);
+        else if (contains.length < CONTAINS_CAP) contains.push(item);
       }
-      return out;
+      var list = exact.length ? exact : (prefix.length ? prefix : contains);
+      return { list: list, disabled: disabled, samples: samples };
     }
 
     function nodeDepth(el) {
@@ -632,6 +756,39 @@
         if (d > 64) break;
       }
       return d;
+    }
+
+    // 同文多命中：若 A 包含 B，丢掉包装祖先，点最内层（li>span 同文）。
+    // 互不包含（不同枝的多层 li 都叫「更多」）视为独立目标，交给歧义路径。
+    function innermostIndependent(winners) {
+      var inner = [];
+      for (var i = 0; i < winners.length; i++) {
+        var contained = false;
+        for (var j = 0; j < winners.length; j++) {
+          if (i === j) continue;
+          try {
+            if (winners[i].el.contains && winners[i].el.contains(winners[j].el)) {
+              contained = true;
+              break;
+            }
+          } catch (e) {}
+        }
+        if (!contained) inner.push(winners[i]);
+      }
+      return inner;
+    }
+
+    function formatAmbiguousCandidates(list) {
+      var texts = [];
+      for (var k = 0; k < list.length && texts.length < 12; k++) {
+        var us = '';
+        try {
+          var u = uniqueSelector(list[k].el);
+          us = u && u.selector ? u.selector : '';
+        } catch (e) {}
+        texts.push(String(list[k].text).slice(0, 40) + (us ? ' — ' + us : ''));
+      }
+      return texts;
     }
 
     function chooseClickByText(list, raw) {
@@ -660,11 +817,14 @@
         distinct[normText(winners[j].text)] = true;
       }
       if (Object.keys(distinct).length > 1) {
-        var texts = [];
-        for (var k = 0; k < tied.length && texts.length < 12; k++) texts.push(tied[k].text);
-        return { ambiguous: texts };
+        return { ambiguous: formatAmbiguousCandidates(tied) };
       }
-      return { winner: tied[0] };
+      var indep = innermostIndependent(tied);
+      if (!indep.length) return { winner: tied[0] };
+      if (indep.length > 1) {
+        return { ambiguous: formatAmbiguousCandidates(indep) };
+      }
+      return { winner: indep[0] };
     }
 
     function sampleCandidateTexts(list, max) {
@@ -681,8 +841,16 @@
     }
 
     async function captureImage(sel) {
-      var el = queryDeep(sel);
-      if (!el) throw new Error('元素未找到: ' + sel);
+      var rawSel = String(sel == null ? '' : sel).trim();
+      var magicCaptcha = /^captcha$/i.test(rawSel);
+      var el = null;
+      if (magicCaptcha) {
+        el = pickPageCaptchaImage();
+        if (!el) throw new Error('未找到可见的验证码图片');
+      } else {
+        el = queryDeep(rawSel);
+        if (!el) throw new Error('元素未找到: ' + sel);
+      }
       var target = findCaptureTarget(el);
       try { if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
       await new Promise(function (resolve) { setTimeout(resolve, 60); });
@@ -706,14 +874,17 @@
       if (pixels.dataUrl && pixels.dataUrl.length > 6 * 1024 * 1024) {
         throw new Error('页面图片过大，拒绝 OCR');
       }
+      var inForm = false;
+      try { inForm = !!(target.closest && target.closest('form')) || !!(el.closest && el.closest('form')); } catch (e) {}
       return {
         ok: true,
         via: pixels.via,
-        selector: String(sel).slice(0, 300),
+        selector: magicCaptcha ? 'captcha' : String(sel).slice(0, 300),
         tag: tag,
         dataUrl: pixels.dataUrl || '',
         geom: geom,
-        likelyCaptcha: !!(looksCaptcha(target) || looksCaptcha(el) || CAPTCHA_RE.test(String(sel)))
+        likelyCaptcha: !!(magicCaptcha || looksCaptcha(target) || looksCaptcha(el) ||
+          CAPTCHA_RE.test(rawSel) || captchaShaped(target) || (captchaShaped(el) && inForm))
       };
     }
 
@@ -836,10 +1007,7 @@
 
     function domDigest() {
       try {
-        var nodes = queryAllDeep(
-          '[role="alert"], [role="status"], [aria-live], .alert, .message, .toast, .notification, ' +
-          '.el-message, .ant-message, .layui-layer-msg, .van-toast, .success, .error'
-        );
+        var nodes = queryAllDeep(STATUS_NODE_SEL);
         var hash = 2166136261;
         var count = 0;
         for (var i = 0; i < nodes.length; i++) {
@@ -853,15 +1021,14 @@
     }
 
     function statusMessages() {
-      var nodes = queryAllDeep(
-        '[role="alert"], [role="status"], [aria-live], .alert, .message, .toast, .notification, ' +
-        '.el-message, .ant-message, .layui-layer-msg, .van-toast, .success, .error'
-      );
+      var nodes = queryAllDeep(STATUS_NODE_SEL);
       var out = [];
       for (var i = 0; i < nodes.length && out.length < 12; i++) {
         if (!isVisible(nodes[i])) continue;
         var text = String(nodes[i].innerText || nodes[i].textContent || '').trim();
-        if (text && out.indexOf(text) < 0) out.push(text.slice(0, 300));
+        if (!text) continue;
+        if (text.length > 2000 && !/失败|错误|无效|error|failed|invalid/i.test(text.slice(0, 2000))) continue;
+        if (out.indexOf(text) < 0) out.push(text.slice(0, 300));
       }
       return out;
     }
@@ -2077,22 +2244,26 @@
               root = page.q(within);
               if (!root) throw new Error('clickByText: within 容器未找到: ' + within);
             }
-            var cands = collectClickByTextCandidates(root);
-            var picked = chooseClickByText(cands, raw);
-            var sample = sampleCandidateTexts(cands, 12);
+            var found = collectClickByTextCandidates(root, raw);
+            var picked = chooseClickByText(found.list, raw);
+            var sample = found.samples && found.samples.length
+              ? found.samples
+              : sampleCandidateTexts(found.list, 12);
             if (!picked) {
+              if (found.disabled.length) {
+                throw new Error('clickByText: 文本目标已禁用，不能点击: ' + found.disabled.join(' / '));
+              }
               throw new Error('clickByText: 未找到「' + raw + '」。' +
                 (within ? 'within 内' : '页面上') +
                 '可见短文本示例：' + (sample.length ? sample.join(' / ') : '(无)'));
             }
             if (picked.ambiguous) {
-              throw new Error('clickByText: 「' + raw + '」匹配到多个不同文本：' +
-                picked.ambiguous.join(' | ') + '。请缩小 within 或改用更完整文案。');
+              throw new Error('clickByText: 「' + raw + '」匹配到多处：' +
+                picked.ambiguous.join(' | ') +
+                '。多层列表请用 within 限定到某一枝，或改用更完整文案。');
             }
             var el = picked.winner.el;
-            if (el.disabled || (el.getAttribute && el.getAttribute('aria-disabled') === 'true')) {
-              throw new Error('元素已禁用，不能点击: ' + raw);
-            }
+            try { el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
             dispatchClick(el);
             var us;
             try { us = uniqueSelector(el); } catch (e) { us = null; }
@@ -2105,6 +2276,8 @@
             };
           },
           // 按容器查看可见后代短文本（去包装）。文案不在 L0 或用户给了容器时用。
+          // 多层 li：默认不深入非根下的嵌套 ul/ol/[role=tree|group]，只列当前层；
+          // nestedCollapsed>0 时再 inspect 某一子项。selector 最多成功计算 30 条。
           inspect: function (selector, opts) {
             var sel = String(selector == null ? '' : selector).trim();
             if (!sel) throw new Error('inspect: 缺少容器选择器');
@@ -2113,39 +2286,84 @@
             var textLen = Math.max(4, Math.min(Number(opts.textLen) || 32, 80));
             var root = page.q(sel);
             if (!root) throw new Error('inspect: 容器未找到: ' + sel);
-            var nodes = [];
-            try {
-              nodes = [root].concat(Array.from(root.querySelectorAll('*')));
-            } catch (e) {
-              nodes = [root];
-            }
+            var CLICK_TAGS = { A: 1, BUTTON: 1, INPUT: 1, SELECT: 1, TEXTAREA: 1, SUMMARY: 1 };
+            var CLICK_ROLES = {
+              button: 1, link: 1, checkbox: 1, radio: 1, option: 1,
+              textbox: 1, menuitem: 1, treeitem: 1
+            };
             var out = [];
-            var scanned = 0;
-            for (var i = 0; i < nodes.length; i++) {
-              scanned++;
-              var el = nodes[i];
+            var nestedCollapsed = 0;
+            var selectorBudget = 30;
+
+            function clickableOf(el, tag) {
+              var clickable = false;
+              try {
+                var role = el.getAttribute && el.getAttribute('role');
+                clickable = !!CLICK_TAGS[tag] ||
+                  !!(el.getAttribute && el.getAttribute('onclick') != null) ||
+                  !!(role && CLICK_ROLES[String(role).toLowerCase()]) ||
+                  !!(el.getAttribute && (el.getAttribute('data-file-act') || el.getAttribute('data-act') ||
+                    el.getAttribute('data-action') || el.getAttribute('data-op')));
+                if (!clickable) {
+                  var ewin = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+                  clickable = !!(ewin.getComputedStyle && ewin.getComputedStyle(el).cursor === 'pointer');
+                }
+              } catch (e) {}
+              return clickable;
+            }
+
+            function consider(el) {
+              if (out.length >= maxNodes) return;
               var tag = (el.tagName || '').toUpperCase();
-              if (TEXT_SKIP_TAGS[tag]) continue;
-              if (!isVisible(el)) continue;
-              if (isWrapperEl(el)) continue;
+              if (TEXT_SKIP_TAGS[tag]) return;
+              if (isInsideAssistant(el)) return;
+              if (!isVisible(el)) return;
+              if (isWrapperEl(el)) return;
               var t = ownText(el);
-              if (!t) continue;
-              var us;
-              try { us = uniqueSelector(el); } catch (err) { us = null; }
-              if (!us || !us.selector) continue;
+              if (!t) return;
+              var us = '';
+              if (selectorBudget > 0) {
+                try {
+                  var u = uniqueSelector(el);
+                  us = u && u.selector ? u.selector : '';
+                } catch (err) {}
+                if (us) selectorBudget--;
+              }
               out.push({
                 tag: tag,
                 text: t.slice(0, textLen),
-                selector: us.selector,
-                cls: classNameOf(el)
+                cls: classNameOf(el),
+                clickable: clickableOf(el, tag),
+                selector: us
               });
-              if (out.length >= maxNodes) break;
             }
+
+            function walk(el, isRoot) {
+              if (!el || out.length >= maxNodes) return;
+              var tag = (el.tagName || '').toUpperCase();
+              if (!isRoot && TEXT_SKIP_TAGS[tag]) return;
+              consider(el);
+              var children;
+              try { children = el.children ? Array.from(el.children) : []; }
+              catch (e) { children = []; }
+              for (var i = 0; i < children.length; i++) {
+                var child = children[i];
+                if (!isRoot && isListContainer(child)) {
+                  nestedCollapsed++;
+                  continue;
+                }
+                walk(child, false);
+              }
+            }
+
+            walk(root, true);
             return {
               ok: true,
+              kind: 'query',
               selector: sel,
               count: out.length,
-              truncated: out.length >= maxNodes || scanned < nodes.length,
+              truncated: out.length >= maxNodes || nestedCollapsed > 0,
+              nestedCollapsed: nestedCollapsed,
               nodes: out
             };
           },
