@@ -19,7 +19,7 @@ function ok(cond, name) {
   }
 }
 
-const files = ['background.js', 'pagebridge.js', 'content.js'];
+const files = ['background.js', 'pagebridge.js', 'content.js', 'panel.js'];
 const srcs = {};
 for (const f of files) {
   const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
@@ -34,6 +34,100 @@ for (const f of files) {
 
 const bg = srcs['background.js'];
 const bridge = srcs['pagebridge.js'];
+const panelSrc = srcs['panel.js'] || '';
+ok(/function upsertLlmCallCard/.test(panelSrc), '面板有模型调用可收拢卡片');
+ok(/downloadLlmCall/.test(panelSrc), '面板可请求下载调用详情');
+ok(/llm-call-badge/.test(panelSrc), '调用卡片有解析状态徽标');
+ok(/textContent: '存为SKILL'/.test(panelSrc), '标题栏按钮文案为存为SKILL');
+ok(/textContent: '加载SKILL'/.test(panelSrc), '标题栏按钮文案为加载SKILL');
+ok(!/存为 WEB-SKILL/.test(panelSrc), '不再使用「存为 WEB-SKILL」');
+ok(!/WEB-SKILL 库/.test(panelSrc), '不再使用「WEB-SKILL 库」');
+ok(/header-action/.test(panelSrc), '标题栏文本按钮样式统一');
+ok(!/｜ 已注入/.test(panelSrc), '不再展示页面 URL｜已注入 条');
+ok(/textContent: 'Webpage Agent'/.test(panelSrc), '标题为 Webpage Agent');
+ok(/headerLeft\.appendChild\(title\)[\s\S]*headerBrand\.appendChild\(buildBadge\)[\s\S]*headerBrand\.appendChild\(connLampWrap\)/.test(panelSrc), '版本号写在 Webpage Agent 下面，已连接跟版本同行');
+ok(/flex-direction: column/.test((panelSrc.match(/\.header-left \{[\s\S]*?\n    \}/) || [''])[0]), '标题栏左侧纵向叠放名称与版本');
+ok(!/展开可看全文/.test(panelSrc), '收到态不重复「展开可看全文」');
+ok(!/已收到返回（/.test(panelSrc), '收到态不重复标题中的字数');
+ok(!/刷新后面板只保留摘要/.test(panelSrc), '恢复态不重复下载提示');
+ok(!/下载 JSON 含本次请求的完整输入/.test(panelSrc), '展开区不重复下载说明');
+ok(/llm-call-note:empty/.test(panelSrc), '空备注不占行');
+ok(/llm-call-compact/.test(panelSrc), '无备注时卡片单行对齐');
+ok(/function llmOutputPreview/.test(panelSrc), '卡片用返回预览代替重复状态句');
+ok(/elapsedMs/.test(bg) && /elapsedMs/.test(panelSrc), '调用卡片回推并展示耗时');
+
+function extractFn(src, name) {
+  const start = src.indexOf('function ' + name + '(');
+  if (start < 0) return '';
+  const brace = src.indexOf('{', start);
+  let depth = 0;
+  for (let i = brace; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') {
+      depth--;
+      if (depth === 0) return src.slice(start, i + 1);
+    }
+  }
+  return '';
+}
+const llmHelpers = [
+  extractFn(panelSrc, 'llmCallBadgeText'),
+  extractFn(panelSrc, 'formatElapsed'),
+  extractFn(panelSrc, 'llmOutputPreview'),
+  extractFn(panelSrc, 'looksLikeLlmStatusLine'),
+  extractFn(panelSrc, 'parseStoredLlmStatusLine'),
+  extractFn(panelSrc, 'llmCallStatusLine'),
+  extractFn(panelSrc, 'llmCallNoteText')
+].join('\n');
+ok(llmHelpers.indexOf('function llmCallNoteText') >= 0, '可抽出卡片备注函数做行为断言');
+let llmUi = null;
+try {
+  llmUi = vm.runInNewContext(llmHelpers + '\n({ llmCallNoteText: llmCallNoteText, llmCallStatusLine: llmCallStatusLine, parseStoredLlmStatusLine: parseStoredLlmStatusLine, llmOutputPreview: llmOutputPreview })');
+} catch (e) {
+  ok(false, '卡片文案函数可在 vm 中执行: ' + (e && e.message));
+}
+if (llmUi) {
+  const ocrReceived = {
+    phase: 'received',
+    label: 'OCR',
+    model: 'kimi-k2.6',
+    fileName: 'page:captcha',
+    outputChars: 41,
+    elapsedMs: 820,
+    output: '识别结果ABCDEFGHIJ0123456789end-of-ocr-text!!'
+  };
+  const title = llmUi.llmCallStatusLine(ocrReceived);
+  const note = llmUi.llmCallNoteText(ocrReceived);
+  ok(title.indexOf('41字') >= 0, '加粗标题含字数');
+  ok(title.indexOf('已收到') < 0 && title.indexOf('已解析') < 0, '标题不重复徽章上的已收到/已解析');
+  ok(/ · 已收到$/.test(title) === false, '标题不以状态词结尾');
+  ok(note.indexOf('已收到') < 0, '备注不再重复「已收到」');
+  ok(llmUi.llmCallStatusLine({
+    phase: 'parsed', parseOk: true, label: '文本模型', model: 'glm-5.2', outputChars: 2, elapsedMs: 7100
+  }) === '文本模型 · glm-5.2 · 2字 · 7.1s', '已解析后标题只留模型与耗时');
+  ok(!/\d+字/.test(note), '备注不再重复字数');
+  ok(note === ocrReceived.output, '41 字 OCR 原文进备注，不写状态套话');
+  ok(llmUi.llmCallNoteText({ phase: 'received', output: '4cYs', outputChars: 4 }) === '4cYs', '短验证码原文直接展示');
+  ok(llmUi.llmOutputPreview('abcdefghijKLMNOPQRST0123456789ABCDEFGHIJabcdefghijMORE') === '前15 abcdefghijKLMNO · 后15 JabcdefghijMORE', '超长返回用首尾 15 字预览');
+  ok(llmUi.llmCallNoteText({
+    phase: 'start',
+    chars: 8000,
+    bytes: 2900,
+    timeoutMs: 120000,
+    extra: 'Standard-IMG openai-vision',
+    url: 'https://api.example/v1/chat/completions'
+  }).indexOf('上下文') < 0, '请求中备注不重复标题里的上下文字数');
+  const restored = llmUi.parseStoredLlmStatusLine('OCR · kimi-k2.6 · page:captcha · 41字 · 已收到');
+  ok(restored.label === 'OCR' && restored.model === 'kimi-k2.6' && restored.fileName === 'page:captcha' && restored.outputChars === 41,
+    '旧会话标题行能还原成卡片字段');
+  const restoredNew = llmUi.parseStoredLlmStatusLine('文本模型 · glm-5.2 · 2字 · 7.1s');
+  ok(restoredNew.label === '文本模型' && restoredNew.model === 'glm-5.2' && restoredNew.outputChars === 2,
+    '无状态词的新标题行也能还原');
+}
+
+ok(/function coerceAgentAction/.test(bg), '可把 action=click 改写为 execute');
+ok(/type: 'llmCall'/.test(bg), '后台推送 llmCall 卡片事件');
+ok(/cmd === 'downloadLlmCall'/.test(bg), '后台提供调用详情下载');
 
 const m = bridge.match(/var allowed = \{([\s\S]*?)\};/);
 ok(!!m, 'pagebridge 存在结构化 op 白名单');
@@ -74,7 +168,29 @@ ok(!/TEXT_ACTION_SCAN_MAX/.test(bridge), 'textActions 无文档序 SCAN_MAX 硬�
 ok(!/var cap = 2500/.test(bridge), 'clickByText 不再用 2500 条可见文本的文档序帽');
 ok(/CONTAINS_CAP/.test(bridge), 'clickByText 只对包含匹配设帽，精确/前缀走完全页');
 ok(/isDisabledTree/.test(bridge), '禁用检查含祖先 [disabled]/aria-disabled（多层 li 内 span）');
-ok(/BRIDGE_VERSION = '2\.11\.0'/.test(bridge), 'BRIDGE_VERSION 已升到 2.11.0 以便已打开页重注入');
+function parseAssignedString(src, name) {
+  const mm = src.match(new RegExp('(?:const|let|var)\\s+' + name + '\\s*=\\s*[\'"]([^\'"]+)[\'"]'));
+  return mm ? mm[1] : null;
+}
+const manifestVer = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')).version;
+const bridgeVer = parseAssignedString(bridge, 'BRIDGE_VERSION');
+const contentVer = parseAssignedString(srcs['content.js'], 'CONTENT_VERSION');
+ok(!!manifestVer, 'manifest.json 有 version');
+ok(bridgeVer === manifestVer, 'BRIDGE_VERSION 与 manifest.version 锁步（' + bridgeVer + ' == ' + manifestVer + '）');
+ok(contentVer === manifestVer, 'CONTENT_VERSION 与 manifest.version 锁步（' + contentVer + ' == ' + manifestVer + '）');
+ok(/getManifest\(\)\.version/.test(panelSrc), '面板角标读 manifest.version');
+ok(/__assistantPanelVersion/.test(panelSrc), '面板按版本号决定是否重建');
+ok(/__assistantPanelDispose/.test(panelSrc), '面板升级时会 dispose 旧实例');
+ok(/function classAnchorsFromSelector/.test(bridge), 'pagebridge 可从长 within 抽出稳定 class');
+ok(/function isStableClass/.test(bridge), 'pagebridge 区分稳定 class 与框架/泛化 class');
+ok(/禁止编造快照里不存在的 class/.test(bg), 'PLAYBOOK 禁止编造 within class');
+ok(/引擎也会用当前指令全文与卡片标题消歧/.test(bg), 'PLAYBOOK 说明指令全文消歧不绑死句式');
+ok(/function pickByTaskHint/.test(bridge), 'clickByText 可用当前指令与卡片标题消歧');
+ok(/function looksLikeDoneProse/.test(bg), '引擎可把完成说明收成 done');
+ok(/JSON_ONLY_HINT/.test(bg), '执行结果回执要求下一轮只输出 JSON');
+ok(/function attachTaskHintToOps/.test(bg), '执行前把当前指令注入 clickByText hint');
+ok(/function looksLikeCssSelector/.test(bridge), 'within 能区分 CSS 与标题文案');
+ok(/function findRootByVisibleText/.test(bridge), 'within 标题文案按可见文本定位容器');
 ok(/function retargetFileSelectClick/.test(bridge), 'pagebridge 有文件行点击改向勾选图标');
 ok(/function collectFileSelectRows/.test(bridge), 'pagebridge 收集文件选择行供 setChecked');
 ok(/function isFileSelectRow/.test(bridge), 'pagebridge 识别文件选择行');
@@ -112,6 +228,76 @@ ok(/jsonNudgeCount/.test(bg), '非 JSON 输出有纠正重试计数');
 ok(/JSON_NUDGE_MAX = 2/.test(bg), '非 JSON 最多纠正两次');
 ok(/不是可执行 JSON/.test(bg), '非 JSON 纠正消息存在');
 ok(/每一轮只输出一个 JSON 对象/.test(bg), 'PLAYBOOK 禁止 JSON 外中文说明');
+ok(/【当前指令优先】/.test(bg), 'PLAYBOOK 要求只执行最新指令');
+ok(/【指令闭环】/.test(bg), 'PLAYBOOK 要求做完当前指令即停止');
+ok(/不要等用户在指令末尾写/.test(bg), 'PLAYBOOK 不要求用户手写停止');
+ok(/continueAsk: true/.test(bg), '回答提问时继续原任务而不降级历史');
+ok(/当前指令是单步操作且已成功/.test(bg), '单步成功后引擎直接结束而不再调模型');
+ok(/已拦住打包的额外步骤/.test(bg), '单步指令禁止打包未要求的操作');
+
+const demoteStart = bg.indexOf('function isEngineUserMessage');
+const demoteEnd = bg.indexOf('\nfunction limitAttachmentContext');
+ok(demoteStart >= 0 && demoteEnd > demoteStart, '可截取历史降级函数');
+const demoteSandbox = {};
+try {
+  vm.runInNewContext(
+    bg.slice(demoteStart, demoteEnd) +
+      '\nthis.demotePriorUserTasks = demotePriorUserTasks;' +
+      '\nthis.buildUserPrompt = buildUserPrompt;' +
+      '\nthis.hasPriorUserTask = hasPriorUserTask;' +
+      '\nthis.toBackgroundTaskContent = toBackgroundTaskContent;',
+    demoteSandbox
+  );
+  ok(typeof demoteSandbox.demotePriorUserTasks === 'function', 'demotePriorUserTasks 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 demotePriorUserTasks 失败: ' + (e && e.message));
+}
+
+const prior = [
+  { role: 'system', content: 'sys' },
+  { role: 'user', content: '【当前指令】只执行下面这一条。\n用户任务：登录并发布数据集' },
+  { role: 'assistant', content: '{"action":"done","summary":"已发布"}' },
+  { role: 'user', content: '【执行结果】页面已跳转' }
+];
+ok(demoteSandbox.hasPriorUserTask(prior), '历史中有旧任务');
+const demoted = demoteSandbox.demotePriorUserTasks(prior);
+ok(demoted.changed, '旧用户任务会被降级');
+ok(demoted.messages[1].content.indexOf('【历史背景·勿再执行】') === 0, '旧任务改写为历史背景');
+ok(demoted.messages[1].content.indexOf('登录并发布数据集') >= 0, '背景仍保留原任务摘要');
+ok(demoted.messages[3].content.indexOf('【执行结果】') === 0, '执行结果不降级');
+ok(demoteSandbox.buildUserPrompt('选中这两个文件', []).indexOf('【当前指令】') === 0, '新发送标为当前指令');
+ok(demoteSandbox.buildUserPrompt('张三', [], 'continue').indexOf('【用户补充·继续原任务】') === 0, '回答提问标为继续原任务');
+const twice = demoteSandbox.demotePriorUserTasks(demoted.messages);
+ok(!twice.changed, '已是背景的任务不会重复改写');
+
+const boundStart = bg.indexOf('\nconst MUTATING_HELPER_OPS');
+const boundEnd = bg.indexOf('\nfunction truncate');
+ok(boundStart >= 0 && boundEnd > boundStart, '可截取单步指令判定函数');
+const boundSandbox = {};
+try {
+  vm.runInNewContext(
+    bg.slice(boundStart, boundEnd) +
+      '\nthis.isBoundedInstruction = isBoundedInstruction;' +
+      '\nthis.countMutatingOps = countMutatingOps;' +
+      '\nthis.opsIncludeMutation = opsIncludeMutation;',
+    boundSandbox
+  );
+  ok(typeof boundSandbox.isBoundedInstruction === 'function', 'isBoundedInstruction 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 isBoundedInstruction 失败: ' + (e && e.message));
+}
+const userClick = 'clickByText："选择数据文件"\nwithin：div.file-list';
+ok(boundSandbox.isBoundedInstruction(userClick), 'clickByText+within 视为单步指令');
+ok(boundSandbox.isBoundedInstruction('点击选择数据文件'), '短“点击…”视为单步指令');
+ok(!boundSandbox.isBoundedInstruction('点击选择数据文件，然后勾选那两个 txt'), '带“然后”的不是单步');
+ok(!boundSandbox.isBoundedInstruction('把这两个文件发布出去'), '开放式发布任务不是单步');
+ok(!boundSandbox.isBoundedInstruction('选择数据文件并勾选 AMD_opt_vasp_result.txt'), '带续步的选择不是单步');
+ok(boundSandbox.opsIncludeMutation([{ op: 'clickByText', args: ['选择数据文件'] }]), 'clickByText 算改页操作');
+ok(!boundSandbox.opsIncludeMutation([{ op: 'inspect', args: ['.file-list'] }]), 'inspect 不算改页操作');
+ok(boundSandbox.countMutatingOps([
+  { op: 'clickByText', args: ['选择数据文件'] },
+  { op: 'setChecked', args: [{ text: 'a.txt' }, true] }
+]) === 2, '可数出打包的多个改页操作');
 
 const extractStart = bg.indexOf('const AGENT_ACTIONS');
 const extractEnd = bg.indexOf('\nfunction buildUserPrompt');
@@ -149,9 +335,23 @@ ok(extractSandbox.extractJson(executeOverAsk).action === 'execute',
 
 ok(extractSandbox.isAgentAction({ action: 'execute', operations: [] }), '空 operations 的 execute 仍算 agent action');
 ok(!extractSandbox.isAgentAction({ op: 'upload', args: ['a', 'b'] }), '{"op":"upload"} 不是 agent action');
+ok(!extractSandbox.isAgentAction({ action: 'click', args: ['#a'] }), 'action=click 本身不是 agent action');
+const clickAsAction = extractSandbox.extractJson('{"action":"click","args":["#sel"]}');
+ok(clickAsAction && clickAsAction.action === 'execute' && clickAsAction.operations[0].op === 'click' && clickAsAction.operations[0].args[0] === '#sel',
+  'action=click 改写为 execute+operations');
+ok(extractSandbox.extractJson('我处于已选文件页面\n{"action":"click","args":["#a"]}').action === 'execute',
+  '中文夹杂 action=click 时可执行');
+ok(extractSandbox.extractJson(mixedLog).operations[0].args[1] === 'k1',
+  '手册里的 {"op":"upload"} 不会抢走后面的 execute');
 ok(/function pickPageCaptchaImage/.test(bridge), 'pagebridge 有 captcha 魔术值现场解析');
 ok(/function captchaShaped/.test(bridge), 'pagebridge 有验证码几何特征');
-ok(/function ancestorCaptchaText/.test(bridge), 'pagebridge 有祖先链验证码文案');
+ok(/function adjacentCaptchaHint/.test(bridge), 'pagebridge 用邻接短文案判定验证码，不用整表 innerText');
+ok(!/n\.innerText \|\| ''\)\.replace/.test(bridge.match(/function ancestorCaptchaText\([\s\S]*?\n    \}/)[0]), '祖先验证码文案不再扫整段 innerText');
+ok(/area > 20000/.test(bridge), '验证码打分惩罚过大 Logo/banner');
+ok(/function refreshCaptchaPixels/.test(bridge), 'captcha 魔术值截图前先点击刷新');
+ok(/function looksLikeCaptchaCode/.test(bg), 'OCR 结果过长时拒绝填入验证码');
+ok(/快照里已有非空 value，禁止 setVal 覆盖/.test(bg), 'PLAYBOOK 登录框已有值则不改');
+ok(/headerBrand\.appendChild\(buildBadge\)[\s\S]*headerBrand\.appendChild\(connLampWrap\)/.test(panelSrc), '标题栏版本号在已连接前面');
 ok(/magicCaptcha/.test(bridge), 'captureImage 支持 sel===captcha');
 ok(/STATUS_NODE_SEL/.test(bridge), 'statusMessages/domDigest 共用弹窗选择器');
 ok(/\[role="dialog"\]/.test(bridge), '状态采集含 role=dialog');
@@ -189,6 +389,56 @@ ok(sawSection, '继续退到 section 祖先');
 ok(parentCssPath('div#app') === '', '退到 #app 时停止');
 ok(parentCssPath('div#app >>> shadow') === '', '含 shadow 分隔符时不剥路径');
 
+function isStableClass(name) {
+  var c = String(name || '');
+  if (c.length < 3 || c.length > 48) return false;
+  if (/^(ivu-|el-|ant-|van-|nut-|layui-|btn-|col-|row-|is-|has-|js-)/i.test(c)) return false;
+  if (/^data-v-/.test(c)) return false;
+  if (/^[a-z0-9]{8,}$/i.test(c) && c.indexOf('-') < 0) return false;
+  var generic = { text: 1, wrap: 1, inner: 1, left: 1, right: 1, content: 1, body: 1, main: 1 };
+  if (generic[c.toLowerCase()]) return false;
+  return true;
+}
+function classAnchorsFromSelector(sel) {
+  var parts = String(sel || '').split(/\s*>\s*/);
+  var out = [];
+  var seen = {};
+  for (var i = parts.length - 1; i >= 0; i--) {
+    var p = String(parts[i] || '');
+    var tagM = p.match(/^([a-zA-Z][\w-]*)/);
+    var tag = tagM ? tagM[1] : '';
+    var re = /\.([A-Za-z_][\w-]*)/g;
+    var m;
+    while ((m = re.exec(p))) {
+      if (!isStableClass(m[1])) continue;
+      var cand = (tag ? tag : '') + '.' + m[1];
+      if (seen[cand]) continue;
+      seen[cand] = true;
+      out.push(cand);
+    }
+  }
+  return out;
+}
+ok(isStableClass('file-list') && isStableClass('not-inner') && isStableClass('block-box'), '业务 class 视为稳定');
+ok(!isStableClass('ivu-btn') && !isStableClass('text') && !isStableClass('content'), '框架/泛化 class 不视为稳定');
+const longWithin = '#app > div.body > main > div > div > div.section > div.content > div > div.file-list > div.block-box > div > div';
+const anchors = classAnchorsFromSelector(longWithin);
+ok(anchors[0] === 'div.block-box', '长 within 最右稳定 class 优先');
+ok(anchors.indexOf('div.file-list') >= 0 && anchors.indexOf('div.section') >= 0, '同时抽出 file-list/section');
+ok(anchors.indexOf('div.content') < 0 && anchors.indexOf('div.body') < 0, '不抽出泛化 class content/body');
+
+function looksLikeCssSelector(s) {
+  var t = String(s || '').trim();
+  if (!t) return false;
+  if (/[.#>\[:]/.test(t)) return true;
+  if (/^(div|span|ul|ol|li|section|article|header|nav|main|aside|p|a|button|input|form|img)\b/i.test(t)) return true;
+  return false;
+}
+ok(looksLikeCssSelector('div.block-box'), '虚构 class 仍识别为 CSS，不会当标题搜');
+ok(looksLikeCssSelector('ul.block-list-warp > li:nth-of-type(6)'), '真实列表路径识别为 CSS');
+ok(!looksLikeCssSelector('某某项目名称'), '条目标题不识别为 CSS');
+ok(/禁止编造快照里没有的 class/.test(bridge), '歧义报错提示勿编造 class');
+
 const timeoutStart = bg.indexOf('function estimateMessageChars');
 const timeoutEnd = bg.indexOf('\n// 文本模型调用');
 ok(timeoutStart >= 0 && timeoutEnd > timeoutStart, '可截取超时计算函数');
@@ -214,7 +464,7 @@ ok(
   timeoutSandbox.llmTimeoutMs('text', [{ content: 'x'.repeat(109313) }], 'qwen3.8-reasoner') === 300000,
   '约 109k 字符的 reasoner 超时拉到上限 300s'
 );
-ok(/超时 /.test(bg) && /timeoutMs/.test(bg), '请求状态会显示超时秒数');
+ok(/timeoutMs/.test(bg) && /超时 /.test(panelSrc), '调用卡片会显示超时秒数');
 
 // 多层 li 选优契约（与 innermostIndependent 同算法，用假 contains）
 function innermostIndependent(winners) {
@@ -264,6 +514,173 @@ ok(
     mixed.every((x) => x.el.id !== 'outer'),
   '包装祖先丢弃后，仍与另一枝同文 → 两个独立目标'
 );
+
+const hintHelpers = [
+  extractFn(bridge, 'compactHintText'),
+  extractFn(bridge, 'longestCommonSubstringLen'),
+  extractFn(bridge, 'quotedHintPhrases'),
+  extractFn(bridge, 'stripGenericClickWords'),
+  extractFn(bridge, 'distinctiveTitleScore'),
+  extractFn(bridge, 'pickByTaskHint')
+].join('\n');
+const hintSandbox = {};
+try {
+  vm.runInNewContext(
+    hintHelpers + '\nthis.pickByTaskHint = pickByTaskHint;\nthis.distinctiveTitleScore = distinctiveTitleScore;',
+    hintSandbox
+  );
+  ok(typeof hintSandbox.pickByTaskHint === 'function', 'pickByTaskHint 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 pickByTaskHint 失败: ' + (e && e.message));
+}
+const cards = [
+  { itemTitle: '某某项目名称 进入', text: '进入' },
+  { itemTitle: '气象数值模拟平台 进入', text: '进入' },
+  { itemTitle: '分子动力学计算 进入', text: '进入' }
+];
+function pickHint(hint) {
+  const hit = hintSandbox.pickByTaskHint(cards, hint, '进入');
+  return hit && hit.itemTitle;
+}
+ok(
+  /超算应用运行优化/.test(pickHint('登录后在「某某项目名称」这一项里 clickByText："进入"') || ''),
+  '书名号+这一项 能消歧'
+);
+ok(
+  /超算应用运行优化/.test(pickHint('点击某某项目名称的进入按钮') || ''),
+  '不加引号直接写标题也能消歧'
+);
+ok(
+  /超算应用运行优化/.test(pickHint('Open Enter on 某某项目名称') || ''),
+  '中英混写句式也能消歧'
+);
+ok(
+  /气象数值模拟/.test(pickHint('please click Enter for 气象数值模拟平台') || ''),
+  '英文 please click Enter for 标题 也能消歧'
+);
+ok(!pickHint('clickByText："进入"'), '只有通用按钮文案时不猜');
+ok(!pickHint('进入第二个项目'), '没有独特标题时不猜');
+
+const doneHelpers = extractFn(bg, 'looksLikeDoneProse') + '\n' + extractFn(bg, 'attachTaskHintToOps');
+const doneSandbox = {};
+try {
+  vm.runInNewContext(
+    doneHelpers + '\nthis.looksLikeDoneProse = looksLikeDoneProse;\nthis.attachTaskHintToOps = attachTaskHintToOps;',
+    doneSandbox
+  );
+  ok(typeof doneSandbox.looksLikeDoneProse === 'function', 'looksLikeDoneProse 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 done 辅助函数失败: ' + (e && e.message));
+}
+ok(doneSandbox.looksLikeDoneProse('已登录并进入「某某项目名称」空间，当前停留在其文件管理页面。'), '中文完成说明视为 done');
+ok(doneSandbox.looksLikeDoneProse('Successfully entered the project workspace.'), '英文完成说明视为 done');
+ok(!doneSandbox.looksLikeDoneProse('正在目标项中点击进入'), '进行中说明不视为 done');
+ok(!doneSandbox.looksLikeDoneProse('clickByText 匹配到多处，需要加 within'), '失败分析不视为 done');
+const hintedOps = doneSandbox.attachTaskHintToOps(
+  [{ op: 'clickByText', args: ['进入'] }],
+  '在「某某项目名称」里点进入'
+);
+ok(
+  hintedOps[0].args[1] && /超算应用运行优化/.test(hintedOps[0].args[1].hint),
+  'clickByText 会带上当前指令全文作 hint'
+);
+const keptWithin = doneSandbox.attachTaskHintToOps(
+  [{ op: 'clickByText', args: ['进入', { within: 'ul.block-list-warp > li:nth-of-type(6)' }] }],
+  '任务说明'
+);
+ok(keptWithin[0].args[1].within.indexOf('nth-of-type(6)') >= 0 && keptWithin[0].args[1].hint, '已有 within 时仍附加 hint 且不覆盖 within');
+
+ok(/禁止 click 上传按钮/.test(bg), 'PLAYBOOK 禁止 click 上传按钮弹系统框');
+ok(/verified 以赋值是否成功为准/.test(bg), 'PLAYBOOK 说明组件清空 input 仍算上传成功');
+ok(/function resolveFileInputEl/.test(srcs['content.js']), 'upload 可从按钮/容器解析到 file 输入');
+ok(/consumed: afterEvent\.length === 0/.test(srcs['content.js']), 'upload 记录组件是否消费并清空 input');
+
+const contentSrc = srcs['content.js'];
+const uploadHelpers = [
+  extractFn(contentSrc, 'isFileInputEl'),
+  extractFn(contentSrc, 'fileListsMatch'),
+  extractFn(contentSrc, 'scoreFileInputEl'),
+  extractFn(contentSrc, 'pickBestFileInput')
+].join('\n');
+const uploadSandbox = {};
+try {
+  vm.runInNewContext(
+    uploadHelpers +
+      '\nthis.fileListsMatch = fileListsMatch;\nthis.pickBestFileInput = pickBestFileInput;',
+    uploadSandbox
+  );
+  ok(typeof uploadSandbox.pickBestFileInput === 'function', 'pickBestFileInput 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 upload 辅助函数失败: ' + (e && e.message));
+}
+function fakeFileInput(id, multiple, className, parentClass) {
+  return {
+    id: id,
+    tagName: 'INPUT',
+    type: 'file',
+    multiple: !!multiple,
+    disabled: false,
+    className: className || '',
+    parentElement: parentClass ? { className: parentClass, parentElement: null } : null
+  };
+}
+ok(uploadSandbox.fileListsMatch(
+  [{ name: 'a.txt', size: 1 }, { name: 'b.md', size: 2 }],
+  [{ name: 'a.txt', size: 1 }, { name: 'b.md', size: 2 }]
+), '同名同大小文件列表视为匹配');
+ok(!uploadSandbox.fileListsMatch([{ name: 'a.txt', size: 1 }], [{ name: 'a.txt', size: 2 }]), '大小不同则不匹配');
+const dragInput = fakeFileInput('drag', true, 'ivu-upload-input', 'ivu-upload ivu-upload-drag');
+const selectInput = fakeFileInput('select', true, 'ivu-upload-input', 'ivu-upload ivu-upload-select');
+ok(uploadSandbox.pickBestFileInput([dragInput, selectInput], true).id === 'select', '多文件时优先点选上传而非拖拽区');
+ok(uploadSandbox.pickBestFileInput([selectInput, dragInput], true).id === 'select', '候选顺序变化仍选点选上传');
+
+const analyzeStart = bg.indexOf('function analyzeRunResult');
+const analyzeEnd = bg.indexOf('\nfunction guardKey');
+const analyzeSandbox = {};
+try {
+  vm.runInNewContext(bg.slice(analyzeStart, analyzeEnd) + '\nthis.analyzeRunResult = analyzeRunResult;', analyzeSandbox);
+  ok(typeof analyzeSandbox.analyzeRunResult === 'function', 'analyzeRunResult 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 analyzeRunResult 失败: ' + (e && e.message));
+}
+const oldUploadFail = JSON.stringify({
+  kind: 'batch',
+  results: [{
+    op: 'upload',
+    value: {
+      ok: true, kind: 'mutation',
+      files: [{ name: 'a.txt', size: 10 }],
+      valid: true, validationMessage: '', verified: false
+    }
+  }]
+});
+ok(analyzeSandbox.analyzeRunResult(oldUploadFail).failed, '旧版 change 后清空 input 且无 consumed 时仍判失败（由新 helper 避免）');
+const newUploadOk = JSON.stringify({
+  kind: 'batch',
+  results: [{
+    op: 'upload',
+    value: {
+      ok: true, kind: 'mutation',
+      files: [{ name: 'a.txt', size: 10 }, { name: 'b.md', size: 20 }],
+      valid: true, consumed: true, verified: true
+    }
+  }]
+});
+const newInfo = analyzeSandbox.analyzeRunResult(newUploadOk);
+ok(newInfo.mutation && newInfo.verified && !newInfo.failed, '赋值成功且组件清空 input 时不报 VERIFY FAILED');
+const consumedFallback = JSON.stringify({
+  kind: 'batch',
+  results: [{
+    op: 'upload',
+    value: {
+      ok: true, kind: 'mutation',
+      files: [{ name: 'a.txt', size: 10 }],
+      valid: false, consumed: true, verified: false
+    }
+  }]
+});
+ok(analyzeSandbox.analyzeRunResult(consumedFallback).verified && !analyzeSandbox.analyzeRunResult(consumedFallback).failed,
+  '组件清空后 required 校验失败仍视为上传已提交');
 
 if (failures) {
   console.error('\n' + failures + ' 项断言失败');

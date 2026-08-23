@@ -7,15 +7,28 @@
 (function () {
   // 仅在顶层 frame 运行
   if (window.top !== window.self) return;
-  // 幂等守卫：重复注入不重建
-  if (window.__assistantPanelInjected) return;
-  window.__assistantPanelInjected = true;
 
-  // 与 manifest 保持单一版本源，避免面板显示旧版本、扩展实际为另一版本。
+  // 角标 = manifest.version，须与 pagebridge BRIDGE_VERSION、content CONTENT_VERSION 相同。
   const BUILD_VERSION = (chrome.runtime && chrome.runtime.getManifest)
     ? chrome.runtime.getManifest().version
     : 'unknown';
   const BUILD_TAG = 'v' + BUILD_VERSION;
+
+  // 同版本幂等；版本变化时先拆掉旧面板（否则布尔守卫会让角标永远停在首次注入的号，例如 2.5.0）。
+  if (window.__assistantPanelVersion === BUILD_VERSION) return;
+  if (typeof window.__assistantPanelDispose === 'function') {
+    try { window.__assistantPanelDispose(); } catch (e) {}
+  } else {
+    try {
+      const stale = document.getElementById('__ai-assistant-root');
+      if (stale) {
+        stale.hidden = true;
+        if (stale.parentNode) stale.parentNode.removeChild(stale);
+      }
+    } catch (e) {}
+  }
+  window.__assistantPanelInjected = true;
+  window.__assistantPanelVersion = BUILD_VERSION;
 
   // ============ CSS（CSP 安全：通过构造的 CSSStyleSheet 注入） ============
   const CSS_STRING = `
@@ -68,6 +81,7 @@
       font-size: 15px;
       font-weight: 700;
       letter-spacing: 0.5px;
+      line-height: 1.2;
     }
     .header-build {
       font-size: 10px;
@@ -75,13 +89,22 @@
       letter-spacing: 0.3px;
       background: rgba(255, 255, 255, 0.18);
       color: #fff;
-      padding: 2px 7px;
+      padding: 1px 7px;
       border-radius: 999px;
-      margin-left: 2px;
       white-space: nowrap;
+      line-height: 1.4;
     }
     .header-left {
       display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      justify-content: center;
+      gap: 2px;
+      min-width: 0;
+    }
+    .header-brand {
+      display: flex;
+      flex-direction: row;
       align-items: center;
       gap: 8px;
       min-width: 0;
@@ -91,8 +114,7 @@
       align-items: center;
       gap: 5px;
       flex-shrink: 0;
-      margin-left: 2px;
-      padding: 2px 8px 2px 6px;
+      padding: 1px 8px 1px 6px;
       border-radius: 999px;
       background: rgba(0, 0, 0, 0.16);
     }
@@ -152,16 +174,20 @@
     .icon-btn:active {
       transform: scale(0.92);
     }
-    .clear-link {
+    .header-action {
       background: none;
       border: none;
       color: rgba(255,255,255,0.95);
       font-size: 12px;
+      font-weight: 600;
+      font-family: inherit;
       cursor: pointer;
-      padding: 2px 4px;
+      padding: 2px 6px;
       border-radius: 6px;
+      white-space: nowrap;
+      line-height: 1.4;
     }
-    .clear-link:hover {
+    .header-action:hover {
       background: rgba(255,255,255,0.2);
     }
     .settings-panel {
@@ -367,10 +393,6 @@
       background: #ffecec;
       color: #c0392b;
     }
-    .conn-status.ok {
-      background: #e8f9f0;
-      color: #1e7d4f;
-    }
     .attach-area {
       margin: 8px 12px 0;
       padding: 10px;
@@ -517,6 +539,78 @@
       color: #c0392b;
       border: 1px solid #f5c6c6;
     }
+    .bubble.llm-call {
+      align-self: stretch;
+      max-width: 96%;
+      background: #f7f8fc;
+      color: #2b2f3a;
+      border: 1px solid #e0e3ee;
+      padding: 8px 10px;
+    }
+    .llm-call-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .llm-call-badge {
+      flex: 0 0 auto;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 999px;
+      padding: 2px 8px;
+      line-height: 1.4;
+    }
+    .llm-call-badge.pending { background: #eef2ff; color: #3d5afe; }
+    .llm-call-badge.ok { background: #e7f8ed; color: #1b7a3d; }
+    .llm-call-badge.warn { background: #fff4d6; color: #8a6d1a; }
+    .llm-call-badge.fail { background: #ffecec; color: #c0392b; }
+    .llm-call-meta {
+      flex: 1 1 160px;
+      font-size: 12px;
+      color: #4a5160;
+      min-width: 0;
+    }
+    .llm-call-title { font-weight: 600; color: #23283a; }
+    .llm-call-note { margin-top: 2px; color: #5c6370; }
+    .llm-call-note:empty { display: none; }
+    .bubble.llm-call.llm-call-compact .llm-call-head { align-items: center; }
+    .llm-call-actions {
+      display: flex;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+    .llm-call-actions button {
+      border: 1px solid #d8dbe7;
+      background: #fff;
+      border-radius: 8px;
+      padding: 4px 8px;
+      font-size: 12px;
+      cursor: pointer;
+      color: #2b2f3a;
+      font-family: inherit;
+    }
+    .llm-call-actions button:hover { background: #f3f5fb; }
+    .llm-call-actions button:disabled { opacity: 0.45; cursor: default; }
+    .llm-call-body {
+      display: none;
+      margin-top: 8px;
+      border-top: 1px dashed #e0e3ee;
+      padding-top: 8px;
+    }
+    .llm-call-body.open { display: block; }
+    .llm-call-body pre {
+      max-height: 240px;
+      overflow: auto;
+      background: #fff;
+      border: 1px solid #e6e8f0;
+      border-radius: 8px;
+      padding: 8px;
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     @keyframes pop {
       from { transform: translateY(4px); opacity: 0; }
       to { transform: translateY(0); opacity: 1; }
@@ -627,19 +721,6 @@
     }
     .hidden {
       display: none !important;
-    }
-    .skill-bar {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 7px 12px;
-      background: #eef2ff;
-      border-bottom: 1px solid #e0e5f5;
-      flex-shrink: 0;
-    }
-    .skill-bar .btn {
-      padding: 5px 10px;
-      font-size: 12px;
     }
     .skill-lib-toolbar {
       display: flex;
@@ -875,6 +956,8 @@
   let reconnecting = false;
   let heartbeatId = null;
   let reconnectTimerId = null;
+  let panelDisposed = false;
+  let awaitingDomReady = false;
   let currentConfig = null; // 最新配置（用于重建标签下拉）
   let cachedSkills = [];
   const selectedSkillIds = {};
@@ -1074,32 +1157,32 @@
 
   function buildDOM() {
     const header = mk('header', 'app-header');
-    const title = mk('div', 'header-title', { textContent: '网页智能助手' });
-    const buildBadge = mk('span', 'header-build', { textContent: BUILD_TAG, title: '分支号-版本号' });
+    const title = mk('div', 'header-title', { textContent: 'Webpage Agent' });
+    const buildBadge = mk('span', 'header-build', { textContent: BUILD_TAG, title: '扩展版本（manifest，须与页面桥一致）' });
     const headerRight = mk('div', 'header-right');
-    const clearBtn = mk('button', 'clear-link', { textContent: '清空对话', title: '清空对话与附件' });
+    const saveSkillBtn = mk('button', 'header-action', { type: 'button', textContent: '存为SKILL', title: '把本次对话中的用户任务存为可复用技能' });
+    const skillLibBtn = mk('button', 'header-action', { type: 'button', textContent: '加载SKILL', title: '查看、导入或触发已保存的技能' });
+    const clearBtn = mk('button', 'header-action', { type: 'button', textContent: '清空对话', title: '清空对话与附件' });
     const settingsBtn = mk('button', 'icon-btn', { textContent: '⚙', title: '设置' });
     const closeBtn = mk('button', 'icon-btn', { textContent: '✕', title: '关闭面板' });
+    headerRight.appendChild(saveSkillBtn);
+    headerRight.appendChild(skillLibBtn);
     headerRight.appendChild(clearBtn);
     headerRight.appendChild(settingsBtn);
     headerRight.appendChild(closeBtn);
     const headerLeft = mk('div', 'header-left');
+    const headerBrand = mk('div', 'header-brand');
     headerLeft.appendChild(title);
-    headerLeft.appendChild(buildBadge);
+    headerBrand.appendChild(buildBadge);
     const connLampWrap = mk('div', 'conn-lamp-wrap');
     const connLamp = mk('span', 'conn-lamp connecting', { title: '连接中' });
     const connLampLabel = mk('span', 'conn-lamp-label', { textContent: '连接中' });
     connLampWrap.appendChild(connLamp);
     connLampWrap.appendChild(connLampLabel);
-    headerLeft.appendChild(connLampWrap);
+    headerBrand.appendChild(connLampWrap);
+    headerLeft.appendChild(headerBrand);
     header.appendChild(headerLeft);
     header.appendChild(headerRight);
-
-    const skillBar = mk('div', 'skill-bar');
-    const saveSkillBtn = mk('button', 'btn primary', { type: 'button', textContent: '存为 WEB-SKILL', title: '把本次对话中的用户任务存为可复用技能' });
-    const skillLibBtn = mk('button', 'btn', { type: 'button', textContent: 'WEB-SKILL 库', title: '查看、导出或触发已保存的技能' });
-    skillBar.appendChild(saveSkillBtn);
-    skillBar.appendChild(skillLibBtn);
 
     const settingsPanel = mk('section', 'settings-panel hidden');
     settingsPanel.id = 'settingsPanel';
@@ -1192,7 +1275,7 @@
 
     const saveSkillModal = mk('div', 'modal-backdrop hidden');
     const saveSkillDialog = mk('div', 'modal');
-    saveSkillDialog.appendChild(mk('h3', null, { textContent: '存为 WEB-SKILL' }));
+    saveSkillDialog.appendChild(mk('h3', null, { textContent: '存为SKILL' }));
     const saveSkillName = mk('input', null, { type: 'text', placeholder: '技能名称', maxLength: 80 });
     saveSkillDialog.appendChild(mkLabel('名称', saveSkillName));
     const saveSkillUrl = mk('input', null, { type: 'url', placeholder: 'https://…' });
@@ -1240,7 +1323,7 @@
     confirmDialog.appendChild(confirmActions);
     confirmModal.appendChild(confirmDialog);
 
-    const connStatus = mk('div', 'conn-status', { textContent: '正在连接…' });
+    const connStatus = mk('div', 'conn-status hidden');
 
     const attachArea = mk('section', 'attach-area hidden');
     attachArea.id = 'attachArea';
@@ -1282,7 +1365,6 @@
     tagRow.appendChild(ocrTagField);
 
     shadow.appendChild(header);
-    shadow.appendChild(skillBar);
     shadow.appendChild(settingsPanel);
     shadow.appendChild(skillLibrary);
     shadow.appendChild(connStatus);
@@ -1296,7 +1378,7 @@
     return {
       header, settingsBtn, closeBtn, clearBtn,
       connLamp, connLampLabel,
-      skillBar, saveSkillBtn, skillLibBtn,
+      saveSkillBtn: saveSkillBtn, skillLibBtn: skillLibBtn,
       settingsPanel, textProvidersList, ocrProvidersList,
       addTextProviderBtn, addOcrProviderBtn,
       systemPromptText, systemPromptOcr, maxSteps, saveBtn, testBtn, settingsStatus,
@@ -1323,10 +1405,7 @@
           const err = chrome.runtime.lastError;
           if (err) {
             console.warn('storage.local 写入失败:', err.message);
-            if (els && els.connStatus) {
-              els.connStatus.textContent = '本地存储失败：' + err.message + '（请清理对话或附件）';
-              els.connStatus.classList.add('error');
-            }
+            setConnBanner('本地存储失败：' + err.message + '（请清理对话或附件）', 'error');
             resolve(false);
           } else {
             resolve(true);
@@ -1361,10 +1440,12 @@
 
   function persistTranscript() {
     if (!canPersist()) return;
-    const compact = transcript.filter((m) => !isConnHintMessage(m)).slice(-200).map((m) => ({
-      role: m.role,
-      text: String(m.text || '').slice(0, 4000)
-    }));
+    const compact = transcript.filter((m) => !isConnHintMessage(m)).slice(-200).map((m) => {
+      const row = { role: m.role, text: String(m.text || '').slice(0, 4000) };
+      if (m.llmId) row.llmId = m.llmId;
+      if (m.llm && typeof m.llm === 'object') row.llm = m.llm;
+      return row;
+    });
     storeSet({ [trKey()]: compact });
   }
   function filesTotalBytes() {
@@ -1401,6 +1482,208 @@
     return div;
   }
 
+  function findLlmCard(id) {
+    const nodes = els.messages.querySelectorAll('.llm-call');
+    for (let i = 0; i < nodes.length; i++) {
+      if (nodes[i].dataset && nodes[i].dataset.llmId === id) return nodes[i];
+    }
+    return null;
+  }
+
+  function llmCallBadgeClass(state) {
+    if (state.phase === 'start' || state.phase === 'restored') return 'pending';
+    if (state.phase === 'error') return 'fail';
+    if (state.parseOk === false) return 'warn';
+    if (state.parseOk === true) return 'ok';
+    if (state.phase === 'received') return 'ok';
+    return 'pending';
+  }
+
+  function llmCallBadgeText(state) {
+    if (state.phase === 'start') return '请求中';
+    if (state.phase === 'error') return '调用失败';
+    if (state.parseOk === false) return '无法解析';
+    if (state.parseOk === true) return '已解析';
+    if (state.phase === 'received') return '已收到';
+    if (state.phase === 'restored') return '历史调用';
+    return '调用';
+  }
+
+  function formatElapsed(ms) {
+    const n = Number(ms);
+    if (!isFinite(n) || n < 0) return '';
+    if (n < 1000) return Math.round(n) + 'ms';
+    const s = n / 1000;
+    if (s < 10) return s.toFixed(1).replace(/\.0$/, '') + 's';
+    return Math.round(s) + 's';
+  }
+
+  function llmOutputPreview(text) {
+    const s = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    if (s.length <= 48) return s;
+    return '前15 ' + s.slice(0, 15) + ' · 后15 ' + s.slice(-15);
+  }
+
+  function looksLikeLlmStatusLine(text) {
+    const s = String(text || '');
+    if (!s) return true;
+    return / · (请求中|已收到|调用失败|无法解析|已解析|历史调用|调用)$/.test(s);
+  }
+
+  function parseStoredLlmStatusLine(text) {
+    const bits = String(text || '').split(' · ').map(function (s) { return s.trim(); }).filter(Boolean);
+    if (!bits.length) return {};
+    const out = { label: bits[0] };
+    const badgeRe = /^(请求中|调用失败|无法解析|已解析|已收到|历史调用|调用)$/;
+    const rest = [];
+    for (let i = 1; i < bits.length; i++) {
+      const b = bits[i];
+      if (badgeRe.test(b)) continue;
+      let m = /^(\d+)字$/.exec(b);
+      if (m) { out.outputChars = parseInt(m[1], 10); continue; }
+      m = /^上下文 (\d+) 字$/.exec(b);
+      if (m) { out.chars = parseInt(m[1], 10); continue; }
+      m = /^(\d+(?:\.\d+)?)s$/.exec(b);
+      if (m) { out.elapsedMs = Math.round(parseFloat(m[1]) * 1000); continue; }
+      m = /^(\d+)ms$/.exec(b);
+      if (m) { out.elapsedMs = parseInt(m[1], 10); continue; }
+      rest.push(b);
+    }
+    if (rest[0]) out.model = rest[0];
+    if (rest.length > 1) out.fileName = rest.slice(1).join(' · ');
+    return out;
+  }
+
+  function llmCallPersistFields(state) {
+    const o = {};
+    const keys = ['label', 'model', 'fileName', 'parseOk', 'outputChars', 'chars', 'elapsedMs'];
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      if (state[k] != null && state[k] !== '') o[k] = state[k];
+    }
+    if (state.parseNote && !looksLikeLlmStatusLine(state.parseNote)) o.parseNote = String(state.parseNote).slice(0, 400);
+    const preview = llmOutputPreview(state.output) || state.outputPreview;
+    if (preview) o.outputPreview = String(preview).slice(0, 120);
+    return o;
+  }
+
+  function llmCallStatusLine(state) {
+    const bits = [state.label || '模型'];
+    if (state.model) bits.push(state.model);
+    if (state.fileName) bits.push(state.fileName);
+    if (state.outputChars != null) bits.push(state.outputChars + '字');
+    else if (state.chars != null) bits.push('上下文 ' + state.chars + ' 字');
+    if (state.elapsedMs != null) {
+      const elapsed = formatElapsed(state.elapsedMs);
+      if (elapsed) bits.push(elapsed);
+    }
+    return bits.join(' · ');
+  }
+
+  function llmCallNoteText(state) {
+    if (state.phase === 'error') return state.error || '请求失败';
+    const parseNote = (state.parseNote && !looksLikeLlmStatusLine(state.parseNote)) ? String(state.parseNote) : '';
+    if (parseNote) return parseNote;
+    if (state.phase === 'start') {
+      const bits = [];
+      if (state.bytes != null) bits.push('图像 ' + state.bytes + ' 字节');
+      if (state.timeoutMs != null) bits.push('超时 ' + Math.round(state.timeoutMs / 1000) + 's');
+      if (state.extra) bits.push(state.extra);
+      if (state.url) bits.push(state.url);
+      return bits.join(' · ');
+    }
+    const preview = llmOutputPreview(state.output) || state.outputPreview || '';
+    if (preview && (state.phase === 'received' || state.phase === 'restored')) return preview;
+    return '';
+  }
+
+  function upsertLlmCallCard(msg) {
+    const id = String((msg && msg.id) || '');
+    if (!id) return;
+    let card = findLlmCard(id);
+    let created = false;
+    if (!card) {
+      created = true;
+      card = mk('div', 'bubble llm-call');
+      card.dataset.llmId = id;
+      const head = mk('div', 'llm-call-head');
+      const badge = mk('span', 'llm-call-badge pending');
+      const meta = mk('div', 'llm-call-meta');
+      const title = mk('div', 'llm-call-title');
+      const note = mk('div', 'llm-call-note');
+      meta.appendChild(title);
+      meta.appendChild(note);
+      const actions = mk('div', 'llm-call-actions');
+      const toggleBtn = mk('button', null, { type: 'button', textContent: '展开' });
+      const dlBtn = mk('button', null, { type: 'button', textContent: '下载详情' });
+      actions.appendChild(toggleBtn);
+      actions.appendChild(dlBtn);
+      head.appendChild(badge);
+      head.appendChild(meta);
+      head.appendChild(actions);
+      const body = mk('div', 'llm-call-body');
+      const pre = mk('pre');
+      body.appendChild(pre);
+      card.appendChild(head);
+      card.appendChild(body);
+      card._llm = { badge: badge, title: title, note: note, toggleBtn: toggleBtn, dlBtn: dlBtn, body: body, pre: pre, open: false, state: {} };
+      toggleBtn.addEventListener('click', () => {
+        const ui = card._llm;
+        if (!ui) return;
+        if (!ui.open && !(ui.state.output || ui.state.error) && port && !portDead) {
+          try { port.postMessage({ cmd: 'getLlmCall', id: id }); } catch (e) {}
+        }
+        ui.open = !ui.open;
+        ui.body.classList.toggle('open', ui.open);
+        ui.toggleBtn.textContent = ui.open ? '收拢' : '展开';
+      });
+      dlBtn.addEventListener('click', () => {
+        if (!port || portDead) {
+          addBubble('error', '未连接后台，无法下载调用详情');
+          return;
+        }
+        try { port.postMessage({ cmd: 'downloadLlmCall', id: id }); } catch (e) {
+          addBubble('error', '下载请求失败：' + String(e && e.message || e));
+        }
+      });
+      els.messages.appendChild(card);
+    }
+    const ui = card._llm;
+    const prev = (ui && ui.state) || {};
+    const state = Object.assign({}, prev, msg);
+    if (msg.output != null) {
+      state.output = String(msg.output);
+      state.outputChars = state.output.length;
+    }
+    if (ui) ui.state = state;
+    const badgeCls = llmCallBadgeClass(state);
+    ui.badge.className = 'llm-call-badge ' + badgeCls;
+    ui.badge.textContent = llmCallBadgeText(state);
+    ui.title.textContent = llmCallStatusLine(state);
+    const noteText = llmCallNoteText(state);
+    ui.note.textContent = noteText;
+    card.classList.toggle('llm-call-compact', !noteText);
+    const bodyText = state.output || state.error || '';
+    if (bodyText) ui.pre.textContent = bodyText;
+    const line = llmCallStatusLine(state);
+    const persist = llmCallPersistFields(state);
+    if (created) {
+      transcript.push({ role: 'llm-call', text: line, llmId: id, llm: persist });
+    } else {
+      for (let i = transcript.length - 1; i >= 0; i--) {
+        if (transcript[i] && transcript[i].llmId === id) {
+          transcript[i].text = line;
+          transcript[i].llm = persist;
+          break;
+        }
+      }
+    }
+    persistTranscript();
+    scrollDown();
+    return card;
+  }
+
   function scrollDown() {
     els.messages.scrollTop = els.messages.scrollHeight;
   }
@@ -1424,6 +1707,16 @@
       for (const m of savedTr) {
         if (m && m.role && m.text != null) {
           if (isConnHintMessage(m)) { stripped = true; continue; }
+          if (m.role === 'llm-call') {
+            const saved = (m.llm && typeof m.llm === 'object') ? m.llm : parseStoredLlmStatusLine(m.text);
+            upsertLlmCallCard(Object.assign({
+              label: '模型调用'
+            }, saved, {
+              id: m.llmId || ('restored-' + transcript.length),
+              phase: 'restored'
+            }));
+            continue;
+          }
           const div = mk('div', 'bubble ' + m.role);
           div.textContent = String(m.text);
           els.messages.appendChild(div);
@@ -1970,7 +2263,7 @@
   function openSaveSkillModal() {
     const prompt = collectUserPrompt();
     if (!prompt) {
-      addBubble('error', '还没有用户任务可保存。请先发送至少一条任务，再存为 WEB-SKILL。');
+      addBubble('error', '还没有用户任务可保存。请先发送至少一条任务，再存为SKILL。');
       return;
     }
     els.saveSkillName.value = defaultSkillName(prompt);
@@ -2065,7 +2358,7 @@
 
   // ============ 连接指示 / 重连 ============
   function isPanelVisible() {
-    return !host.hidden;
+    return !panelDisposed && host && host.isConnected && !host.hidden;
   }
 
   function setConnState(state) {
@@ -2081,6 +2374,20 @@
       els.connLamp.title = label;
     }
     if (els.connLampLabel) els.connLampLabel.textContent = label;
+  }
+
+  function setConnBanner(text, kind) {
+    if (!els.connStatus) return;
+    const msg = text == null ? '' : String(text);
+    if (!msg) {
+      els.connStatus.textContent = '';
+      els.connStatus.classList.add('hidden');
+      els.connStatus.classList.remove('error');
+      return;
+    }
+    els.connStatus.textContent = msg;
+    els.connStatus.classList.remove('hidden');
+    els.connStatus.classList.toggle('error', kind === 'error');
   }
 
   function upsertConnHint(text, kind) {
@@ -2128,13 +2435,9 @@
     if (msg.origin) origin = msg.origin;
     if (origin) {
       if (msg.injectError) {
-        els.connStatus.textContent = location.href + ' ｜ 注入失败：' + msg.injectError;
-        els.connStatus.classList.add('error');
-        els.connStatus.classList.remove('ok');
+        setConnBanner('页面桥注入失败：' + msg.injectError, 'error');
       } else {
-        els.connStatus.textContent = location.href + ' ｜ 已注入';
-        els.connStatus.classList.add('ok');
-        els.connStatus.classList.remove('error');
+        setConnBanner('');
       }
       const wasReconnecting = reconnecting;
       if (reconnecting) {
@@ -2156,7 +2459,7 @@
         if (port && !portDead) port.postMessage({ cmd: 'panelHydrated' });
       } catch (e) {}
     } else {
-      els.connStatus.textContent = location.href ? location.href : '（无页面信息）';
+      setConnBanner('');
       setConnState(portDead ? 'disconnected' : 'connecting');
     }
   }
@@ -2230,6 +2533,32 @@
           break;
         case 'status':
           addBubble(msg.kind === 'error' ? 'error' : 'status', msg.text != null ? String(msg.text) : '');
+          break;
+        case 'llmCall':
+          upsertLlmCallCard(msg);
+          break;
+        case 'llmCallDownload':
+          if (msg.ok && typeof msg.json === 'string') {
+            downloadJsonText(msg.json, msg.filename || ('llm-call-' + (msg.id || 'trace') + '.json'));
+          } else {
+            addBubble('error', msg.error || '无法下载本次调用详情');
+          }
+          break;
+        case 'llmCallDetail':
+          if (msg.ok) {
+            const card = findLlmCard(String(msg.id || ''));
+            if (card && card._llm) {
+              const text = msg.output || msg.error || '';
+              if (text) card._llm.pre.textContent = text;
+              if (card._llm.state) {
+                if (msg.output) card._llm.state.output = String(msg.output);
+                if (msg.parseNote) card._llm.state.parseNote = String(msg.parseNote);
+                const noteText = llmCallNoteText(card._llm.state);
+                card._llm.note.textContent = noteText;
+                card.classList.toggle('llm-call-compact', !noteText);
+              }
+            }
+          }
           break;
         case 'filesSynced':
           addBubble('status', '已同步附件 ' + (msg.count != null ? msg.count : 0) + ' 个');
@@ -2338,6 +2667,7 @@
   }
 
   function connectPort() {
+    if (panelDisposed) return false;
     try {
       port = chrome.runtime.connect({ name: 'panel' });
       portDead = false;
@@ -2518,48 +2848,92 @@
 
     // chrome.runtime.onMessage：仅响应 showPanel，其余忽略
     try {
-      chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-        if (msg && (msg.cmd === 'processPdf' || msg.cmd === 'pdfFirstPageToPng' || msg.cmd === 'abortRun')) return;
-        if (msg && msg.cmd === 'showPanel') {
-          showPanel();
-          try { sendResponse({ ok: true }); } catch (e) {}
-        }
-        return undefined;
-      });
+      chrome.runtime.onMessage.addListener(onRuntimeShowPanel);
     } catch (e) {}
   }
+
+  function onRuntimeShowPanel(msg, sender, sendResponse) {
+    if (panelDisposed) return;
+    if (msg && (msg.cmd === 'processPdf' || msg.cmd === 'pdfFirstPageToPng' || msg.cmd === 'abortRun')) return;
+    if (msg && msg.cmd === 'showPanel') {
+      showPanel();
+      try { sendResponse({ ok: true }); } catch (e) {}
+    }
+    return undefined;
+  }
+
+  function onPageShow() {
+    if (panelDisposed || !isPanelVisible()) return;
+    if (portDead || !port) triggerReconnect();
+  }
+
+  function onPageHide(e) {
+    if (panelDisposed || !e.persisted) return;
+    stopHeartbeat();
+    stopReconnectTimer();
+    portDead = true;
+    reconnecting = false;
+    setConnState('disconnected');
+  }
+
+  function disposePanel() {
+    if (panelDisposed) return;
+    panelDisposed = true;
+    try { stopHeartbeat(); } catch (e) {}
+    try { stopReconnectTimer(); } catch (e) {}
+    if (stopWatchId) { try { clearTimeout(stopWatchId); } catch (e) {} stopWatchId = null; }
+    if (awaitingDomReady) {
+      try { document.removeEventListener('DOMContentLoaded', onDomReady); } catch (e) {}
+      awaitingDomReady = false;
+    }
+    try { window.removeEventListener('pageshow', onPageShow); } catch (e) {}
+    try { window.removeEventListener('pagehide', onPageHide); } catch (e) {}
+    try {
+      if (chrome && chrome.runtime && chrome.runtime.onMessage) {
+        chrome.runtime.onMessage.removeListener(onRuntimeShowPanel);
+      }
+    } catch (e) {}
+    try { if (port) port.disconnect(); } catch (e) {}
+    port = null;
+    portDead = true;
+    reconnecting = false;
+    try {
+      if (host) {
+        host.hidden = true;
+        if (host.parentNode) host.parentNode.removeChild(host);
+      }
+    } catch (e) {}
+    window.__assistantPanelInjected = false;
+    try { delete window.__assistantPanelVersion; } catch (e) { window.__assistantPanelVersion = undefined; }
+    try { delete window.__assistantPanelDispose; } catch (e) { window.__assistantPanelDispose = undefined; }
+  }
+  window.__assistantPanelDispose = disposePanel;
 
   // ============ 初始化 ============
   function init() {
     document.body.appendChild(host);
     wireEvents();
-    els.connStatus.textContent = '正在连接…';
+    setConnBanner('');
     setConnState('connecting');
     host.hidden = true;
     openPort();
 
     // bfcache 恢复：页面从前进/后退缓存恢复时，端口已断开，需主动重连（仅面板可见时）
-    window.addEventListener('pageshow', () => {
-      if (!isPanelVisible()) return;
-      if (portDead || !port) {
-        triggerReconnect();
-      }
-    });
+    window.addEventListener('pageshow', onPageShow);
     // 页面即将进入 bfcache：提前停止心跳，标记端口失效
-    window.addEventListener('pagehide', (e) => {
-      if (e.persisted) {
-        stopHeartbeat();
-        stopReconnectTimer();
-        portDead = true;
-        reconnecting = false;
-        setConnState('disconnected');
-      }
-    });
+    window.addEventListener('pagehide', onPageHide);
+  }
+
+  function onDomReady() {
+    awaitingDomReady = false;
+    if (panelDisposed) return;
+    init();
   }
 
   if (document.body) {
     init();
   } else {
-    document.addEventListener('DOMContentLoaded', init);
+    awaitingDomReady = true;
+    document.addEventListener('DOMContentLoaded', onDomReady);
   }
 })();

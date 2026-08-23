@@ -5,7 +5,8 @@
 (function () {
   'use strict';
 
-  var CONTENT_VERSION = '2.6.0';
+  // 必须与 manifest.json 的 version、pagebridge.js 的 BRIDGE_VERSION 相同。
+  var CONTENT_VERSION = '3.0.0';
   if (window.__dsContentLoaded === CONTENT_VERSION) return;
   try {
     if (typeof window.__dsContentDispose === 'function') window.__dsContentDispose();
@@ -78,14 +79,94 @@
     return matches[0] || null;
   }
 
-  async function uploadInIsolatedWorld(selector, fileKey) {
-    var el = queryDeep(selector);
-    if (!el || String(el.tagName || '').toUpperCase() !== 'INPUT' || String(el.type || '').toLowerCase() !== 'file') {
-      throw new Error('文件上传控件未找到: ' + selector);
+  function isFileInputEl(el) {
+    return !!(el && String(el.tagName || '').toUpperCase() === 'INPUT' && String(el.type || '').toLowerCase() === 'file');
+  }
+
+  function snapshotFileList(fileList) {
+    var out = [];
+    if (!fileList || !fileList.length) return out;
+    for (var i = 0; i < fileList.length; i++) {
+      out.push({ name: fileList[i].name, size: fileList[i].size });
     }
-    if (el.disabled) throw new Error('文件上传控件已禁用: ' + selector);
+    return out;
+  }
+
+  function fileListsMatch(actual, expected) {
+    if (!actual || !expected || actual.length !== expected.length) return false;
+    for (var i = 0; i < expected.length; i++) {
+      if (!actual[i] || actual[i].name !== expected[i].name || actual[i].size !== expected[i].size) return false;
+    }
+    return true;
+  }
+
+  function collectFileInputsUnder(root) {
+    var out = [];
+    if (!root) return out;
+    if (isFileInputEl(root)) out.push(root);
+    var nodes = [];
+    try { nodes = root.querySelectorAll ? Array.prototype.slice.call(root.querySelectorAll('input[type="file"]')) : []; } catch (e) { nodes = []; }
+    for (var i = 0; i < nodes.length; i++) {
+      if (out.indexOf(nodes[i]) < 0) out.push(nodes[i]);
+    }
+    return out;
+  }
+
+  function scoreFileInputEl(el, wantMultiple) {
+    if (!isFileInputEl(el) || el.disabled) return -1;
+    var score = 0;
+    if (wantMultiple && el.multiple) score += 3;
+    if (!wantMultiple && !el.multiple) score += 1;
+    var cls = String(el.className || '');
+    if (/upload-input|el-upload|ant-upload|ivu-upload/i.test(cls)) score += 2;
+    var p = el.parentElement;
+    var hops = 0;
+    while (p && hops < 8) {
+      var pc = String(p.className || '');
+      if (/upload-select|el-upload|ant-upload-select|ivu-upload-select/i.test(pc)) score += 3;
+      else if (/upload-drag|el-upload-dragger|ant-upload-drag|ivu-upload-drag/i.test(pc)) score += 1;
+      else if (/(^|[\s_-])upload($|[\s_-])/i.test(pc)) score += 1;
+      p = p.parentElement;
+      hops++;
+    }
+    return score;
+  }
+
+  function pickBestFileInput(list, wantMultiple) {
+    if (!list || !list.length) return null;
+    if (list.length === 1) return list[0];
+    var ranked = list.slice().sort(function (a, b) {
+      return scoreFileInputEl(b, wantMultiple) - scoreFileInputEl(a, wantMultiple);
+    });
+    return ranked[0] || null;
+  }
+
+  function resolveFileInputEl(root, wantMultiple) {
+    if (!root) return null;
+    if (isFileInputEl(root)) return root;
+    var found = collectFileInputsUnder(root);
+    if (found.length) return pickBestFileInput(found, wantMultiple);
+    var hop = root.parentElement;
+    var hops = 0;
+    while (hop && hops < 8) {
+      var pc = String(hop.className || '');
+      if (/upload/i.test(pc)) {
+        found = collectFileInputsUnder(hop);
+        if (found.length) return pickBestFileInput(found, wantMultiple);
+      }
+      hop = hop.parentElement;
+      hops++;
+    }
+    return null;
+  }
+
+  async function uploadInIsolatedWorld(selector, fileKey) {
+    var root = queryDeep(selector);
     var keys = Array.isArray(fileKey) ? fileKey : [fileKey];
     if (!keys.length) throw new Error('未提供附件 key');
+    var el = resolveFileInputEl(root, keys.length > 1);
+    if (!el) throw new Error('文件上传控件未找到: ' + selector);
+    if (el.disabled) throw new Error('文件上传控件已禁用: ' + selector);
     if (keys.length > 1 && !el.multiple) throw new Error('该上传控件不允许多文件');
     var accept = String(el.accept || '').trim();
     var tokens = accept ? accept.toLowerCase().split(',').map(function (x) { return x.trim(); }).filter(Boolean) : [];
@@ -111,18 +192,23 @@
       expected.push({ name: file.name, size: file.size });
     }
     el.files = dt.files;
-    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-    var actual = el.files ? Array.from(el.files).map(function (f) { return { name: f.name, size: f.size }; }) : [];
+    var assigned = snapshotFileList(el.files);
+    var assignedOk = fileListsMatch(assigned, expected);
+    if (!assignedOk) {
+      throw new Error('未能把附件写入文件控件（浏览器拒绝设置 input.files）');
+    }
+    var win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+    el.dispatchEvent(new win.Event('input', { bubbles: true, composed: true }));
+    el.dispatchEvent(new win.Event('change', { bubbles: true, composed: true }));
+    var afterEvent = snapshotFileList(el.files);
     var valid = true;
     var validationMessage = '';
     try { valid = el.checkValidity(); validationMessage = String(el.validationMessage || ''); } catch (e) {}
     return {
       ok: true, kind: 'mutation', files: expected,
       valid: valid, validationMessage: validationMessage,
-      verified: actual.length === expected.length && expected.every(function (f, i) {
-        return actual[i] && actual[i].name === f.name && actual[i].size === f.size;
-      }) && valid
+      consumed: afterEvent.length === 0,
+      verified: assignedOk
     };
   }
 

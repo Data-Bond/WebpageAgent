@@ -5,7 +5,9 @@
   'use strict';
 
   var INSTALLED = '__assistantPage';
-  var BRIDGE_VERSION = '2.11.0';
+  // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
+  // 已打开页面靠此号决定是否重注入 MAIN world；面板角标读 manifest。
+  var BRIDGE_VERSION = '3.0.0';
 
   function install() {
     var scriptAborted = false;
@@ -106,6 +108,68 @@
       return true;
     }
 
+    var FRAMEWORK_CLASS_RE = /^(ivu-|el-|ant-|van-|nut-|layui-|btn-|col-|row-|is-|has-|js-)/i;
+    var GENERIC_CLASS = {
+      text: 1, wrap: 1, inner: 1, left: 1, right: 1, top: 1, bottom: 1,
+      item: 1, list: 1, box: 1, content: 1, container: 1, wrapper: 1,
+      active: 1, open: 1, show: 1, hide: 1, hidden: 1, clearfix: 1,
+      fl: 1, fr: 1, clear: 1, main: 1, body: 1, header: 1, footer: 1
+    };
+
+    function classTokens(el) {
+      try {
+        if (el.classList && el.classList.length) return Array.from(el.classList);
+        var raw = el.className && el.className.baseVal != null ? el.className.baseVal : el.className;
+        return String(raw || '').split(/\s+/).filter(Boolean);
+      } catch (e) { return []; }
+    }
+
+    function isStableClass(name) {
+      var c = String(name || '');
+      if (c.length < 3 || c.length > 48) return false;
+      if (FRAMEWORK_CLASS_RE.test(c)) return false;
+      if (/^data-v-/.test(c)) return false;
+      if (/^[a-z0-9]{8,}$/i.test(c) && c.indexOf('-') < 0) return false;
+      if (GENERIC_CLASS[c.toLowerCase()]) return false;
+      return true;
+    }
+
+    function rankedStableClasses(el) {
+      var toks = classTokens(el);
+      var out = [];
+      for (var i = 0; i < toks.length; i++) {
+        if (isStableClass(toks[i])) out.push(toks[i]);
+      }
+      out.sort(function (a, b) {
+        var ah = a.indexOf('-') >= 0 ? 0 : 1;
+        var bh = b.indexOf('-') >= 0 ? 0 : 1;
+        if (ah !== bh) return ah - bh;
+        return b.length - a.length;
+      });
+      return out;
+    }
+
+    function classAnchorsFromSelector(sel) {
+      var parts = String(sel || '').split(/\s*>\s*/);
+      var out = [];
+      var seen = {};
+      for (var i = parts.length - 1; i >= 0; i--) {
+        var p = String(parts[i] || '');
+        var tagM = p.match(/^([a-zA-Z][\w-]*)/);
+        var tag = tagM ? tagM[1] : '';
+        var re = /\.([A-Za-z_][\w-]*)/g;
+        var m;
+        while ((m = re.exec(p))) {
+          if (!isStableClass(m[1])) continue;
+          var cand = (tag ? tag : '') + '.' + m[1];
+          if (seen[cand]) continue;
+          seen[cand] = true;
+          out.push(cand);
+        }
+      }
+      return out;
+    }
+
     function localSelector(el, root) {
       if (!el || el.nodeType !== 1 || !root) return null;
       if (el.id && isStableId(el.id)) {
@@ -126,6 +190,12 @@
         if (safeAll(root, asel).length === 1) return { selector: asel, unique: true };
       }
 
+      var classes0 = rankedStableClasses(el);
+      for (var ci0 = 0; ci0 < classes0.length; ci0++) {
+        var csel = tagLower + '.' + CSS.escape(classes0[ci0]);
+        if (safeAll(root, csel).length === 1) return { selector: csel, unique: true };
+      }
+
       var parts = [];
       var node = el;
       while (node && node.nodeType === 1) {
@@ -140,6 +210,17 @@
             }
           }
         }
+        var cls = rankedStableClasses(node);
+        var classAnchored = false;
+        for (var ci = 0; ci < cls.length; ci++) {
+          var trySel = part + '.' + CSS.escape(cls[ci]);
+          if (safeAll(root, trySel).length === 1) {
+            parts.unshift(trySel);
+            classAnchored = true;
+            break;
+          }
+        }
+        if (classAnchored) break;
         var parent = node.parentNode;
         if (parent && (parent.nodeType === 1 || parent.nodeType === 11 || parent.nodeType === 9)) {
           var siblings = parent.children || [];
@@ -265,15 +346,43 @@
       return s ? 'other' : 'empty';
     }
 
+    function shortNodeText(node) {
+      if (!node) return '';
+      var t = '';
+      try { t = String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e) { t = ''; }
+      if (!t || t.length > 48) return '';
+      return t;
+    }
+
+    function adjacentCaptchaHint(el) {
+      if (!el) return false;
+      var parts = [];
+      var prev = el.previousElementSibling;
+      var next = el.nextElementSibling;
+      if (prev) parts.push(shortNodeText(prev));
+      if (next) parts.push(shortNodeText(next));
+      var p = el.parentElement;
+      if (p) {
+        try {
+          var own = '';
+          var cn = p.childNodes;
+          for (var i = 0; i < cn.length; i++) {
+            if (cn[i].nodeType === 3) own += cn[i].nodeValue || '';
+          }
+          own = String(own).replace(/\s+/g, ' ').trim();
+          if (own && own.length <= 48) parts.push(own);
+        } catch (e) {}
+      }
+      return CAPTCHA_RE.test(parts.join(' '));
+    }
+
     function ancestorCaptchaText(el, maxDepth) {
       var n = el;
-      var depth = Math.max(1, Number(maxDepth) || 3);
-      for (var d = 0; d < depth; d++) {
-        n = n && n.parentElement;
+      var depth = Math.max(0, Number(maxDepth) || 3);
+      for (var d = 0; d <= depth; d++) {
         if (!n) return false;
-        var t = '';
-        try { t = String(n.innerText || '').replace(/\s+/g, ' ').slice(0, 240); } catch (e) { t = ''; }
-        if (CAPTCHA_RE.test(t)) return true;
+        if (adjacentCaptchaHint(n)) return true;
+        n = n.parentElement;
       }
       return false;
     }
@@ -407,13 +516,48 @@
       return el;
     }
 
+    function nearCaptchaInput(el) {
+      function visibleTextInput(root) {
+        if (!root || !root.querySelectorAll) return false;
+        var list;
+        try { list = root.querySelectorAll('input'); } catch (e) { return false; }
+        for (var i = 0; i < list.length; i++) {
+          var t = String(list[i].type || 'text').toLowerCase();
+          if (t === 'hidden' || t === 'password' || t === 'submit' || t === 'button' || t === 'checkbox' || t === 'radio' || t === 'file') continue;
+          try { if (isVisible(list[i])) return true; } catch (e2) {}
+        }
+        return false;
+      }
+      try {
+        if (el.previousElementSibling && (el.previousElementSibling.tagName === 'INPUT' || visibleTextInput(el.previousElementSibling))) return true;
+        if (el.nextElementSibling && (el.nextElementSibling.tagName === 'INPUT' || visibleTextInput(el.nextElementSibling))) return true;
+      } catch (e) {}
+      var p = el && el.parentElement;
+      if (p && visibleTextInput(p)) return true;
+      var gp = p && p.parentElement;
+      if (gp && (!gp.tagName || gp.tagName.toUpperCase() !== 'FORM') && visibleTextInput(gp)) return true;
+      return false;
+    }
+
     function captchaPickScore(el) {
       var s = 0;
       var tag = (el.tagName || '').toUpperCase();
+      var w = 0;
+      var h = 0;
+      try {
+        var r = el.getBoundingClientRect();
+        w = r.width || 0;
+        h = r.height || 0;
+      } catch (e) {}
+      var area = w * h;
       if (looksCaptcha(el)) s += 100;
-      if (captchaShaped(el)) s += 35;
-      try { if (el.closest && el.closest('form')) s += 40; } catch (e) {}
-      try { if (isVisible(el)) s += 10; } catch (e) {}
+      if (captchaShaped(el)) s += 45;
+      else s -= 15;
+      try { if (el.closest && el.closest('form')) s += 40; } catch (e2) {}
+      try { if (isVisible(el)) s += 10; } catch (e3) {}
+      if (nearCaptchaInput(el)) s += 30;
+      if (area >= 1200 && area <= 12000) s += 25;
+      if (w > 280 || h > 130 || area > 20000) s -= 90;
       if (tag === 'IMG') {
         var src = el.currentSrc || el.src || '';
         if (/^data:image\//i.test(src)) s += 30;
@@ -485,6 +629,8 @@
         if (kind === 'data') score += 30;
         if (tag === 'CANVAS') score += 20;
         if (visible) score += 10;
+        if (w > 280 || h > 130 || (w * h) > 20000) score -= 90;
+        else if (w * h >= 1200 && w * h <= 12000) score += 25;
         scored.push({
           score: score,
           entry: {
@@ -780,6 +926,135 @@
       return inner;
     }
 
+    function nearestItemRoot(el) {
+      var n = el;
+      var hops = 0;
+      while (n && n.nodeType === 1 && hops < 20) {
+        var tag = (n.tagName || '').toLowerCase();
+        if (tag === 'li' || tag === 'article' || tag === 'tr') {
+          if (!isBroadClickRoot(n)) return n;
+        }
+        var role = '';
+        try { role = String(n.getAttribute && n.getAttribute('role') || '').toLowerCase(); } catch (e) {}
+        if (role === 'listitem' || role === 'article') return n;
+        var cn = classNameOf(n).toLowerCase();
+        if (/(^|[\s_-])(card|item|block|tile|cell|row)($|[\s_-])/.test(cn) ||
+            /block-box|list-item|listitem|block-list/.test(cn)) {
+          if (!isBroadClickRoot(n) && n !== el) return n;
+        }
+        n = n.parentElement;
+        hops++;
+      }
+      return el && el.parentElement ? el.parentElement : el;
+    }
+
+    function itemTitleOf(el) {
+      var root = nearestItemRoot(el);
+      if (!root) return '';
+      var heading = null;
+      try {
+        heading = root.querySelector(
+          'h1,h2,h3,h4,h5,h6,[class*="title"],[class*="name"],[class*="heading"]'
+        );
+      } catch (e) {}
+      var t = '';
+      if (heading && heading !== el) {
+        try { t = compactText(heading.innerText || heading.textContent || ''); } catch (e2) { t = ''; }
+      }
+      if (!t || t.length < 4) {
+        try { t = compactText(root.innerText || root.textContent || ''); } catch (e3) { t = ''; }
+      }
+      if (t.length > 80) t = t.slice(0, 80);
+      return t;
+    }
+
+    function compactHintText(s) {
+      return String(s || '').replace(/\s+/g, '');
+    }
+
+    function longestCommonSubstringLen(a, b) {
+      a = String(a || '');
+      b = String(b || '');
+      if (!a || !b) return 0;
+      if (a.length > b.length) {
+        var tmp = a;
+        a = b;
+        b = tmp;
+      }
+      if (b.indexOf(a) >= 0) return a.length;
+      var best = 0;
+      var prev = new Array(b.length);
+      for (var i = 0; i < a.length; i++) {
+        var cur = new Array(b.length);
+        var ac = a.charAt(i);
+        for (var j = 0; j < b.length; j++) {
+          if (ac === b.charAt(j)) {
+            cur[j] = ((i && j) ? (prev[j - 1] || 0) : 0) + 1;
+            if (cur[j] > best) best = cur[j];
+          } else {
+            cur[j] = 0;
+          }
+        }
+        prev = cur;
+      }
+      return best;
+    }
+
+    function quotedHintPhrases(hint) {
+      var s = String(hint || '');
+      var out = [];
+      var re = /[「『【《“"'`]([^」』】》”"'`]{4,80})[」』】》”"'`]/g;
+      var m;
+      while ((m = re.exec(s))) out.push(compactHintText(m[1]));
+      return out;
+    }
+
+    function stripGenericClickWords(s) {
+      return String(s || '')
+        .replace(/进入|打开|详情|查看|更多|点击|点开|确定|取消|关闭|登录|提交|下一步|返回|展开|收起|选择|请|这一项|这一条|这个项目|该项目|卡片|按钮|链接/g, '')
+        .replace(/\b(enter|open|view|more|click|login|submit|next|back|details|select|the|item|card|button|link)\b/gi, '');
+    }
+
+    function distinctiveTitleScore(title, hint, clickText) {
+      var t = compactHintText(title);
+      var h = compactHintText(hint);
+      var c = compactHintText(clickText);
+      if (c && c.length <= 8) t = t.split(c).join('');
+      t = stripGenericClickWords(t);
+      if (t.length < 4) return 0;
+      var quoted = quotedHintPhrases(hint);
+      for (var qi = 0; qi < quoted.length; qi++) {
+        var q = stripGenericClickWords(quoted[qi]);
+        if (q.length >= 4 && (t.indexOf(q) >= 0 || q.indexOf(t) >= 0)) {
+          return Math.max(t.length, q.length) + 20;
+        }
+      }
+      return longestCommonSubstringLen(t, h);
+    }
+
+    function pickByTaskHint(list, hint, clickText) {
+      hint = String(hint || '');
+      if (!hint || !list || list.length < 2) return null;
+      var best = null;
+      var bestScore = 0;
+      var second = 0;
+      for (var i = 0; i < list.length; i++) {
+        var title = list[i].itemTitle != null ? list[i].itemTitle : itemTitleOf(list[i].el);
+        var score = distinctiveTitleScore(title, hint, clickText);
+        if (score > bestScore) {
+          second = bestScore;
+          bestScore = score;
+          best = list[i];
+        } else if (score > second) {
+          second = score;
+        }
+      }
+      var minScore = 6;
+      if (bestScore < minScore) return null;
+      if (second >= minScore && (bestScore - second) < 4) return null;
+      return best;
+    }
+
     function formatAmbiguousCandidates(list) {
       var texts = [];
       for (var k = 0; k < list.length && texts.length < 12; k++) {
@@ -788,7 +1063,14 @@
           var u = uniqueSelector(list[k].el);
           us = u && u.selector ? u.selector : '';
         } catch (e) {}
-        texts.push(String(list[k].text).slice(0, 40) + (us ? ' — ' + us : ''));
+        var title = '';
+        try { title = itemTitleOf(list[k].el); } catch (e2) {}
+        var click = String(list[k].text || '').slice(0, 20);
+        var label = click;
+        if (title && compactHintText(title) !== compactHintText(click)) {
+          label = '「' + title.slice(0, 40) + '」→' + click;
+        }
+        texts.push(label + (us ? ' — ' + us : ''));
       }
       return texts;
     }
@@ -810,11 +1092,53 @@
       return parts.join(' > ');
     }
 
+    function looksLikeCssSelector(s) {
+      var t = String(s || '').trim();
+      if (!t) return false;
+      if (/[.#>\[:]/.test(t)) return true;
+      if (/^(div|span|ul|ol|li|section|article|header|nav|main|aside|p|a|button|input|form|img)\b/i.test(t)) return true;
+      return false;
+    }
+
+    function findRootByVisibleText(needle) {
+      var n = compactText(needle);
+      if (!n || n.length < 4) return null;
+      var nodes = queryAllDeep('li, article, section, [role="listitem"], [class*="card"], [class*="item"], [class*="block"]');
+      var best = null;
+      var bestLen = Infinity;
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        if (!el || isBroadClickRoot(el)) continue;
+        var vis = false;
+        try { vis = isVisible(el); } catch (e) {}
+        if (!vis) continue;
+        var t = '';
+        try { t = compactText(el.innerText || el.textContent || ''); } catch (e2) { t = ''; }
+        if (!t || t.indexOf(n) < 0) continue;
+        if (t.length < bestLen) {
+          best = el;
+          bestLen = t.length;
+        }
+      }
+      return best;
+    }
+
     function resolveClickByTextRoot(within) {
       var sel = String(within || '').trim();
       if (!sel) return { root: null, used: '', missing: false, relaxed: false };
       var el = queryDeep(sel);
       if (el && !isBroadClickRoot(el)) return { root: el, used: sel, missing: false, relaxed: false };
+      var anchors = classAnchorsFromSelector(sel);
+      for (var ai = 0; ai < anchors.length; ai++) {
+        var hits = queryAllDeep(anchors[ai]);
+        var vis = [];
+        for (var hi = 0; hi < hits.length; hi++) {
+          if (hits[hi] && !isBroadClickRoot(hits[hi])) vis.push(hits[hi]);
+        }
+        if (vis.length === 1) {
+          return { root: vis[0], used: anchors[ai], missing: true, relaxed: true };
+        }
+      }
       var cur = sel;
       for (var hops = 0; hops < 8; hops++) {
         var parent = parentCssPath(cur);
@@ -822,6 +1146,10 @@
         cur = parent;
         el = queryDeep(cur);
         if (el && !isBroadClickRoot(el)) return { root: el, used: cur, missing: true, relaxed: true };
+      }
+      if (!looksLikeCssSelector(sel)) {
+        var byText = findRootByVisibleText(sel);
+        if (byText) return { root: byText, used: sel, missing: false, relaxed: true };
       }
       return { root: null, used: '', missing: true, relaxed: false };
     }
@@ -852,12 +1180,12 @@
         distinct[normText(winners[j].text)] = true;
       }
       if (Object.keys(distinct).length > 1) {
-        return { ambiguous: formatAmbiguousCandidates(tied) };
+        return { ambiguousEls: tied };
       }
       var indep = innermostIndependent(tied);
       if (!indep.length) return { winner: tied[0] };
       if (indep.length > 1) {
-        return { ambiguous: formatAmbiguousCandidates(indep) };
+        return { ambiguousEls: indep };
       }
       return { winner: indep[0] };
     }
@@ -875,6 +1203,36 @@
       return out;
     }
 
+    function waitMs(ms) {
+      return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    }
+
+    async function refreshCaptchaPixels(el) {
+      if (!el) return;
+      var tag = (el.tagName || '').toUpperCase();
+      if (tag !== 'IMG' && tag !== 'CANVAS') return;
+      var oldSrc = '';
+      try { oldSrc = el.currentSrc || el.src || ''; } catch (e) {}
+      var loaded = false;
+      function onLoad() { loaded = true; }
+      if (tag === 'IMG') {
+        try { el.addEventListener('load', onLoad); } catch (e2) {}
+      }
+      try { el.click(); } catch (e3) {}
+      var waited = 0;
+      while (waited < 700) {
+        await waitMs(50);
+        waited += 50;
+        var now = '';
+        try { now = el.currentSrc || el.src || ''; } catch (e4) {}
+        if (loaded || (now && now !== oldSrc)) break;
+      }
+      if (tag === 'IMG') {
+        try { el.removeEventListener('load', onLoad); } catch (e5) {}
+      }
+      await waitMs(80);
+    }
+
     async function captureImage(sel) {
       var rawSel = String(sel == null ? '' : sel).trim();
       var magicCaptcha = /^captcha$/i.test(rawSel);
@@ -888,7 +1246,12 @@
       }
       var target = findCaptureTarget(el);
       try { if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
-      await new Promise(function (resolve) { setTimeout(resolve, 60); });
+      if (magicCaptcha) {
+        await refreshCaptchaPixels(target);
+        var again = pickPageCaptchaImage();
+        if (again) target = findCaptureTarget(again);
+      }
+      await waitMs(60);
       var tag = (target.tagName || '').toUpperCase();
       var pixels = { dataUrl: '', via: 'geom' };
       if (tag === 'IMG') pixels = imgToPixels(target);
@@ -2429,6 +2792,7 @@
             if (typeof opts === 'string') opts = { within: opts };
             opts = opts && typeof opts === 'object' && !Array.isArray(opts) ? opts : {};
             var within = String(opts.within || opts.selector || '').trim();
+            var taskHint = String(opts.hint || opts.task || '').trim();
             var scope = resolveClickByTextRoot(within);
             var found = collectClickByTextCandidates(scope.root, raw);
             var picked = chooseClickByText(found.list, raw);
@@ -2441,6 +2805,12 @@
             var sample = found.samples && found.samples.length
               ? found.samples
               : sampleCandidateTexts(found.list, 12);
+            if (picked && picked.ambiguousEls) {
+              var hinted = pickByTaskHint(picked.ambiguousEls, taskHint, raw);
+              if (hinted) {
+                picked = { winner: hinted, hintResolved: true };
+              }
+            }
             if (!picked) {
               if (found.disabled.length) {
                 throw new Error('clickByText: 文本目标已禁用，不能点击: ' + found.disabled.join(' / '));
@@ -2455,13 +2825,13 @@
                 (within ? 'within 内' : '页面上') +
                 '可见短文本示例：' + (sample.length ? sample.join(' / ') : '(无)'));
             }
-            if (picked.ambiguous) {
+            if (picked.ambiguousEls) {
               var extra = (within && (scope.missing || pageFallback))
                 ? 'within 容器未找到: ' + within + '。'
                 : '';
               throw new Error('clickByText: ' + extra + '「' + raw + '」匹配到多处：' +
-                picked.ambiguous.join(' | ') +
-                '。多层列表请用当前快照中的 within 限定到某一枝，或改用更完整文案。');
+                formatAmbiguousCandidates(picked.ambiguousEls).join(' | ') +
+                '。请用当前快照中该条目的 li 选择器、或完整条目标题文案作 within；禁止编造快照里没有的 class。');
             }
             var el = picked.winner.el;
             el = retargetFileSelectClick(el);
@@ -2469,6 +2839,14 @@
             dispatchClick(el);
             var us;
             try { us = uniqueSelector(el); } catch (e) { us = null; }
+            var usedWithin = pageFallback ? '' : (scope.used || '');
+            if (picked.hintResolved && !usedWithin) {
+              try {
+                var rootEl = nearestItemRoot(el);
+                var ru = uniqueSelector(rootEl);
+                if (ru && ru.selector) usedWithin = ru.selector;
+              } catch (e3) {}
+            }
             return {
               ok: true,
               kind: 'action',
@@ -2476,9 +2854,10 @@
               selector: us && us.selector ? us.selector : '',
               verified: null,
               withinMissing: !!(within && scope.missing),
-              withinRelaxed: !!(scope.relaxed && !pageFallback),
-              withinUsed: pageFallback ? '' : (scope.used || ''),
-              pageFallback: pageFallback
+              withinRelaxed: !!(scope.relaxed && !pageFallback) || !!picked.hintResolved,
+              withinUsed: usedWithin,
+              pageFallback: pageFallback,
+              hintResolved: !!picked.hintResolved
             };
           },
           // 按容器查看可见后代短文本（去包装）。文案不在 L0 或用户给了容器时用。
