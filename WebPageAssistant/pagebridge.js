@@ -7,7 +7,7 @@
   var INSTALLED = '__assistantPage';
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
   // 已打开页面靠此号决定是否重注入 MAIN world；面板角标读 manifest。
-  var BRIDGE_VERSION = '3.0.1';
+  var BRIDGE_VERSION = '3.1.0';
 
   function install() {
     var scriptAborted = false;
@@ -263,7 +263,7 @@
       return local;
     }
 
-    function isVisible(el, style) {
+    function isVisible(el, style, ignorePointer) {
       if (!el || !el.ownerDocument) return false;
       // 调用方已取到 computed style 时复用，避免同一节点二次强制布局
       if (style === undefined) {
@@ -272,8 +272,9 @@
           : null;
       }
       if (style) {
-        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 ||
-          style.pointerEvents === 'none') return false;
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+        // 级联弹层在过渡期会给容器 pointer-events:none，选项仍占布局，收割时忽略该限制。
+        if (!ignorePointer && style.pointerEvents === 'none') return false;
       }
       var rects = el.getClientRects();
       if (!rects || rects.length === 0) return false;
@@ -281,6 +282,10 @@
         if (rects[i].width > 0 && rects[i].height > 0) return true;
       }
       return false;
+    }
+
+    function isLaidOut(el, style) {
+      return isVisible(el, style, true);
     }
 
     function nearestLabel(el) {
@@ -328,6 +333,91 @@
         }
       }
       return '';
+    }
+
+    var FIELD_META_SKIP_TYPES = /^(button|submit|reset|image|checkbox|radio|file|hidden|color|range)$/i;
+    var FORM_ITEM_SEL = '.ivu-form-item, .ivu-form-item, .el-form-item, .ant-form-item, .n-form-item, .van-field, .layui-form-item, .form-group, .form-item';
+    var FIELD_HINT_SEL = '.ivu-form-item-error-tip, .ivu-form-item-error-tip, .el-form-item__error, .ant-form-item-explain, .ant-form-item-explain-error, .n-form-item-feedback, .van-field__error-message, .layui-form-mid, .help-block, .invalid-feedback, .form-text, .error-tip';
+    var FIELD_COUNT_SEL = '.ivu-input-word-count, .ivu-input-word-count, .el-input__count, .el-input__count-inner, .ant-input-data-count, .n-input-word-count, [class*="word-count"]';
+
+    function attrLen(el, name) {
+      if (!el || !el.getAttribute) return 0;
+      var raw = el.getAttribute(name);
+      if (raw == null || raw === '') return 0;
+      var n = Number(raw);
+      return (n > 0 && n < 100000) ? n : 0;
+    }
+
+    function formItemOf(el) {
+      if (!el || !el.closest) return el && el.parentElement;
+      try {
+        return el.closest(FORM_ITEM_SEL) || el.parentElement;
+      } catch (e) {
+        return el.parentElement;
+      }
+    }
+
+    function firstTextIn(root, selector, maxLen) {
+      if (!root || !root.querySelector) return '';
+      var n = null;
+      try { n = root.querySelector(selector); } catch (e) { return ''; }
+      if (!n) return '';
+      var t = '';
+      try { t = String(n.innerText || n.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e2) { t = ''; }
+      if (!t) return '';
+      return t.slice(0, maxLen || 80);
+    }
+
+    // 把当前页自己的限制挂到输入框上（placeholder / maxlength / 旁侧计数与报错），
+    // 不内置任何网站的栏目或字数。换页后自然换成新限制。
+    function fieldMetaOf(el) {
+      if (!el) return null;
+      var tag = String(el.tagName || '').toUpperCase();
+      var type = String(el.type || (el.getAttribute && el.getAttribute('type')) || 'text');
+      var editable = false;
+      try { editable = !!el.isContentEditable; } catch (e) {}
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT' && !editable) return null;
+      if (tag === 'INPUT' && FIELD_META_SKIP_TYPES.test(type)) return null;
+      var meta = {};
+      var maxL = attrLen(el, 'maxlength') || attrLen(el, 'maxLength');
+      var minL = attrLen(el, 'minlength') || attrLen(el, 'minLength');
+      if (maxL) meta.maxLength = maxL;
+      if (minL) meta.minLength = minL;
+      var item = formItemOf(el);
+      var hint = firstTextIn(item, FIELD_HINT_SEL, 80);
+      var ph = '';
+      try { ph = String(el.getAttribute && el.getAttribute('placeholder') || '').replace(/\s+/g, ' ').trim(); } catch (e3) {}
+      if (hint && hint !== ph) meta.hint = hint;
+      var count = firstTextIn(item, FIELD_COUNT_SEL, 24);
+      if (!count && el.parentElement) count = firstTextIn(el.parentElement, FIELD_COUNT_SEL, 24);
+      if (count) meta.wordCount = count;
+      return Object.keys(meta).length ? meta : null;
+    }
+
+    function applyFieldMeta(target, el) {
+      var meta = fieldMetaOf(el);
+      if (!meta || !target) return;
+      if (meta.maxLength) target.maxLength = meta.maxLength;
+      if (meta.minLength) target.minLength = meta.minLength;
+      if (meta.wordCount) target.wordCount = meta.wordCount;
+      if (meta.hint) target.hint = meta.hint;
+    }
+
+    function fieldLabelOf(el) {
+      var t = nearestLabel(el);
+      if (t) return t;
+      try {
+        var item = formItemOf(el);
+        if (item && item.querySelector) {
+          var lab = item.querySelector('.ivu-form-item-label, .el-form-item__label, .ant-form-item-label, label');
+          if (lab && lab !== el) {
+            var lt = String(lab.innerText || lab.textContent || '').replace(/\s+/g, ' ').trim();
+            if (lt) return lt.slice(0, 120);
+          }
+        }
+      } catch (e) {}
+      try { return String(el.getAttribute && el.getAttribute('aria-label') || '').trim(); }
+      catch (e2) { return ''; }
     }
 
     var CAPTCHA_RE = /验证码|校验码|captcha|vcode|verifycode|authcode|checkcode|imgcode|security.?code/i;
@@ -1321,14 +1411,20 @@
       '[data-toggle]', '[data-dismiss]', '[data-bs-toggle]', '.file-action',
       // 常见自定义下拉框/选择器的选项元素（layui/element-ui/ant-design/vant 等）
       'dd[lay-value]', 'li[lay-value]', '.layui-this', '.layui-select-option',
-      '.el-select-dropdown__item', '.el-option', '.ant-select-item-option', '.ant-select-item',
+      '.el-select-dropdown__item', '.el-option', '.el-cascader-node', '.el-cascader-menu__item',
+      '.el-cascader__suggestion-item', '.el-cascader__suggestion-list li', '.el-cascader__suggestion-panel li',
+      '.ant-select-item-option', '.ant-select-item',
+      '.ivu-cascader-menu-item', '.ant-cascader-menu-item',
+      'li[id^="cascader-menu-"]', 'li[id*="-cascader-menu-"]',
       '.van-option', '.dropdown-item', '[data-value]',
       // 复选/单选框：框架包装器（iView/element/ant/layui/vant/nut）、ARIA 角色与原生 label 包裹。
       // 真实 input 被框架用 opacity:0 隐藏，可见可点的是包装器——不收录包装器，快照里就看不到复选框。
       '[role="checkbox"]', '[role="radio"]',
       '.ivu-checkbox-wrapper', '.el-checkbox', '.ant-checkbox-wrapper',
       '.layui-form-checkbox', '.van-checkbox', '.van-radio', '.nut-checkbox',
-      'label:has(input[type="checkbox"])', 'label:has(input[type="radio"])'
+      'label:has(input[type="checkbox"])', 'label:has(input[type="radio"])',
+      // 点「添加/标签」才出现输入框的词云（iView auto-tag、Element input-tag 等）
+      '.auto-tag', '.auto-tag .add', '.tags-input', '.tag-input', '.el-input-tag', '.n-dynamic-tags'
     ].join(', ');
     function hasActiveClass(el) {
       if (!el || !el.classList) return false;
@@ -1464,7 +1560,8 @@
         for (var i = 0; i < els.length; i++) {
           var e = els[i];
           var t = (e.type || '').toLowerCase();
-          if (t === 'password' || t === 'hidden' || t === 'submit' || t === 'button') continue;
+          if (t === 'password' || t === 'submit' || t === 'button') continue;
+          if (t === 'hidden' && !(e.name || e.id)) continue;
           var v = '';
           if (t === 'file') v = e.files ? Array.from(e.files).map(function (f) { return f.name + ':' + f.size; }).join(',') : '';
           else if (t === 'checkbox' || t === 'radio') v = e.checked ? '1' : '0';
@@ -1475,10 +1572,195 @@
           for (var pi = 0; pi < piece.length; pi++) hash = Math.imul(hash ^ piece.charCodeAt(pi), 16777619);
           count++;
         }
+        var widgetTxt = widgetSelectedText(document);
+        if (widgetTxt) {
+          var wp = 'widgets=' + widgetTxt;
+          for (var wi = 0; wi < wp.length; wi++) hash = Math.imul(hash ^ wp.charCodeAt(wi), 16777619);
+          count++;
+        }
         return count + ':' + (hash >>> 0).toString(16);
       } catch (e) {
         return '';
       }
+    }
+
+    var TAG_HOST_SEL = '.auto-tag, .tags-input, .tag-input, .el-input-tag, .n-dynamic-tags, [class*="auto-tag"]';
+
+    function tagHostOf(el) {
+      if (!el || !el.closest) return null;
+      try {
+        if (cascaderHostOf(el)) return null;
+        var host = el.closest(TAG_HOST_SEL);
+        if (host && !cascaderHostOf(host)) return host;
+        var item = el.closest(FORM_ITEM_SEL);
+        if (!item && el.matches && el.matches(FORM_ITEM_SEL)) item = el;
+        if (!item) return null;
+        var inner = item.querySelector(TAG_HOST_SEL);
+        if (!inner || cascaderHostOf(inner)) return null;
+        var tag = String(el.tagName || '').toUpperCase();
+        if (el === item || tag === 'LABEL') return inner;
+        var cls = String(el.className || '');
+        if (/(^| )add( |$)/.test(cls) || (el.closest && el.closest('.add') && item.contains(el))) return inner;
+        var text = '';
+        try { text = String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e2) {}
+        if (/^(标签|添加|添加标签|Add|Add tag)$/i.test(text)) return inner;
+      } catch (e) {}
+      return null;
+    }
+
+    function tagInputsOf(host) {
+      if (!host || !host.querySelectorAll) return [];
+      var list = [];
+      try { list = Array.prototype.slice.call(host.querySelectorAll('input, textarea')); }
+      catch (e) { return []; }
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        var inp = list[i];
+        var ty = String(inp.type || 'text').toLowerCase();
+        if (/^(hidden|checkbox|radio|file|button|submit|reset|image)$/.test(ty)) continue;
+        out.push(inp);
+      }
+      return out;
+    }
+
+    function tagPreferredInput(host) {
+      var ins = tagInputsOf(host);
+      if (!ins.length) return null;
+      var best = null;
+      var bestS = -1;
+      for (var i = 0; i < ins.length; i++) {
+        var ph = '';
+        try { ph = String(ins[i].getAttribute('placeholder') || ins[i].placeholder || ''); } catch (e) {}
+        var s = 0;
+        if (isVisible(ins[i])) s += 100;
+        if (/[;；,，]/.test(ph) || /分割|分隔|分号|逗号/.test(ph)) s += 50;
+        if (s > bestS) { bestS = s; best = ins[i]; }
+      }
+      return best || ins[ins.length - 1];
+    }
+
+    function tagAddControlOf(host) {
+      if (!host || !host.querySelector) return null;
+      try {
+        var add = host.querySelector('.add, [class*="tag-add"], [class*="add-tag"]');
+        if (add) return add;
+      } catch (e) {}
+      var nodes = [];
+      try { nodes = host.querySelectorAll('span, div, a, button, i'); } catch (e2) { nodes = []; }
+      for (var i = 0; i < nodes.length; i++) {
+        var t = '';
+        try { t = String(nodes[i].innerText || nodes[i].textContent || '').replace(/\s+/g, ' ').trim(); } catch (e3) {}
+        if (/^(标签|添加|添加标签|Add|Add tag)$/i.test(t)) return nodes[i];
+      }
+      try {
+        var icon = host.querySelector('.ivu-icon-md-add, .el-icon-plus, .anticon-plus');
+        if (icon) return icon.closest('.add') || icon.parentElement || icon;
+      } catch (e4) {}
+      return null;
+    }
+
+    function tagChipTexts(host) {
+      var parts = [];
+      var seen = {};
+      if (!host || !host.querySelectorAll) return parts;
+      try {
+        var tags = host.querySelectorAll('.ivu-tag, .el-tag, .ant-tag, .n-tag, [class*="tag-text"]');
+        for (var i = 0; i < tags.length; i++) {
+          var node = tags[i];
+          try {
+            if (node.closest && node.closest('.el-tag__close, .ivu-icon-ios-close, .ant-tag-close-icon')) continue;
+          } catch (e0) {}
+          var t = String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+          t = t.replace(/[\s×xX]+$/, '').trim();
+          if (!t || t === '标签' || t === '添加' || seen[t]) continue;
+          seen[t] = 1;
+          parts.push(t.slice(0, 40));
+        }
+      } catch (e) {}
+      return parts;
+    }
+
+    function splitTagParts(val) {
+      if (Array.isArray(val)) {
+        return val.map(function (x) { return String(x == null ? '' : x).trim(); }).filter(Boolean);
+      }
+      return String(val == null ? '' : val)
+        .split(/[;；,，\n]+/)
+        .map(function (s) { return s.trim(); })
+        .filter(Boolean);
+    }
+
+    function tagsCover(actual, expected) {
+      if (!expected || !expected.length) return true;
+      var act = actual || [];
+      for (var i = 0; i < expected.length; i++) {
+        var exp = expected[i];
+        var hit = false;
+        for (var j = 0; j < act.length; j++) {
+          if (act[j] === exp || act[j].indexOf(exp) >= 0 || exp.indexOf(act[j]) >= 0) {
+            hit = true;
+            break;
+          }
+        }
+        if (!hit) return false;
+      }
+      return true;
+    }
+
+    function widgetSelectedText(root) {
+      try {
+        var scope = root && root.querySelectorAll ? root : document;
+        var hosts = scope.querySelectorAll(
+          '.ivu-cascader, .el-cascader, .ant-cascader, .ivu-select, .el-select, .ant-select, ' +
+          TAG_HOST_SEL
+        );
+        var parts = [];
+        for (var i = 0; i < hosts.length && parts.length < 12; i++) {
+          var t = widgetSelectedTextNear(hosts[i]);
+          if (t) parts.push(t);
+        }
+        return parts.join('|');
+      } catch (e) { return ''; }
+    }
+
+    function widgetSelectedTextNear(el) {
+      try {
+        if (!el || !el.closest) return '';
+        var host = el.closest('.ivu-cascader, .el-cascader, .ant-cascader, .ivu-select, .el-select, .ant-select');
+        if (!host) {
+          host = el.closest(TAG_HOST_SEL);
+          if (!host) return '';
+          var chips = tagChipTexts(host);
+          return chips.length ? chips.join(',') : '';
+        }
+        // 只收集已选标签，不要整段 .el-cascader__tags（会混入筛选框里正在输入的字）。
+        var tags = host.querySelectorAll(
+          '.el-tag, .ivu-tag, .ant-select-selection-item, .ivu-select-selected-value, ' +
+          '.ivu-cascader-label, .el-cascader__label, .ant-cascader-picker-label'
+        );
+        var parts = [];
+        var seen = {};
+        for (var i = 0; i < tags.length && parts.length < 8; i++) {
+          var node = tags[i];
+          try {
+            if (node.closest && node.closest('.el-tag__close, .el-icon-close, .ivu-icon-ios-close')) continue;
+          } catch (e0) {}
+          var t = String(node.innerText || node.textContent || node.value || '')
+            .replace(/\s+/g, ' ').trim();
+          if (!t || t === '请选择' || seen[t]) continue;
+          seen[t] = 1;
+          parts.push(t.slice(0, 40));
+        }
+        if (parts.length) return parts.join(',');
+        var rel = host.querySelector(
+          '.ivu-cascader-rel, .ivu-select-selection, .ant-select-selector, .ant-cascader-picker'
+        );
+        if (rel) {
+          var rt = String(rel.innerText || rel.value || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+          if (rt && rt !== '请选择') return rt;
+        }
+        return '';
+      } catch (e) { return ''; }
     }
 
     // ============ 复选/单选框识别（iView/element/ant/layui/vant/nut 与原生 label 包裹） ============
@@ -1505,6 +1787,7 @@
     // 返回 'checkbox' | 'radio' | ''（该元素是否复选/单选控件或其包装器）
     function boxKindOf(el) {
       if (isFileSelectRow(el) || fileRowOf(el)) return 'checkbox';
+      if (isCascaderChoice(el)) return '';
       var inp = innerBoxInput(el);
       if (inp) {
         var t = String(inp.type || '').toLowerCase();
@@ -1765,6 +2048,9 @@
           var actionableHidden = el.matches && el.matches(
             '[data-file-act], [data-act], [data-action], [data-op], .file-action, [role="button"], [onclick], input[type="file"], select, .select2-hidden-accessible'
           );
+          if (!actionableHidden) {
+            try { actionableHidden = !!tagHostOf(el); } catch (eH) {}
+          }
           if (!actionableHidden) { skipHidden++; continue; }
         }
         // 文本：A/BUTTON 取全文；SPAN/I/DIV/LABEL 也取（图标按钮可能无文本，靠 icon/dataAct 识别；LABEL 多为复选框文字）
@@ -1794,6 +2080,10 @@
           if (fieldType === 'password') value = el.value ? '[REDACTED]' : '';
           else if (fieldType === 'file') value = el.files ? Array.from(el.files).map(function (f) { return f.name; }).join(', ').slice(0, 200) : '';
           else if ('value' in el) value = String(el.value == null ? '' : el.value).slice(0, 200);
+          if (!value) {
+            var shown = widgetSelectedTextNear(el);
+            if (shown) value = shown.slice(0, 200);
+          }
         } catch (e) { value = ''; }
         var entry = {
           tag: tag,
@@ -1803,7 +2093,7 @@
           placeholder: el.getAttribute ? (el.getAttribute('placeholder') || '') : '',
           ariaLabel: el.getAttribute ? (el.getAttribute('aria-label') || '') : '',
           role: el.getAttribute ? (el.getAttribute('role') || '') : '',
-          label: nearestLabel(el) || (el.getAttribute && el.getAttribute('aria-label')) || '',
+          label: fieldLabelOf(el),
           value: value,
           text: text,
           disabled: !!el.disabled,
@@ -1820,10 +2110,14 @@
           icon: icon,
           title: el.getAttribute ? (el.getAttribute('title') || '').slice(0, 60) : '',
           box: box,
-          widget: box ? boxWidgetOf(el) : undefined,
+          widget: box ? boxWidgetOf(el) : (tagHostOf(el) ? 'tags' : undefined),
           checked: box ? readBoxChecked(el) : undefined,
+          cascaderRole: isCascaderSearchInput(el)
+            ? 'filter'
+            : (cascaderHostOf(el) ? 'trigger-or-control' : undefined),
           selector: sel.selector
         };
+        applyFieldMeta(entry, el);
         // 原生 SELECT 附带候选预览（value/text，标记当前选中项），模型可据此一步取值，无需先读选项；
         // 预算耗尽后只保留 selectedText/optionsTotal，把空间留给其他元素
         if (tag === 'SELECT' && el.options) {
@@ -1916,17 +2210,55 @@
     // 选项候选选择器：覆盖 layui/element-ui/ant/vant/select2/chosen/easyUI/jQuery-UI/bootstrap-select/级联 等
     var OPTION_SEL = '[role="option"], [role="listbox"] li, li[aria-selected], ' +
       'dd[lay-value], li[lay-value], .layui-select-option, ' +
-      '.el-select-dropdown__item, .el-option, .el-cascader-node, ' +
+      '.el-select-dropdown__item, .el-option, .el-cascader-node, .el-cascader-menu__item, ' +
+      '.el-cascader__suggestion-item, .el-cascader__suggestion-list li, .el-cascader__suggestion-panel li, ' +
+      '.ivu-select-item, .ivu-select-dropdown-list li, ' +
+      '.ivu-cascader-menu-item, .ant-cascader-menu-item, ' +
+      'li[id^="cascader-menu-"], li[id*="-cascader-menu-"], ' +
       '.ant-select-item-option, .ant-select-item, .van-option, ' +
       '.dropdown-item, .dropdown-menu li a, ' +
       '.select2-results__option, .chosen-results li, .active-result, ' +
       '.ui-menu-item, .ui-menu-item-wrapper, .combobox-item, .combo-p li, ' +
       'li[data-value], dd[data-value], div[role="option"]';
 
+    var CASCADER_OPTION_SEL = '.el-cascader-node, .el-cascader-menu__item, .el-cascader__suggestion-item, ' +
+      '.el-cascader__suggestion-list li, .el-cascader__suggestion-panel li, ' +
+      '.ivu-cascader-menu-item, .ant-cascader-menu-item, ' +
+      'li[id^="cascader-menu-"], li[id*="-cascader-menu-"]';
+
+    var CASCADER_EMPTY_TEXT_RE = /^(暂无数据|无匹配数据|无数据|暂无匹配项?|暂无匹配数据|无匹配|No Data|No data|no data|No match)$/i;
+
+    function isCascaderPlaceholderText(t) {
+      var s = String(t || '').replace(/\s+/g, '');
+      return !s || CASCADER_EMPTY_TEXT_RE.test(s);
+    }
+
+    function cascaderHostOf(el) {
+      if (!el || !el.closest) return null;
+      try {
+        if (el.matches && el.matches('.el-cascader, .ivu-cascader, .ant-cascader')) return el;
+        return el.closest('.el-cascader, .ivu-cascader, .ant-cascader');
+      } catch (e) { return null; }
+    }
+
+    function popupHasOptionNodes(popup) {
+      if (!popup || !popup.querySelector) return false;
+      try {
+        return !!(popup.querySelector(CASCADER_OPTION_SEL) || popup.querySelector(OPTION_SEL));
+      } catch (e) {
+        return false;
+      }
+    }
+
+    var CASCADER_POPUP_SEL = '.el-cascader__dropdown, .el-cascader-panel, .el-cascader-menus, .el-cascader-menu, ' +
+      '.el-cascader__suggestion-panel, .el-cascader__suggestion-list, .ant-cascader-dropdown, .ant-cascader-menus, ' +
+      '.ivu-cascader-dropdown, .ivu-cascader-menus';
+
     var POPUP_SEL = [
-      '.el-select-dropdown', '.el-popper', '.el-cascader__dropdown',
-      '.ant-select-dropdown', '.ant-cascader-dropdown',
-      '.ivu-select-dropdown', '.layui-form-select .layui-anim',
+      '.el-select-dropdown', '.el-popper', '.el-cascader__dropdown', '.el-cascader-menus',
+      '.el-cascader__suggestion-panel', '.el-cascader__suggestion-list',
+      '.ant-select-dropdown', '.ant-cascader-dropdown', '.ant-cascader-menus',
+      '.ivu-select-dropdown', '.ivu-cascader-dropdown', '.ivu-cascader-menus', '.layui-form-select .layui-anim',
       '.select2-dropdown', '.chosen-drop',
       '.dropdown-menu.show', '.dropdown-menu[style*="display: block"]',
       '.combo-p', '.combo-panel', '.combobox-item-wrapper',
@@ -1935,7 +2267,7 @@
       '[role="listbox"]', '[role="presentation"].el-select-dropdown'
     ].join(', ');
 
-    var WIDGET_SEL = '.el-select, .el-cascader, .ant-select, .ivu-select, .layui-form-select, ' +
+    var WIDGET_SEL = '.el-select, .el-cascader, .ant-select, .ivu-select, .ivu-cascader, .layui-form-select, ' +
       '.select2-container, .chosen-container, .n-select, .van-dropdown-menu, .combo, ' +
       '.bootstrap-select, [role="combobox"]';
 
@@ -1997,10 +2329,11 @@
 
     function isHiddenPopup(el) {
       if (!el) return true;
-      if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return true;
       var cn = String(el.className || '');
       if (/\b(is-hidden|hidden|el-select-dropdown-hidden|ant-select-dropdown-hidden|ivu-select-dropdown-hidden)\b/.test(cn)) return true;
-      return !isVisible(el);
+      // 不用 aria-hidden：Element UI 级联弹层显示时仍常标 aria-hidden=true。
+      // 过渡期 pointer-events:none，用布局可见性判断。
+      return !isLaidOut(el);
     }
 
     function controlledPopup(trigger) {
@@ -2034,23 +2367,45 @@
     }
 
     function findPopupForTrigger(trigger) {
+      var isCascader = !!cascaderHostOf(trigger);
       var controlled = controlledPopup(trigger);
-      if (controlled && !isHiddenPopup(controlled)) return controlled;
+      if (controlled && !isHiddenPopup(controlled)) {
+        if (!isCascader || popupHasOptionNodes(controlled)) return controlled;
+      }
       var root = widgetRoot(trigger);
       if (root && root.querySelector) {
-        var inner = root.querySelector('dl, .layui-anim, [role="listbox"], .el-select-dropdown, .dropdown-menu, .combo-panel');
+        var inner = root.querySelector(
+          'dl, .layui-anim, [role="listbox"], .el-select-dropdown, .el-cascader__dropdown, ' +
+          '.el-cascader-panel, .el-cascader-menus, .el-cascader-menu, .el-cascader__suggestion-panel, .dropdown-menu, .combo-panel'
+        );
         if (inner && !isHiddenPopup(inner)) return inner;
+      }
+      if (isCascader) {
+        var spec = queryAllDeep(CASCADER_POPUP_SEL);
+        var bestC = null;
+        var bestCScore = -Infinity;
+        for (var ci = 0; ci < spec.length; ci++) {
+          if (isHiddenPopup(spec[ci])) continue;
+          var distC = popupDistance(trigger, spec[ci]);
+          if (distC > 1600) continue;
+          var score = (popupHasOptionNodes(spec[ci]) ? 1000 : 0) - distC;
+          var cn = String(spec[ci].className || '');
+          if (/suggestion/.test(cn)) score += 80;
+          if (score > bestCScore) { bestCScore = score; bestC = spec[ci]; }
+        }
+        if (bestC) return bestC;
       }
       var pops = queryAllDeep(POPUP_SEL);
       var best = null;
       var bestDist = Infinity;
       for (var i = 0; i < pops.length; i++) {
         if (isHiddenPopup(pops[i])) continue;
+        if (isCascader && !popupHasOptionNodes(pops[i])) continue;
         var dist = popupDistance(trigger, pops[i]);
         if (dist < bestDist) { bestDist = dist; best = pops[i]; }
       }
-      // 距离过远的弹层几乎肯定属于别的控件（例如页面上另一个已展开的年份选择器）
-      if (best && bestDist < 480) return best;
+      // 普通下拉 480px；级联建议列表常 teleport 到 body，放宽到 1600px。
+      if (best && bestDist < (isCascader ? 1600 : 480)) return best;
       return null;
     }
 
@@ -2087,13 +2442,31 @@
       return hit || null;
     }
 
+    function optionTextOf(el) {
+      if (!el) return '';
+      try {
+        var lab = el.querySelector && el.querySelector(
+          '.el-cascader-node__label, .el-cascader__suggestion-item, .el-cascader__suggestion-item > span, ' +
+          '.ivu-cascader-label, .ant-cascader-menu-item-content'
+        );
+        if (lab && lab !== el) {
+          var lt = (lab.innerText || lab.textContent || '').trim();
+          if (lt) return lt.replace(/\s+/g, ' ');
+        }
+      } catch (e) {}
+      return ((el.innerText || el.textContent || '').trim()).replace(/\s+/g, ' ');
+    }
+
     function collectOptionsIn(root, limit, withSelector) {
       if (!root) return [];
       var nodes = [];
       function walk(r) {
         if (!r) return;
-        if (r.matches && r.matches(OPTION_SEL)) nodes.push(r);
+        try {
+          if (r.matches && (r.matches(OPTION_SEL) || r.matches(CASCADER_OPTION_SEL))) nodes.push(r);
+        } catch (e0) {}
         nodes = nodes.concat(safeAll(r, OPTION_SEL));
+        nodes = nodes.concat(safeAll(r, CASCADER_OPTION_SEL));
         var all = safeAll(r, '*');
         for (var i = 0; i < all.length; i++) {
           if (all[i].shadowRoot) walk(all[i].shadowRoot);
@@ -2106,10 +2479,33 @@
         var e = nodes[j];
         if (seen.has(e)) continue;
         seen.add(e);
-        if (!isVisible(e)) continue;
+        if (!isLaidOut(e)) continue;
         if (e.tagName === 'OPTION') continue;
-        var t = (e.innerText || e.textContent || '').trim();
-        if (!t) continue;
+        var t = optionTextOf(e);
+        if (!t || isCascaderPlaceholderText(t)) continue;
+        var v = e.getAttribute ? (e.getAttribute('data-value') || e.getAttribute('lay-value') || e.getAttribute('value') || '') : '';
+        var s = '';
+        if (withSelector) {
+          try { var u = uniqueSelector(e); s = u && u.selector ? u.selector : ''; } catch (err) { s = ''; }
+        }
+        out.push({ el: e, text: t.slice(0, 80), value: v, selector: s });
+      }
+      return out;
+    }
+
+    function collectVisibleCascaderOptions(trigger, limit, withSelector) {
+      var cap = limit || MAX_LIST_OPTIONS;
+      var all = queryAllDeep(CASCADER_OPTION_SEL);
+      var out = [];
+      var seen = new Set();
+      for (var i = 0; i < all.length && out.length < cap; i++) {
+        var e = all[i];
+        if (seen.has(e)) continue;
+        seen.add(e);
+        if (!isLaidOut(e)) continue;
+        if (trigger && popupDistance(trigger, e) > 1600) continue;
+        var t = optionTextOf(e);
+        if (!t || isCascaderPlaceholderText(t)) continue;
         var v = e.getAttribute ? (e.getAttribute('data-value') || e.getAttribute('lay-value') || e.getAttribute('value') || '') : '';
         var s = '';
         if (withSelector) {
@@ -2122,9 +2518,17 @@
 
     // 只收集「这个触发器」的选项。没有关联弹层时返回空数组，绝不回退到整页——
     // 否则年份/JCR/其它下拉的可见项会被误当成已经展开，从而既不点击也不搜索。
+    // 可过滤级联输入后切到建议列表：若选中的弹层收割为空，再扫描附近可见的建议项。
     function optionsForTrigger(trigger, limit, withSelector) {
       var popup = findPopupForTrigger(trigger);
-      if (popup) return collectOptionsIn(popup, limit, withSelector);
+      if (popup) {
+        var inPop = collectOptionsIn(popup, limit, withSelector);
+        if (inPop.length) return inPop;
+      }
+      if (cascaderHostOf(trigger)) {
+        var vis = collectVisibleCascaderOptions(trigger, limit, withSelector);
+        if (vis.length) return vis;
+      }
       var root = widgetRoot(trigger);
       if (root && root !== trigger) {
         var inner = collectOptionsIn(root, limit, withSelector);
@@ -2290,13 +2694,16 @@
     async function applyFilterQuery(trigger, q) {
       var si = findSearchInput(trigger);
       if (!si) return false;
-      var before = optionsForTrigger(trigger, 80).map(function (x) { return x.text; }).join('\n');
+      var beforeList = optionsForTrigger(trigger, 80);
+      var before = beforeList.map(function (x) { return x.text; }).join('\n');
       typeInto(si, q);
-      var until = Date.now() + 1400;
+      var until = Date.now() + 1800;
       while (Date.now() < until) {
         await sleepMs(160);
-        var now = optionsForTrigger(trigger, 80).map(function (x) { return x.text; }).join('\n');
-        if (now !== before) break;
+        var list = optionsForTrigger(trigger, 80);
+        var now = list.map(function (x) { return x.text; }).join('\n');
+        // 过滤前后都是空列表时不能当成“已刷新”；等到建议项出现或文案变化。
+        if (list.length && (now !== before || !beforeList.length)) break;
       }
       return true;
     }
@@ -2320,15 +2727,243 @@
         if (acc.length >= limit) break;
         if (added === 0) {
           stagnant++;
-          if (stagnant >= 3) break;
+          if (stagnant >= 3 && !(acc.length === 0 && round < 12)) break;
         } else {
           stagnant = 0;
         }
         var moved = scrollOptionArea(list.length ? list : acc);
-        if (!moved && added === 0) break;
+        if (!moved && added === 0) {
+          // 弹层刚展开（iView transition-drop、级联菜单）时节点可能尚未完成布局，
+          // 首轮空列表不要立刻放弃，否则会误报 emptyList。
+          if (acc.length === 0 && round < 12) {
+            await sleepMs(120);
+            continue;
+          }
+          break;
+        }
         await sleepMs(80);
       }
       return acc;
+    }
+
+    function isCascaderSearchInput(el) {
+      if (!el || String(el.tagName || '').toUpperCase() !== 'INPUT') return false;
+      var cls = String(el.className || '');
+      if (/cascader[_-]*search[_-]*input/i.test(cls)) return true;
+      var host = cascaderHostOf(el);
+      if (!host || el.readOnly) return false;
+      try {
+        return !!el.closest('.el-cascader__tags, .ivu-cascader-tags, .ant-cascader-picker');
+      } catch (e) { return false; }
+    }
+
+    function cascaderOptionOf(el) {
+      var node = el;
+      for (var depth = 0; node && depth < 6; depth++) {
+        var tag = String(node.tagName || '').toUpperCase();
+        var own = false;
+        try {
+          own = !!(node.matches && node.matches(
+            '.el-cascader-node, .el-cascader-menu__item, .el-cascader__suggestion-item, ' +
+            '.ivu-cascader-menu-item, .ant-cascader-menu-item, ' +
+            'li[id^="cascader-menu-"], li[id*="-cascader-menu-"]'
+          ));
+        } catch (e) {}
+        var parent = null;
+        try {
+          parent = node.closest && node.closest(
+            '.el-cascader__dropdown, .el-cascader-menus, .el-cascader-menu, ' +
+            '.el-cascader__suggestion-panel, .el-cascader__suggestion-list, ' +
+            '.ivu-cascader-dropdown, .ivu-cascader-menus, .ivu-cascader-menu, ' +
+            '.ant-cascader-dropdown, .ant-cascader-menus, .ant-cascader-menu'
+          );
+        } catch (e2) {}
+        if (own || (parent && tag === 'LI')) {
+          return node;
+        }
+        node = node.parentElement;
+      }
+      return null;
+    }
+
+    // 级联菜单/建议项里的方框只是多选样式，不是表单复选框。
+    function isCascaderChoice(el) {
+      if (!el) return false;
+      if (cascaderOptionOf(el)) return true;
+      try {
+        if (el.closest && el.closest(
+          '.el-cascader-node, .el-cascader-menu, .el-cascader-menu__item, .el-cascader__dropdown, ' +
+          '.el-cascader__suggestion-item, .el-cascader__suggestion-list, .el-cascader__suggestion-panel, ' +
+          '.ivu-cascader-menu, .ivu-cascader-menu-item, .ivu-cascader-dropdown, ' +
+          '.ant-cascader-menu, .ant-cascader-menu-item, .ant-cascader-dropdown, ' +
+          'li[id^="cascader-menu-"], li[id*="-cascader-menu-"]'
+        )) return true;
+      } catch (e) {}
+      return false;
+    }
+
+    function cascaderClickTarget(el) {
+      if (!el) return el;
+      try {
+        if (el.matches && el.matches('.el-cascader__suggestion-item')) return el;
+        var box = el.querySelector && el.querySelector(
+          '.el-checkbox, .el-checkbox__input, .el-checkbox__original, .el-checkbox__inner, ' +
+          '.ant-cascader-checkbox, .ivu-checkbox'
+        );
+        if (box) return box;
+      } catch (e) {}
+      return el;
+    }
+
+    function cascaderTriggerOf(host, requested) {
+      if (requested && !isCascaderSearchInput(requested) &&
+        String(requested.tagName || '').toUpperCase() === 'INPUT') return requested;
+      if (!host || !host.querySelector) return requested || host;
+      try {
+        return host.querySelector('input.el-input__inner, input[role="combobox"], input[readonly]') || host;
+      } catch (e) { return host; }
+    }
+
+    function cascaderOptionIsBranch(el) {
+      if (!el) return false;
+      try {
+        if (el.matches && el.matches('.el-cascader__suggestion-item')) return false;
+        if (el.getAttribute('aria-haspopup') === 'true' || el.getAttribute('aria-expanded') === 'true') return true;
+        if (el.querySelector(
+          '.el-cascader-node__postfix, .el-icon-arrow-right, .ivu-icon-ios-arrow-forward, ' +
+          '.ant-cascader-menu-item-expand-icon, [class*="arrow-right"], [class*="arrow-forward"]'
+        )) return true;
+      } catch (e) {}
+      return false;
+    }
+
+    function cascaderLeafLabel(text) {
+      var t = String(text || '').trim();
+      var parts = t.split(/\s*[/／>]\s*/);
+      return (parts[parts.length - 1] || t).trim();
+    }
+
+    function chooseCascaderMatch(list, raw) {
+      var leaves = list.filter(function (item) { return !cascaderOptionIsBranch(item.el); });
+      var labeled = [];
+      for (var i = 0; i < leaves.length; i++) {
+        labeled.push({
+          el: leaves[i].el,
+          text: cascaderLeafLabel(leaves[i].text),
+          value: leaves[i].value,
+          selector: leaves[i].selector,
+          _src: leaves[i]
+        });
+      }
+      var m = chooseMatch(labeled, raw);
+      if (m && m.winner) return { winner: m.winner._src || m.winner };
+      if (m && m.ambiguous) return m;
+      m = chooseMatch(leaves, raw);
+      if (m) return m;
+      return chooseMatch(list, raw);
+    }
+
+    function cascaderSelectionText(host) {
+      return widgetSelectedTextNear(host);
+    }
+
+    function cascaderSelectionMatches(host, raw) {
+      var selected = cascaderSelectionText(host);
+      return !!selected && rankMatch(selected, raw) >= 0;
+    }
+
+    // 级联选择的完整闭环：搜索框只是过滤器，不能当作最终表单值；
+    // 只有唯一选项被点击且宿主出现目标选中路径才返回 verified=true。
+    async function selectCascaderOption(requested, raw, opts) {
+      opts = opts && typeof opts === 'object' ? opts : {};
+      var host = cascaderHostOf(requested) || requested;
+      var trigger = cascaderTriggerOf(host, requested);
+      var target = String(raw || '').trim();
+      if (!target) throw new Error('selectOption: 级联目标文本为空');
+
+      if (cascaderSelectionMatches(host, target)) {
+        return {
+          ok: true, kind: 'mutation', via: 'cascader', text: target,
+          selected: cascaderSelectionText(host), changed: false, verified: true,
+          note: '已是目标级联选项，未重复点击'
+        };
+      }
+
+      var targetQueries = filterQueries(target);
+      if (!targetQueries.length) targetQueries = [target];
+      var filterQueriesToUse = opts.filter ? filterQueries(String(opts.filter)) : targetQueries;
+      if (!filterQueriesToUse.length) filterQueriesToUse = [target];
+      var opened = await ensureOpenDropdown(trigger);
+      var searchAvailable = !!findSearchInput(trigger);
+      var harvested = [];
+      var usedQuery = '';
+
+      function match(list) {
+        for (var qi = 0; qi < targetQueries.length; qi++) {
+          var hit = chooseCascaderMatch(list, targetQueries[qi]);
+          if (hit && hit.winner) return { hit: hit, query: targetQueries[qi] };
+          if (hit && hit.ambiguous) return { hit: hit, query: targetQueries[qi] };
+        }
+        return null;
+      }
+
+      async function searchAndHarvest(query) {
+        usedQuery = query;
+        if (searchAvailable) {
+          await applyFilterQuery(trigger, query);
+        }
+        harvested = await harvestOptions(trigger, MAX_LIST_OPTIONS);
+        return match(harvested);
+      }
+
+      var found;
+      if (searchAvailable) {
+        // 级联选项可能有数千项；先过滤再收割，避免扫描整棵菜单并避免模型手动 setVal。
+        for (var qi = 0; qi < filterQueriesToUse.length; qi++) {
+          found = await searchAndHarvest(filterQueriesToUse[qi]);
+          if (found) break;
+        }
+      } else {
+        harvested = await harvestOptions(trigger, MAX_LIST_OPTIONS);
+        found = match(harvested);
+      }
+
+      if (found && found.hit && found.hit.ambiguous) {
+        return catalogPayload(harvested, {
+          ok: false, reason: 'ambiguous', opened: opened,
+          searchAvailable: searchAvailable, truncated: harvested.length >= MAX_LIST_OPTIONS,
+          query: usedQuery, via: 'cascader'
+        });
+      }
+      if (!found || !found.hit || !found.hit.winner) {
+        return catalogPayload(harvested, {
+          ok: false,
+          reason: harvested.length ? 'notFound' : (opened ? 'emptyList' : 'notOpened'),
+          opened: opened, searchAvailable: searchAvailable,
+          truncated: harvested.length >= MAX_LIST_OPTIONS, query: usedQuery, via: 'cascader'
+        });
+      }
+
+      var winner = found.hit.winner;
+      withSel(winner);
+      try { winner.el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+      dispatchClick(cascaderClickTarget(winner.el));
+
+      var verifyUntil = Date.now() + 1800;
+      var selected = '';
+      var verified = false;
+      while (Date.now() < verifyUntil) {
+        selected = cascaderSelectionText(host);
+        verified = !!selected && rankMatch(selected, target) >= 0;
+        if (verified) break;
+        await sleepMs(100);
+      }
+      selected = cascaderSelectionText(host);
+      return {
+        ok: true, kind: 'mutation', via: 'cascader', text: winner.text,
+        value: winner.value, filter: usedQuery, selected: selected,
+        selector: winner.selector, changed: verified, verified: verified
+      };
     }
 
     function nativeOptionList(sel, max) {
@@ -2370,9 +3005,127 @@
       }
     }
 
+    function fireKey(el, key, keyCode) {
+      if (!el) return;
+      var win = el.ownerDocument && el.ownerDocument.defaultView || window;
+      var types = ['keydown', 'keypress', 'keyup'];
+      for (var i = 0; i < types.length; i++) {
+        var type = types[i];
+        try {
+          var ev = new win.KeyboardEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            key: key,
+            code: key === 'Enter' ? 'Enter' : 'Key' + key,
+            keyCode: keyCode,
+            which: keyCode,
+            charCode: type === 'keypress' ? keyCode : 0
+          });
+          try {
+            Object.defineProperty(ev, 'keyCode', { get: function () { return keyCode; } });
+            Object.defineProperty(ev, 'which', { get: function () { return keyCode; } });
+          } catch (e0) {}
+          el.dispatchEvent(ev);
+        } catch (e1) {
+          try { el.dispatchEvent(new win.Event(type, { bubbles: true, cancelable: true })); }
+          catch (e2) {}
+        }
+      }
+    }
+
+    async function revealTagInput(host) {
+      var input = tagPreferredInput(host);
+      if (input && isVisible(input)) return input;
+      var add = tagAddControlOf(host);
+      if (add) dispatchClick(add);
+      var until = Date.now() + 900;
+      while (Date.now() < until) {
+        await sleepMs(80);
+        input = tagPreferredInput(host);
+        if (input && isVisible(input)) return input;
+        var ins = tagInputsOf(host);
+        for (var i = 0; i < ins.length; i++) {
+          if (isVisible(ins[i])) return ins[i];
+        }
+      }
+      return tagPreferredInput(host);
+    }
+
+    async function fillTagWidget(host, val) {
+      var parts = splitTagParts(val);
+      var input = await revealTagInput(host);
+      if (!input) {
+        throw new Error('标签输入框未出现。请对标签区域或「添加/标签」按钮 setVal，并在字符串里用该控件 placeholder 标明的分隔符连接多个词。');
+      }
+      var ph = '';
+      try { ph = String(input.getAttribute('placeholder') || input.placeholder || ''); } catch (e) {}
+      var joiner = /[,，]/.test(ph) && !/[;；]/.test(ph) ? ',' : ';';
+      var joined = parts.join(joiner);
+      var via = 'tag';
+
+      async function waitChips() {
+        var until = Date.now() + 500;
+        var chips = tagChipTexts(host);
+        while (Date.now() < until && parts.length && !tagsCover(chips, parts)) {
+          await sleepMs(70);
+          chips = tagChipTexts(host);
+        }
+        return chips;
+      }
+
+      var bulk = parts.length > 1 || /[;；,，]|分割|分隔/.test(ph);
+      if (bulk && parts.length) {
+        typeInto(input, joined);
+        fireKey(input, 'Enter', 13);
+        try { input.blur(); } catch (eB) {}
+        via = 'tag-bulk';
+        var chipsBulk = await waitChips();
+        var actualVal = '';
+        try { actualVal = String(input.value || ''); } catch (eV) {}
+        var verifiedBulk = tagsCover(chipsBulk, parts) || actualVal === joined ||
+          parts.every(function (p) { return actualVal.indexOf(p) >= 0; });
+        if (verifiedBulk) {
+          return {
+            ok: true,
+            kind: 'mutation',
+            via: via,
+            expected: parts,
+            actual: chipsBulk.length ? chipsBulk : actualVal,
+            verified: true
+          };
+        }
+      }
+
+      for (var i = 0; i < parts.length; i++) {
+        input = await revealTagInput(host);
+        if (!input) break;
+        typeInto(input, parts[i]);
+        fireKey(input, 'Enter', 13);
+        if (/[;；]/.test(ph)) fireKey(input, ';', 186);
+        try { input.blur(); } catch (e2) {}
+        await sleepMs(80);
+      }
+      var chips = await waitChips();
+      var actual = '';
+      try { actual = String(input && input.value || ''); } catch (e3) {}
+      var verified = tagsCover(chips, parts) || (parts.length === 1 && actual === parts[0]) ||
+        (parts.length > 0 && parts.every(function (p) { return actual.indexOf(p) >= 0; }));
+      return {
+        ok: true,
+        kind: 'mutation',
+        via: via,
+        expected: parts,
+        actual: chips.length ? chips : actual,
+        verified: verified
+      };
+    }
+
     function isSearchTypedInput(el) {
       if (!el) return false;
       if (el.disabled) return false;
+      // 级联/自定义下拉的 readonly trigger 只负责展开，绝不能被当成过滤输入框。
+      if (el.readOnly) return false;
       if (el.isContentEditable) return isVisible(el);
       if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return false;
       var type = String(el.type || 'text').toLowerCase();
@@ -2644,9 +3397,26 @@
       var page = {
           q: function (sel) { return queryDeep(sel); },
           qa: function (sel) { return queryAllDeep(sel); },
-          setVal: function (sel, val) {
+          setVal: async function (sel, val) {
             var el = page.q(sel); if (!el) throw new Error('元素未找到: ' + sel);
             if (el.disabled) throw new Error('元素已禁用，不能填写: ' + sel);
+            // 级联只读展示框/筛选框都不是最终表单值。模型若仍对它们 setVal，
+            // 直接走完整选择闭环，避免“只读不能填”或“筛了但没选中”。
+            if (cascaderHostOf(el)) {
+              var cascVal = String(val == null ? '' : val);
+              if (!cascVal.trim()) {
+                var host = cascaderHostOf(el);
+                var trigger = cascaderTriggerOf(host, el);
+                await ensureOpenDropdown(trigger);
+                var si = findSearchInput(trigger);
+                if (!si) throw new Error('级联筛选框未找到，无法清空');
+                typeInto(si, '');
+                return { ok: true, kind: 'mutation', via: 'cascader-filter-clear', query: '', verified: false };
+              }
+              return await selectCascaderOption(el, cascVal, { filter: cascVal });
+            }
+            var tagHost = tagHostOf(el);
+            if (tagHost) return await fillTagWidget(tagHost, val);
             var isContentEditable = el.isContentEditable ||
               (el.getAttribute && (el.getAttribute('contenteditable') === 'true' || (el.getAttribute('role') === 'textbox' && el.isContentEditable)));
             if (el.readOnly && !isContentEditable) throw new Error('元素只读，不能直接填写: ' + sel);
@@ -2715,8 +3485,29 @@
             }
             throw new Error('不支持对该元素赋值: ' + sel);
           },
-          click: function (sel) {
+          click: async function (sel) {
             var el = page.q(sel); if (!el) throw new Error('元素未找到: ' + sel);
+            if (cascaderOptionOf(el)) {
+              throw new Error(
+                '级联菜单选项禁止直接 page.click（点击分支/旧 li 选择器无法可靠确认层级）。' +
+                '请使用 page.selectOption(级联触发器选择器, 完整目标选项文本[, {filter:"简短过滤词"}])。'
+              );
+            }
+            var cascadeClickHost = cascaderHostOf(el);
+            if (cascadeClickHost) {
+              var opened = await ensureOpenDropdown(cascaderTriggerOf(cascadeClickHost, el));
+              var cus;
+              try { cus = uniqueSelector(el); } catch (e2) { cus = null; }
+              return {
+                ok: true,
+                kind: 'action',
+                via: 'cascader-open',
+                opened: !!opened,
+                verified: null,
+                selector: cus && cus.selector ? cus.selector : '',
+                retargeted: false
+              };
+            }
             if (el.disabled || el.getAttribute && el.getAttribute('aria-disabled') === 'true') throw new Error('元素已禁用，不能点击: ' + sel);
             var target = retargetFileSelectClick(el);
             try { if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' }); } catch (e) {}
@@ -2734,6 +3525,11 @@
           select: function (sel, valOrLabel) {
             var el = page.q(sel); if (!el) throw new Error('元素未找到: ' + sel);
             if (el.disabled) throw new Error('元素已禁用，不能选择: ' + sel);
+            if (cascaderHostOf(el)) {
+              throw new Error(
+                '级联选择器不能使用 page.select 直接写值。请使用 page.selectOption(级联触发器或宿主, 末级选项文本[, {filter:"简短过滤词"}])。'
+              );
+            }
             var w = resolveWidget(el);
             if (w.native) return selectNativeOption(w.native, String(valOrLabel));
             if (w.decorated) return selectNativeOption(w.decorated, String(valOrLabel));
@@ -2768,7 +3564,7 @@
                 selector: us.selector,
                 tag: el.tagName || '',
                 type: el.type || '',
-                label: nearestLabel(el),
+                label: fieldLabelOf(el),
                 name: el.name || '',
                 placeholder: el.placeholder || '',
                 title: (el.getAttribute && el.getAttribute('title')) || '',
@@ -2779,7 +3575,7 @@
             for (var i = 0; i < all.length; i++) {
               var el = all[i];
               var fields = [
-                nearestLabel(el),
+                fieldLabelOf(el),
                 el.getAttribute && el.getAttribute('aria-label'),
                 el.getAttribute && el.getAttribute('placeholder'),
                 el.getAttribute && el.getAttribute('name'),
@@ -2854,6 +3650,11 @@
                 '。请用当前快照中该条目的 li 选择器、或完整条目标题文案作 within；禁止编造快照里没有的 class。');
             }
             var el = picked.winner.el;
+            if (cascaderOptionOf(el)) {
+              throw new Error(
+                '级联菜单选项禁止直接 clickByText。请使用 page.selectOption(级联触发器选择器, 完整目标选项文本[, {filter:"简短过滤词"}])。'
+              );
+            }
             el = retargetFileSelectClick(el);
             try { el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
             dispatchClick(el);
@@ -2900,6 +3701,8 @@
             var nestedCollapsed = 0;
             var selectorBudget = 30;
 
+            var FIELD_TAGS = { INPUT: 1, SELECT: 1, TEXTAREA: 1 };
+
             function clickableOf(el, tag) {
               var clickable = false;
               try {
@@ -2922,13 +3725,21 @@
             function consider(el) {
               if (out.length >= maxNodes) return;
               var tag = (el.tagName || '').toUpperCase();
-              if (TEXT_SKIP_TAGS[tag] && tag !== 'I') return;
+              var isField = !!FIELD_TAGS[tag];
+              if (TEXT_SKIP_TAGS[tag] && tag !== 'I' && !isField) return;
               if (isInsideAssistant(el)) return;
-              if (!isVisible(el) && !(fileRowOf(el) && fileSelectIcon(fileRowOf(el)) === el)) return;
-              if (isWrapperEl(el) && !isFileSelectRow(el)) return;
+              if (!isVisible(el) && !(fileRowOf(el) && fileSelectIcon(fileRowOf(el)) === el)) {
+                var keepHidden = false;
+                try { keepHidden = !!tagHostOf(el); } catch (eH) {}
+                if (!keepHidden) return;
+              }
+              if (isWrapperEl(el) && !isFileSelectRow(el) && !isField) return;
               var t = ownText(el);
               if (!t) {
-                if (isFileSelectRow(el)) t = fileRowLabel(el);
+                if (isField) {
+                  t = String((el.getAttribute && el.getAttribute('placeholder')) || el.value ||
+                    (el.getAttribute && el.getAttribute('aria-label')) || tag).trim();
+                } else if (isFileSelectRow(el)) t = fileRowLabel(el);
                 else if (fileRowOf(el) && fileSelectIcon(fileRowOf(el)) === el) t = '[select] ' + fileRowLabel(fileRowOf(el));
                 else return;
               }
@@ -2941,19 +3752,21 @@
                 } catch (err) {}
                 if (us) selectorBudget--;
               }
-              out.push({
+              var node = {
                 tag: tag,
                 text: t.slice(0, textLen),
                 cls: classNameOf(el),
                 clickable: clickableOf(el, tag),
                 selector: us
-              });
+              };
+              if (isField) applyFieldMeta(node, el);
+              out.push(node);
             }
 
             function walk(el, isRoot) {
               if (!el || out.length >= maxNodes) return;
               var tag = (el.tagName || '').toUpperCase();
-              if (!isRoot && TEXT_SKIP_TAGS[tag]) return;
+              if (!isRoot && TEXT_SKIP_TAGS[tag] && !FIELD_TAGS[tag]) return;
               consider(el);
               var children;
               try { children = el.children ? Array.from(el.children) : []; }
@@ -2999,6 +3812,7 @@
             var limit = Math.max(1, Math.min(Number(max) || MAX_LIST_OPTIONS, MAX_LIST_OPTIONS));
             var el = page.q(triggerSel);
             if (!el) throw new Error('下拉触发器未找到: ' + triggerSel);
+            var listCascade = cascaderHostOf(el);
             var w = resolveWidget(el);
             if (w.native) {
               var native = nativeOptionList(w.native, limit);
@@ -3016,7 +3830,8 @@
               max: limit,
               opened: opened,
               searchAvailable: !!findSearchInput(w.trigger),
-              truncated: list.length >= limit
+              truncated: list.length >= limit,
+              via: listCascade ? 'cascader' : ''
             });
           },
           // 在本控件搜索框输入 query，等待列表刷新后重新收割最多 max 项。
@@ -3026,6 +3841,7 @@
             var limit = Math.max(1, Math.min(Number(max) || MAX_LIST_OPTIONS, MAX_LIST_OPTIONS));
             var el = page.q(triggerSel);
             if (!el) throw new Error('下拉触发器未找到: ' + triggerSel);
+            var filterCascade = cascaderHostOf(el);
             var w = resolveWidget(el);
             if (w.native) {
               var native = nativeOptionList(w.native, limit);
@@ -3050,7 +3866,8 @@
               searchAvailable: typed || !!findSearchInput(w.trigger),
               truncated: list.length >= limit,
               query: q,
-              reason: typed ? '' : 'noSearchInput'
+              reason: typed ? '' : 'noSearchInput',
+              via: filterCascade ? 'cascader' : ''
             });
           },
           // 按文本匹配并点击唯一最优可见选项（精确>前缀>包含；轮询等待）。
@@ -3067,6 +3884,11 @@
               var r = chooseMatch(list, raw);
               if (r && r.winner) {
                 withSel(r.winner);
+                if (cascaderOptionOf(r.winner.el)) {
+                  throw new Error(
+                    '级联菜单选项禁止直接 clickOptionByText。请使用 page.selectOption(级联触发器选择器, 完整目标选项文本[, {filter:"简短过滤词"}])。'
+                  );
+                }
                 try { r.winner.el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
                 dispatchClick(r.winner.el);
                 return { ok: true, kind: 'action', text: r.winner.text, value: r.winner.value, selector: r.winner.selector, verified: null };
@@ -3101,12 +3923,38 @@
           },
           // 按模型给出的目标文本选择：先收割最多 500 项匹配；匹配不到且可搜索时用通用片段过滤后再匹配。
           // 唯一命中则点击；歧义或仍未命中则返回本控件选项目录（kind=query），交给模型决定下一项/过滤词。
-          selectOption: async function (triggerSel, text, opts) {
+          selectOption: async function selectOption(triggerSel, text, opts) {
             var o = opts || {};
+            if (Array.isArray(text)) {
+              var texts = [];
+              for (var ai = 0; ai < text.length; ai++) {
+                var one = String(text[ai] == null ? '' : text[ai]).trim();
+                if (one) texts.push(one);
+              }
+              if (!texts.length) throw new Error('selectOption: 目标文本为空');
+              var acc = [];
+              for (var aj = 0; aj < texts.length; aj++) {
+                acc.push(await selectOption(triggerSel, texts[aj], o));
+              }
+              var verified = true;
+              for (var ak = 0; ak < acc.length; ak++) {
+                if (!acc[ak] || acc[ak].ok === false || acc[ak].verified === false) verified = false;
+              }
+              return {
+                ok: verified, kind: 'mutation', via: 'multi',
+                count: acc.length, results: acc, verified: verified
+              };
+            }
             var raw = String(text || '').trim();
             if (!raw) throw new Error('selectOption: 目标文本为空');
-            var el = page.q(triggerSel);
-            if (!el) throw new Error('下拉触发器未找到: ' + triggerSel);
+            var triggerArg = triggerSel;
+            if (triggerSel && typeof triggerSel === 'object' && typeof triggerSel.selector === 'string') {
+              triggerArg = triggerSel.selector;
+            }
+            var el = page.q(triggerArg);
+            if (!el) throw new Error('下拉触发器未找到: ' + triggerArg);
+            var cascadeHost = cascaderHostOf(el);
+            if (cascadeHost) return await selectCascaderOption(el, raw, o);
             var w = resolveWidget(el);
             if (w.native) return selectNativeOption(w.native, raw);
             if (w.decorated && w.decorated.options && w.decorated.options.length) {
@@ -3211,6 +4059,7 @@
               var seenEl = new Set();
               for (var i = 0; i < all.length; i++) {
                 var e = all[i];
+                if (isCascaderChoice(e)) continue;
                 if (!isVisible(e)) continue;
                 var t = (e.innerText || e.textContent || '').trim();
                 if (!t) continue;
@@ -3234,16 +4083,31 @@
                 var sample = [];
                 for (var si = 0; si < cands.length && sample.length < 15; si++) sample.push(cands[si].text);
                 throw new Error('未找到文本为“' + raw + '”的复选框。' +
-                  (sample.length ? '当前可见候选：' + sample.join(' | ') : '页面上没有可见的复选框。'));
+                  (sample.length ? '当前可见候选：' + sample.join(' | ') : '页面上没有可见的复选框。') +
+                  '若目标在级联/下拉菜单里，请用 page.selectOption(触发器, 选项文本[, {filter:"短词"}])。');
               }
             } else {
-              el = page.q(String(target));
-              if (!el) throw new Error('元素未找到: ' + target);
-              if (!boxKindOf(el)) throw new Error('目标不是复选/单选框: ' + target);
+              var sel = target;
+              if (target && typeof target === 'object' && typeof target.selector === 'string') sel = target.selector;
+              el = page.q(String(sel));
+              if (!el) throw new Error('元素未找到: ' + sel);
+              if (isCascaderChoice(el)) {
+                throw new Error(
+                  '下拉/级联选项不能用 setChecked（菜单里的方框只是级联多选样式）。' +
+                  '请用 page.selectOption(级联触发器或宿主, 选项文本[, {filter:"2～3字"}])。' +
+                  '需要多个值时对每个值各调用一次，或传入文本数组。'
+                );
+              }
+              if (!boxKindOf(el)) throw new Error('目标不是复选/单选框: ' + sel);
+            }
+            function boxLabelText(node) {
+              try { return String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80); }
+              catch (e) { return ''; }
             }
             var cur = readBoxChecked(el);
             if (cur === wantB) {
-              return { ok: true, kind: 'mutation', changed: false, checked: cur, verified: true, note: '已是目标状态，未点击' };
+              return { ok: true, kind: 'mutation', changed: false, checked: cur, verified: true,
+                note: '已是目标状态，未点击', label: boxLabelText(el) };
             }
             dispatchClick(boxClickTarget(el));
             // 等框架把模型状态回写到 input.checked/类名（iView/element 等异步同步）
@@ -3251,7 +4115,8 @@
               await page.waitFor(function () { return readBoxChecked(el) === wantB; }, { timeout: 1500, poll: 100 });
             } catch (e) {}
             var now = readBoxChecked(el);
-            return { ok: true, kind: 'mutation', changed: now !== cur, checked: now, verified: now === wantB };
+            return { ok: true, kind: 'mutation', changed: now !== cur, checked: now, verified: now === wantB,
+              label: boxLabelText(el) };
           },
           waitFor: function (test, opts) {
             var o = opts || {};
@@ -3322,6 +4187,9 @@
           var args = Array.isArray(item.args) ? item.args : [];
           var value = await page[op].apply(page, args);
           results.push({ op: op, value: value });
+          // selectOption 未命中会返回 {ok:false,kind:'query'} 而不是抛错；
+          // 同一批后续 click（例如「下一步」）不应在选值失败后继续执行。
+          if (value && typeof value === 'object' && value.ok === false) break;
         }
         return {
           ok: true,

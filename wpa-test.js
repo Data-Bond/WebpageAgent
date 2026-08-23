@@ -145,7 +145,7 @@ const pm = bg.match(/helper名仅可为 ([a-zA-Z/]+)/);
 ok(!!pm, 'PLAYBOOK 存在 helper 白名单串');
 if (pm && m) {
   const promptOps = pm[1].split('/').filter(Boolean).sort();
-  const codeOpsPlus = codeOps.concat(['upload', 'ocr', 'ocrFill']).sort();
+  const codeOpsPlus = codeOps.concat(['upload', 'ocr', 'ocrFill', 'needAttach']).sort();
   ok(
     JSON.stringify(promptOps) === JSON.stringify(codeOpsPlus),
     'PLAYBOOK helper 枚举与 pagebridge 白名单一致' +
@@ -203,6 +203,66 @@ ok(/err\.code === 'LLM_TIMEOUT'/.test(bg), '超时错误有 LLM_TIMEOUT 标记')
 ok(/文本模型超时，正在重试/.test(bg), '超时后有重试状态文案');
 ok(/【文件列表勾选】/.test(bg), 'PLAYBOOK 含文件列表勾选说明');
 ok(/setChecked\(\{text:"完整文件名"\}/.test(bg), 'PLAYBOOK 要求用 setChecked 选文件');
+ok(/不要因为页面外观无变化而重复操作/.test(bg), 'PLAYBOOK：verified=true 即成功，不因页面无变化重试');
+ok(/助手已确认生效（verified=true/.test(bg), '变化摘要：helper verified 且无外观变化仍报成功');
+ok(/该勾选\/赋值已成功/.test(bg), '工具结果对 verified 成功写明判定');
+ok(/typeof target === 'object' && typeof target\.selector === 'string'/.test(bridge), 'setChecked 接受 {selector}');
+ok(/widgetSelectedTextNear/.test(bridge), '快照从级联/下拉宿主补已选文本');
+ok(/widgetSelectedText\(root\)/.test(bridge), 'formDigest 纳入级联已选文本');
+ok(/t === 'hidden' && !\(e\.name \|\| e\.id\)/.test(bridge), 'formDigest 纳入有 name/id 的 hidden');
+ok(/级联\/cascader 菜单项不是复选框，禁止用 setChecked/.test(bg), 'PLAYBOOK 区分级联菜单与复选框');
+ok(/function isCascaderChoice/.test(bridge), '级联菜单项不按表单复选框识别');
+ok(/下拉\/级联选项不能用 setChecked/.test(bridge), 'setChecked 遇到级联项时改指 selectOption');
+ok(/via: 'multi'/.test(bridge), 'selectOption 接受多个目标文本');
+ok(/不要整段 \.el-cascader__tags/.test(bridge), '已选文本只收标签，不混入筛选框输入');
+ok(/传入数组 page\.selectOption/.test(bg), 'PLAYBOOK 说明多选级联可传入文本数组');
+ok(!/学科分类等级联字段必须/.test(bg), 'PLAYBOOK 不把某一站的学科分类写成唯一级联规则');
+const checkboxStart = bridge.indexOf('var CHECKBOX_SEL');
+const checkboxEnd = bridge.indexOf('input[type="checkbox"], input[type="radio"]', checkboxStart);
+const checkboxSrc = checkboxStart >= 0 && checkboxEnd > checkboxStart
+  ? bridge.slice(checkboxStart, checkboxEnd) : '';
+ok(checkboxSrc && !/cascader/i.test(checkboxSrc), 'setChecked 候选不误收级联菜单项');
+ok(/function selectCascaderOption/.test(bridge), 'pagebridge 有级联选择完整闭环');
+ok(/selectCascaderOption\(el, raw, o\)/.test(bridge), 'selectOption 自动转入级联闭环');
+ok(/cascaderHostOf\(el\)/.test(bridge) && /selectCascaderOption\(el, cascVal, \{ filter: cascVal \}\)/.test(bridge),
+  '对级联触发器/筛选框非空 setVal 时改走完整 selectOption 闭环');
+ok(/via: 'cascader-filter-clear'/.test(bridge), '级联 setVal 空字符串清空筛选而不是抛目标为空');
+ok(/el-cascader__suggestion-item/.test(bridge), '可过滤级联建议项纳入选项收集');
+ok(/el-cascader__suggestion-panel/.test(bridge), '可过滤级联建议面板纳入弹层定位');
+ok(/function optionTextOf/.test(bridge), '级联选项文案优先取 node__label');
+ok(/acc\.length === 0 && round < 12/.test(bridge) && /await sleepMs\(120\)/.test(bridge),
+  '下拉/级联首轮空列表会等待布局再收割');
+const cascFnStart = bridge.indexOf('async function selectCascaderOption');
+const cascFn = cascFnStart >= 0
+  ? bridge.slice(cascFnStart, bridge.indexOf('function nativeOptionList', cascFnStart))
+  : '';
+ok(cascFn && !/page\.sleep/.test(cascFn), 'selectCascaderOption 验证循环不用尚未创建的 page.sleep');
+ok(/await sleepMs\(100\)/.test(cascFn), 'selectCascaderOption 验证循环使用 sleepMs');
+ok(/\.ivu-select-item/.test(bridge), 'iView 下拉选项纳入 OPTION_SEL');
+ok(/value\.ok === false\) break/.test(bridge), '同一批 operations 中 helper 返回 ok:false 时停止后续操作');
+ok(/function cascaderClickTarget/.test(bridge), '带复选框的级联节点点击勾选框而不是展开箭头');
+ok(/不用 aria-hidden/.test(bridge), '级联弹层不因 Element UI 误标 aria-hidden 而被当成关闭');
+ok(/function cascaderLeafLabel/.test(bridge), '级联建议路径按末级标签匹配');
+ok(/via: 'cascader-open'/.test(bridge), '点击级联触发器会走 ensureOpenDropdown 而不是点被盖住的只读框');
+ok(/if \(el\.readOnly\) return false/.test(bridge), '过滤输入识别排除只读级联触发器');
+ok(/function tagHostOf/.test(bridge), '识别点击才出现输入框的标签词云宿主');
+ok(/function fillTagWidget/.test(bridge), 'setVal 可写入标签词云');
+ok(/var tagHost = tagHostOf\(el\)/.test(bridge) && /fillTagWidget\(tagHost, val\)/.test(bridge),
+  'setVal 对标签宿主改走 fillTagWidget');
+ok(/var TAG_HOST_SEL/.test(bridge) && /\.auto-tag/.test(bridge), '标签宿主含 .auto-tag 等通用 class');
+ok(/'tag-bulk'/.test(bridge), '标签批量写入返回 via tag-bulk');
+ok(/actionableHidden = !!tagHostOf\(el\)/.test(bridge), '快照收录标签区内隐藏输入框');
+ok(/tagHostOf\(el\) \? 'tags'/.test(bridge), '快照把标签词云标成 tags widget');
+ok(/【标签输入】/.test(bg), 'PLAYBOOK 含标签输入');
+ok(/page\.setVal\(选择器, "词1;词2;词3"\)/.test(bg), 'PLAYBOOK 说明一次写入多个词');
+ok(!/关键词（最少三个）/.test(bg), 'PLAYBOOK 不写某一站栏目名');
+ok(/function fieldLabelOf/.test(bridge) && /label: fieldLabelOf\(el\)/.test(bridge),
+  '快照用表单项 label 标注隐藏标签输入框');
+ok(/级联菜单选项禁止直接 page\.click/.test(bridge), '禁止直接点击级联菜单旧 li 选择器');
+ok(/li\[id\^="cascader-menu-"\]/.test(bridge), '级联 cascader-menu ID 纳入选项收集');
+ok(/级联选择尚未完成：当前只完成了过滤\/查询/.test(bg), '引擎阻止过滤后直接 action=done');
+ok(/上一轮网页操作未成功或未通过验证，禁止直接宣称完成/.test(bg), '引擎阻止失败操作后的完成声明');
+ok(/opsIncludeMutation\(parsed\.operations\) && !selectionPending/.test(bg), '单步自动收束也要求级联选择已完成');
 ok(/s\.length >= 10/.test(bridge), '长数字 id（雪花）视为稳定选择器');
 
 function isStableId(id) {
@@ -218,11 +278,21 @@ ok(/\.[A-Za-z0-9]{1,8}$/.test('AMD_opt_vasp_result.txt'), '文件名后缀可识
 ok(!/\.[A-Za-z0-9]{1,8}$/.test('opt_codes'), '目录名无后缀不误判为文件');
 
 ok(!/\bocrFill\s*:/.test(allowedBody), 'ocrFill 不在 pagebridge 白名单（由 background 拦截）');
+ok(!/\bneedAttach\s*:/.test(allowedBody), 'needAttach 不在 pagebridge 白名单（由 background 拦截）');
 ok(/function ocrFillAndSubmit/.test(bg), 'background 实现 ocrFillAndSubmit');
 ok(/opName === 'ocrFill'/.test(bg), 'runOperationsSafe 拦截 ocrFill');
 ok(/【验证码】/.test(bg), 'PLAYBOOK 含【验证码】小节');
 ok(/禁止拆成 ocr\+setVal\+click/.test(bg), 'PLAYBOOK 禁止验证码拆步');
 ok(/ocrFill 放最后/.test(bg), 'PLAYBOOK 要求账号密码与 ocrFill 同批且 ocrFill 最后');
+const ocrFillBody = bg.slice(bg.indexOf('async function ocrFillAndSubmit'), bg.indexOf('function mergePageOpResults'));
+ok(/inputMissing: true/.test(ocrFillBody), 'ocrFill 输入框消失时拒绝并标记 inputMissing');
+ok(/已不在页面上——上一次提交很可能已登录成功/.test(ocrFillBody), 'ocrFill 拒绝信息指明登录已成功');
+ok(ocrFillBody.indexOf("op: 'waitFor'") >= 0 &&
+   ocrFillBody.indexOf("op: 'waitFor'") < ocrFillBody.indexOf('await ocrPageSelector'),
+  'ocrFill 前置核查在 OCR/刷新之前，不白花 OCR 调用');
+ok(/重新 ocrFill 的唯一依据/.test(bg), 'PLAYBOOK 限定重试 ocrFill 的依据');
+ok(/收到该错误说明已登录成功/.test(bg), 'PLAYBOOK 解释 inputMissing 的含义');
+ok(/Math\.abs\(report\.domChanged\) > 30000/.test(bg), 'SPA 大幅 DOM 变化后等 DOM 安静再快照');
 ok(/page\.ocrFill\(图选择器/.test(bg), '默认系统提示词含 page.ocrFill');
 ok(/jsonNudgeCount/.test(bg), '非 JSON 输出有纠正重试计数');
 ok(/JSON_NUDGE_MAX = 2/.test(bg), '非 JSON 最多纠正两次');
@@ -279,7 +349,13 @@ try {
     bg.slice(boundStart, boundEnd) +
       '\nthis.isBoundedInstruction = isBoundedInstruction;' +
       '\nthis.countMutatingOps = countMutatingOps;' +
-      '\nthis.opsIncludeMutation = opsIncludeMutation;',
+      '\nthis.opsIncludeMutation = opsIncludeMutation;' +
+      '\nthis.needsAttachBody = needsAttachBody;' +
+      '\nthis.decideAttachMode = decideAttachMode;' +
+      '\nthis.hasExtractIntent = hasExtractIntent;' +
+      '\nthis.isUploadOnlyTask = isUploadOnlyTask;' +
+      '\nthis.opsIncludeNeedAttach = opsIncludeNeedAttach;' +
+      '\nthis.historySuggestsFillFromAttach = historySuggestsFillFromAttach;',
     boundSandbox
   );
   ok(typeof boundSandbox.isBoundedInstruction === 'function', 'isBoundedInstruction 可在测试中加载');
@@ -298,6 +374,88 @@ ok(boundSandbox.countMutatingOps([
   { op: 'clickByText', args: ['选择数据文件'] },
   { op: 'setChecked', args: [{ text: 'a.txt' }, true] }
 ]) === 2, '可数出打包的多个改页操作');
+
+ok(typeof boundSandbox.decideAttachMode === 'function', 'decideAttachMode 可在测试中加载');
+const attachFiles = [{ name: '简历.pdf', key: 'f1' }];
+function attachMode(task, extra) {
+  const x = extra || {};
+  return boundSandbox.decideAttachMode({
+    task: task,
+    files: x.files === undefined ? attachFiles : x.files,
+    lastOps: x.lastOps || [],
+    alreadyPinned: !!x.alreadyPinned,
+    continueAsk: !!x.continueAsk,
+    messages: x.messages || [],
+    modelAskedNeedAttach: !!x.modelAskedNeedAttach
+  });
+}
+const attachCases = [
+  { task: '点击选择数据文件', want: 'catalog', note: '单步点击只要目录' },
+  { task: '把这两个文件发布出去', want: 'catalog', note: '纯发布只要目录' },
+  { task: '上传这两个文件', want: 'catalog', note: '上传指令不抽正文' },
+  { task: '把论文发布出去', want: 'catalog', note: '领域词论文不触发抽正文' },
+  { task: '申请试用账号', want: 'catalog', note: '开放式申请默认只要目录' },
+  { task: '根据附件填写姓名和单位', want: 'pin', note: '来源×动作→钉正文' },
+  { task: '见附件', want: 'pin', note: '见附件→钉正文' },
+  { task: '填表', want: 'pin', note: '填表→钉正文' },
+  { task: 'fill the form from the attached file', want: 'pin', note: '英文 fill from attachment→钉正文' },
+  { task: 'extract fields from the document', want: 'pin', note: '英文 extract from document→钉正文' },
+  { task: '根据附件填写', want: 'none', files: [], note: '无附件则为 none' },
+  { task: '根据附件填写', want: 'none', alreadyPinned: true, note: '已钉入则为 none' }
+];
+attachCases.forEach(function (c) {
+  ok(attachMode(c.task, c) === c.want, c.note + '（' + c.want + '）');
+});
+ok(attachMode('选一下单位', { lastOps: [{ op: 'setVal', args: ['#name', '张三'] }] }) === 'pin', '上一步已在填表则补钉正文');
+ok(attachMode('把这两个文件发布出去', { lastOps: [{ op: 'setVal', args: ['#title', 'x'] }] }) === 'catalog', 'upload-only 即使上步 setVal 也不抽正文');
+ok(attachMode('好的继续', {
+  continueAsk: true,
+  messages: [{ role: 'assistant', content: '{"operations":[{"op":"setVal","args":["#x","v"]}]}' }]
+}) === 'pin', '续答且历史在填表时钉正文');
+ok(attachMode('随便点一下', { modelAskedNeedAttach: true }) === 'pin', '模型声明 needAttach 则钉正文');
+ok(boundSandbox.historySuggestsFillFromAttach([
+  { role: 'assistant', content: '{"action":"execute","operations":[{"op":"setVal","args":["#a","1"]}]}' }
+]), '历史含 setVal 视为正在填表');
+ok(!boundSandbox.historySuggestsFillFromAttach([
+  { role: 'assistant', content: '{"action":"execute","operations":[{"op":"click","args":["#ok"]}]}' }
+]), '仅点击的历史不视为填表');
+ok(boundSandbox.opsIncludeNeedAttach([{ op: 'needAttach' }]), '可识别 needAttach op');
+ok(!boundSandbox.opsIncludeNeedAttach([{ op: 'setVal', args: ['#a', '1'] }]), '普通填值不算 needAttach');
+ok(/【附件边界】/.test(bg), 'PLAYBOOK 含附件边界');
+ok(/【字段限制】/.test(bg), 'PLAYBOOK 要求按当前快照读字段限制');
+ok(/换一个网站就按新快照来/.test(bg), 'PLAYBOOK 禁止把某一站的栏目或字数写成通用规则');
+ok(!/800字以内/.test(bg), 'PLAYBOOK 不写死英文描述 800 字');
+ok(/function fieldMetaOf/.test(bridge), '快照从当前页收集 maxlength/hint/字数');
+ok(/applyFieldMeta\(entry, el\)/.test(bridge), '表单快照条目挂上当前页字段限制');
+ok(/if \(isField\) applyFieldMeta\(node, el\)/.test(bridge), 'inspect 对 INPUT/TEXTAREA 也挂字段限制');
+ok(/var FIELD_TAGS = \{ INPUT: 1, SELECT: 1, TEXTAREA: 1 \}/.test(bridge), 'inspect 不再跳过表单输入框');
+ok(/output: rec\.output == null \? '' : rec\.output/.test(bg), '下载详情里的 output 是模型原文');
+ok(/没有该块时禁止编造文件内容/.test(bg), 'PLAYBOOK 无附件数据块时禁止编造');
+ok(/op":"needAttach"/.test(bg), 'PLAYBOOK 声明 needAttach');
+ok(/opsIncludeNeedAttach\(parsed\.operations\)/.test(bg), 'execute 路径拦截 needAttach');
+ok(/pinAttachBodyIfNeeded\(\{ force: true \}\)/.test(bg), 'needAttach 强制钉入正文');
+ok(/kind: 'attach-data'/.test(bg), '附件正文以 attach-data 钉入对话');
+ok(/function toApiChatMessages/.test(bg), '发给模型前剥离内部 kind');
+ok(/messages: toApiChatMessages\(messages\)/.test(bg), 'chat payload 使用纯 role/content');
+ok(/m\.kind === 'attach-data'/.test(bg), '持久化历史跳过附件正文');
+ok(/const snapP = sendToContentRetry/.test(bg), '快照与按需抽附件并行');
+ok(/messages\.concat\(\[snapshotUser\]\)/.test(bg), '每步变化的快照放在请求末尾');
+
+const apiStart = bg.indexOf('\nfunction toApiChatMessages');
+const apiEnd = bg.indexOf('\nfunction chatCompletionsPayload');
+ok(apiStart >= 0 && apiEnd > apiStart, '可截取 toApiChatMessages');
+const apiSandbox = {};
+try {
+  vm.runInNewContext(bg.slice(apiStart, apiEnd) + '\nthis.toApiChatMessages = toApiChatMessages;', apiSandbox);
+  const apiMsgs = apiSandbox.toApiChatMessages([
+    { role: 'system', content: 's', kind: 'sys' },
+    { role: 'user', content: 'u', kind: 'attach-data' }
+  ]);
+  ok(apiMsgs.length === 2 && !('kind' in apiMsgs[0]) && !('kind' in apiMsgs[1]), 'API 消息不含内部 kind');
+  ok(apiMsgs[0].role === 'system' && apiMsgs[1].content === 'u', 'API 消息保留 role/content');
+} catch (e) {
+  ok(false, '加载 toApiChatMessages 失败: ' + (e && e.message));
+}
 
 const extractStart = bg.indexOf('const AGENT_ACTIONS');
 const extractEnd = bg.indexOf('\nfunction buildUserPrompt');
@@ -343,6 +501,17 @@ ok(extractSandbox.extractJson('我处于已选文件页面\n{"action":"click","a
   '中文夹杂 action=click 时可执行');
 ok(extractSandbox.extractJson(mixedLog).operations[0].args[1] === 'k1',
   '手册里的 {"op":"upload"} 不会抢走后面的 execute');
+const extraBracket = '{"action":"execute","summary":"筛","expect":"出","operations":[{"op":"setVal","args":["#a","计算机"]]}]}';
+const extraParsed = extractSandbox.extractJson(extraBracket);
+ok(extraParsed && extraParsed.action === 'execute' && extraParsed.operations[0].args[1] === '计算机',
+  'args 末尾多余 ] 的 execute JSON 可修好');
+ok(extractSandbox.extractJson('{"action":"execute","operations":[{"op":"upload","args":[".in",["k1","k2"]]}]}').operations[0].args[1][1] === 'k2',
+  '合法嵌套数组 args 不被多余括号修复误伤');
+const kimiBroken = '{"action":"execute","summary":"级联过滤搜索学科分类关键词“计算物理”","expect":"级联面板根据过滤词显示匹配路径，便于选择合适学科分类","operations":[{"op":"selectOption","args":["div.x","计算物理",{"filter":"物理"}]]}';
+const kimiParsed = extractSandbox.extractJson(kimiBroken);
+ok(kimiParsed && kimiParsed.action === 'execute' && kimiParsed.operations[0].op === 'selectOption' &&
+  kimiParsed.operations[0].args[2].filter === '物理',
+  'selectOption 末尾写成 }]]}（漏了操作对象的 }）时可修好');
 ok(/function pickPageCaptchaImage/.test(bridge), 'pagebridge 有 captcha 魔术值现场解析');
 ok(/function captchaShaped/.test(bridge), 'pagebridge 有验证码几何特征');
 ok(/function adjacentCaptchaHint/.test(bridge), 'pagebridge 用邻接短文案判定验证码，不用整表 innerText');
@@ -681,6 +850,34 @@ const consumedFallback = JSON.stringify({
 });
 ok(analyzeSandbox.analyzeRunResult(consumedFallback).verified && !analyzeSandbox.analyzeRunResult(consumedFallback).failed,
   '组件清空后 required 校验失败仍视为上传已提交');
+
+const checkedAlready = JSON.stringify({
+  kind: 'batch',
+  results: [{
+    op: 'setChecked',
+    value: {
+      ok: true, kind: 'mutation', changed: false, checked: true, verified: true,
+      note: '已是目标状态，未点击'
+    }
+  }]
+});
+const checkedInfo = analyzeSandbox.analyzeRunResult(checkedAlready);
+ok(checkedInfo.mutation && checkedInfo.verified && !checkedInfo.failed,
+  'setChecked 已是目标状态视为 verified mutation');
+
+const changeStart = bg.indexOf('function changeSummary');
+const changeEnd = bg.indexOf('\nfunction checkRepeat');
+const changeSandbox = {};
+try {
+  vm.runInNewContext(bg.slice(changeStart, changeEnd) + '\nthis.changeSummary = changeSummary;', changeSandbox);
+  ok(typeof changeSandbox.changeSummary === 'function', 'changeSummary 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 changeSummary 失败: ' + (e && e.message));
+}
+ok(String(changeSandbox.changeSummary({ anyChange: false }, { mutation: true, verified: true })).indexOf('助手已确认生效') >= 0,
+  'verified 且无外观变化时摘要为已确认生效');
+ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
+  '无 helper 证实时仍报页面无变化');
 
 if (failures) {
   console.error('\n' + failures + ' 项断言失败');
