@@ -7,7 +7,7 @@
   var INSTALLED = '__assistantPage';
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
   // 已打开页面靠此号决定是否重注入 MAIN world；面板角标读 manifest。
-  var BRIDGE_VERSION = '3.0.0';
+  var BRIDGE_VERSION = '3.0.1';
 
   function install() {
     var scriptAborted = false;
@@ -796,7 +796,12 @@
       if (!isVisible(el, st)) return null;
       var empty = inEmptyState(el);
       var pointer = !!(st && String(st.cursor || '').toLowerCase() === 'pointer');
-      if (!pointer && !empty) return null;
+      var role = '';
+      try { role = String(el.getAttribute && el.getAttribute('role') || '').toLowerCase(); } catch (e2) {}
+      var clickableTag = tag === 'A' || tag === 'BUTTON' || tag === 'SUMMARY' ||
+        role === 'button' || role === 'link' || role === 'tab' || role === 'menuitem' ||
+        !!(el.getAttribute && el.getAttribute('onclick'));
+      if (!pointer && !empty && !clickableTag) return null;
       var score = 0;
       if (pointer) score += 20;
       if (empty) score += 40;
@@ -1712,6 +1717,7 @@
     }
 
     function snapshot() {
+      var tSnap = Date.now();
       var all = queryAllDeep(INTERACTIVE_SELECTOR);
       // 大型后台页面常有数百菜单项。优先保留可见表单控件和可操作控件，
       // 避免前 200 个导航链接把页面深处的表单挤出快照。
@@ -1728,19 +1734,30 @@
         return score(b) - score(a);
       });
       var elements = [];
+      var skipHidden = 0;
+      var skipNoSel = 0;
+      var wpaSeq = 0;
       // 全部 SELECT 的候选预览总预算：多 SELECT 表单若不限量会挤占整个快照（每步都发给大模型）
       var optionsBudget = 500;
       for (var i = 0; i < ordered.length && elements.length < 300; i++) {
         var el = ordered[i];
         var tag = el.tagName ? el.tagName.toUpperCase() : '';
         var type = el.getAttribute ? (el.getAttribute('type') || '') : '';
-        // files 类型只审查可见性，仍收集
-        var skipAsLink = (tag === 'A' && el.getAttribute && el.getAttribute('href'));
         if (tag === 'INPUT' && !isInteractive('INPUT', type)) continue;
         if (tag === 'OPTION') continue;
         var sel;
         try { sel = uniqueSelector(el); } catch (e) { sel = null; }
-        if (!sel || !sel.selector) continue;
+        if (!sel || !sel.selector) {
+          try {
+            wpaSeq += 1;
+            var wpaId = 'n' + wpaSeq;
+            el.setAttribute('data-wpa', wpaId);
+            sel = { selector: '[data-wpa="' + wpaId + '"]', unique: true };
+          } catch (e2) {
+            skipNoSel++;
+            continue;
+          }
+        }
         // 悬浮所在行才显示的操作控件（mouseenter 该行才出现，默认 display:none）、
         // 以及隐藏的 file 输入框：也收入快照并标注 hidden——合成事件点击对隐藏元素同样有效。
         var visible = isVisible(el);
@@ -1748,7 +1765,7 @@
           var actionableHidden = el.matches && el.matches(
             '[data-file-act], [data-act], [data-action], [data-op], .file-action, [role="button"], [onclick], input[type="file"], select, .select2-hidden-accessible'
           );
-          if (!actionableHidden) continue;
+          if (!actionableHidden) { skipHidden++; continue; }
         }
         // 文本：A/BUTTON 取全文；SPAN/I/DIV/LABEL 也取（图标按钮可能无文本，靠 icon/dataAct 识别；LABEL 多为复选框文字）
         var text = '';
@@ -1835,7 +1852,10 @@
         activeMenu: extractActiveMenu(),
         interactiveCount: all.length,
         snapshotCount: elements.length,
-        truncated: all.length > elements.length,
+        truncated: elements.length >= 300,
+        skipHidden: skipHidden,
+        skipNoSel: skipNoSel,
+        snapshotMs: Date.now() - tSnap,
         domLen: domLength(),
         domDigest: domDigest(),
         statusMessages: statusMessages(),

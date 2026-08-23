@@ -97,7 +97,7 @@ const PLAYBOOK_END = '【运行时手册·结束】';
 const RUNTIME_PLAYBOOK =
   PLAYBOOK_BEGIN + '\n' +
   '以下规则优先级高于历史会话中的旧说明：\n' +
-  '【动作输出格式】每一轮只输出一个 JSON 对象，禁止在 JSON 前后写中文说明或 Markdown。执行网页动作时必须是 {"action":"execute","summary":"意图","expect":"预期变化","operations":[{"op":"helper名","args":[参数...]}]}。helper名仅可为 setVal/click/select/upload/getText/findControls/clickByText/inspect/optionTexts/clickOptionByText/findOption/selectOption/listOptions/filterSelect/setChecked/sleep/waitFor/probe/ocr/ocrFill；一次只组合相互依赖且可共同验证的少量操作。禁止把 helper 名当成 action（错误示例：{"action":"click"}），action 只能是 execute、ask 或 done。禁止输出 plan/script，禁止输出可执行的 document./window. 代码；文件上传必须使用结构化 upload。散文或手册摘抄里的 {"op":"upload"} 片段不是合法动作，缺少 action 字段会被丢弃。用户给出的 document.querySelector("css") 或长 CSS 路径只是选择器字符串：抽出中间的 css 作为 click/inspect 的 selector 或 clickByText 的 within，不要写成脚本。\n' +
+  '【动作输出格式】每一轮只输出一个 JSON 对象，禁止在 JSON 前后写中文说明或 Markdown。执行网页动作时必须是 {"action":"execute","summary":"意图","expect":"预期变化","operations":[{"op":"helper名","args":[参数...]}]}。helper名仅可为 setVal/click/select/upload/getText/findControls/clickByText/inspect/optionTexts/clickOptionByText/findOption/selectOption/listOptions/filterSelect/setChecked/sleep/waitFor/probe/ocr/ocrFill。同一表单里多个独立输入框的 setVal 必须放在同一次 execute，全部填完再 click 提交，禁止每个字段单独一轮；只有相互依赖、需要先看上一步结果才能继续的操作才拆成多轮。禁止把 helper 名当成 action（错误示例：{"action":"click"}），action 只能是 execute、ask 或 done。禁止输出 plan/script，禁止输出可执行的 document./window. 代码；文件上传必须使用结构化 upload。散文或手册摘抄里的 {"op":"upload"} 片段不是合法动作，缺少 action 字段会被丢弃。用户给出的 document.querySelector("css") 或长 CSS 路径只是选择器字符串：抽出中间的 css 作为 click/inspect 的 selector 或 clickByText 的 within，不要写成脚本。\n' +
   'upload 参数格式为 ["文件输入或上传按钮/容器 selector","附件 key"]；控件 multiple=true 时可把第二参数设为 key 数组，一次性上传多个附件，禁止对同一控件连续单文件上传（会覆盖前一个）。选择器可以是 input[type=file]，也可以是可见的「上传文件」按钮或其外包层，引擎会定位到真正的 file 输入。禁止 click 上传按钮（会弹出操作系统文件框，助手无法填入）。iView/Element/Ant Design 等组件在 change 后清空 input 是正常现象，verified 以赋值是否成功为准。\n' +
   'waitFor 在结构化操作中只接受 selector 字符串与可选 {timeout,poll}，不能传函数。timeout 上限 8000ms，超时表示该选择器未出现，不是崩溃。\n' +
   '【waitFor 用法】只等待快照里已经出现过、或你能确定即将出现的 selector。登录、点提交、整页跳转后不要猜测登录后页面的选择器去 waitFor：点击后结束本步，引擎会等待页面稳定并给你下一轮快照。不要用同一个猜测选择器反复 waitFor。\n' +
@@ -123,11 +123,17 @@ const RUNTIME_PLAYBOOK =
   '【指令闭环】当前指令写明的操作一旦成功，必须立刻 {"action":"done","summary":"..."}。禁止根据快照里新出现的弹层、文件列表、确定按钮去猜测用户没写的下一步。用户只说 clickByText「选择数据文件」时，点开选择框即完成，不要自行勾选文件或点确定。不要等用户在指令末尾写“停止/结束”。指令没覆盖的事一律不做；缺信息时 action:ask，不要发明流程。开放式任务（如“把这两个文件发布出去”）仍按该目标做到完成再 done。\n' +
   PLAYBOOK_END;
 
+const MODERN_SYSTEM_PROMPT =
+  "你是网页智能助手，根据用户当前指令在已打开的网页上操作。每轮只输出一个 JSON。action 只能是 execute、ask 或 done。执行操作用 {\"action\":\"execute\",\"summary\":\"...\",\"expect\":\"...\",\"operations\":[{\"op\":\"助手名\",\"args\":[...]}]}。禁止输出 plan/script，禁止编造快照里没有的 CSS。同一表单内多个独立字段的 setVal 必须放在同一次 execute，填完再 click 提交。具体助手与验证规则以【运行时手册】为准。";
+
 function withRuntimePlaybook(content) {
   let sys = String(content || '');
   const b = sys.indexOf(PLAYBOOK_BEGIN);
   const e = sys.indexOf(PLAYBOOK_END);
   if (b >= 0 && e >= b) sys = (sys.slice(0, b) + sys.slice(e + PLAYBOOK_END.length)).trim();
+  if (/["']action["']\s*:\s*["']plan["']/.test(sys) || /page\.q\s*\(/.test(sys) || /"script"\s*:/.test(sys)) {
+    sys = MODERN_SYSTEM_PROMPT;
+  }
   return sys + '\n\n' + RUNTIME_PLAYBOOK;
 }
 function storageSet(obj) {
@@ -876,6 +882,56 @@ function estimateMessageChars(messages) {
   }
   for (let i = 0; i < (messages || []).length; i++) add(messages[i] && messages[i].content);
   return n;
+}
+
+function compactMessagesForLlm(messages) {
+  const before = estimateMessageChars(messages);
+  const list = Array.isArray(messages) ? messages : [];
+  if (list.length < 14) {
+    return { messages: list, before: before, after: before, compacted: false };
+  }
+  const TOOL_KEEP = 8;
+  const TOOL_LIMIT = 500;
+  let sys = null;
+  const rest = [];
+  for (let i = 0; i < list.length; i++) {
+    if (!sys && list[i] && list[i].role === 'system') sys = list[i];
+    else rest.push(list[i]);
+  }
+  const tailFrom = Math.max(0, rest.length - TOOL_KEEP);
+  const out = [];
+  if (sys) out.push(sys);
+  for (let i = 0; i < rest.length; i++) {
+    const m = rest[i];
+    if (i >= tailFrom || (i === 0 && m && m.role === 'user')) {
+      out.push(m);
+      continue;
+    }
+    if (m && m.role === 'user') {
+      const c = String(m.content || '');
+      if (c.length > TOOL_LIMIT && c.indexOf('【执行结果】') === 0) {
+        out.push({ role: m.role, content: c.slice(0, TOOL_LIMIT) + '\n…(更早步骤的执行结果已压缩)' });
+        continue;
+      }
+    }
+    out.push(m);
+  }
+  const after = estimateMessageChars(out);
+  return { messages: out, before: before, after: after, compacted: after < before };
+}
+
+function compactAttachForStep(attachMsg, step) {
+  if (!attachMsg) return { msg: null, mode: 'none', chars: 0 };
+  const c = String(attachMsg.content || '');
+  if (step <= 2 || c.length <= 8000) {
+    return { msg: attachMsg, mode: 'full', chars: c.length };
+  }
+  const compact = {
+    role: 'user',
+    content: '【附件数据】完整正文已在本任务第 1–2 步提供（共 ' + c.length + ' 字）。请沿用已提取的字段值，不要要求重新上传。开头摘录：\n' +
+      c.slice(0, 3500) + '\n…\n' + c.slice(-1200)
+  };
+  return { msg: compact, mode: 'compact', chars: String(compact.content).length };
 }
 
 function isReasonerModel(model) {
@@ -2320,6 +2376,7 @@ function truncate(str, max) {
 function stringifySnapshot(snapshot, maxChars) {
   const max = maxChars || SNAPSHOT_MAX_CHARS;
   const copy = Object.assign({}, snapshot || {});
+  delete copy.snapshotMs;
   copy.elements = Array.isArray(copy.elements) ? copy.elements.slice() : [];
   copy.images = Array.isArray(copy.images) ? copy.images.slice(0, 20) : [];
   copy.textActions = Array.isArray(copy.textActions) ? copy.textActions.slice(0, 120) : [];
@@ -2335,11 +2392,12 @@ function stringifySnapshot(snapshot, maxChars) {
     copy.truncated = true;
     text = JSON.stringify(copy);
   }
-  return text.length <= max ? text : JSON.stringify({
+  const out = text.length <= max ? text : JSON.stringify({
     title: copy.title || '', url: copy.url || '', heading: copy.heading || '',
     activeMenu: copy.activeMenu || '', truncated: true,
     error: '页面快照元数据超过上下文上限'
   });
+  return out;
 }
 
 async function sendToContent(tabId, msg) {
@@ -2435,7 +2493,9 @@ async function waitForDomQuiet(tabId, cancelRef) {
       const key = [probe.domLen, probe.domDigest, probe.formDigest, probe.interactiveCount].join('|');
       if (key === previous) stableRounds++;
       else { previous = key; stableRounds = 0; }
-      if (stableRounds >= 2) return;
+      if (stableRounds >= 2) {
+        return;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 350));
   }
@@ -3286,9 +3346,11 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
       role: 'user',
       content: '【页面快照】只执行最新【当前指令】写明的步骤；做完立刻 action:done。【历史背景·勿再执行】仅供参考，不要重做，也不要根据快照发明指令里没有的下一步。\n' + snapshotText
     };
-    const contextMessages = attachMsg
-      ? messages.concat([attachMsg, snapshotUser])
-      : messages.concat([snapshotUser]);
+    const histCompact = compactMessagesForLlm(messages);
+    const attCompact = compactAttachForStep(attachMsg, i);
+    const contextMessages = attCompact.msg
+      ? histCompact.messages.concat([attCompact.msg, snapshotUser])
+      : histCompact.messages.concat([snapshotUser]);
 
     let llmText;
     let llmTries = 0;
