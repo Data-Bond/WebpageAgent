@@ -1058,6 +1058,7 @@
   // ============ DOM 构建（shadow root） ============
   const host = document.createElement('div');
   host.id = '__ai-assistant-root';
+  host.setAttribute('data-wpa-ignore', '1');
   const shadow = host.attachShadow({ mode: 'closed' });
   const sheet = new CSSStyleSheet();
   try {
@@ -1318,6 +1319,14 @@
 
     const maxSteps = mk('input', null, { type: 'number', min: 1, max: 100, placeholder: '15', value: '15' });
     settingsPanel.appendChild(mkLabel('最大步数', maxSteps));
+    const snapshotPiiMask = mk('input', null, { type: 'checkbox' });
+    snapshotPiiMask.style.width = 'auto';
+    snapshotPiiMask.style.display = 'inline-block';
+    snapshotPiiMask.style.marginRight = '8px';
+    const snapshotPiiRow = mk('label');
+    snapshotPiiRow.appendChild(snapshotPiiMask);
+    snapshotPiiRow.appendChild(document.createTextNode('快照脱敏（邮箱 / 手机 / 证件号；默认关）'));
+    settingsPanel.appendChild(snapshotPiiRow);
 
     const settingsActions = mk('div', 'settings-actions');
     const saveBtn = mk('button', 'btn primary', { textContent: '保存' });
@@ -1509,7 +1518,7 @@
       saveSkillBtn: saveSkillBtn, skillLibBtn: skillLibBtn,
       settingsPanel, textProvidersList, ocrProvidersList,
       addTextProviderBtn, addOcrProviderBtn,
-      systemPromptText, systemPromptOcr, maxSteps, saveBtn, testBtn, settingsStatus,
+      systemPromptText, systemPromptOcr, maxSteps, snapshotPiiMask, saveBtn, testBtn, settingsStatus,
       downloadConfigBtn, uploadConfigBtn, uploadConfigInput,
       skillLibrary, skillSearch, skillFilterAll, skillFilterMatch, skillList,
       importSkillsBtn, exportSelectedBtn, exportAllBtn, importSkillsInput, skillLibStatus,
@@ -2321,6 +2330,7 @@
       systemPromptText: els.systemPromptText.value,
       systemPromptOcr: els.systemPromptOcr.value,
       maxSteps: Number(els.maxSteps.value) || 15,
+      snapshotPiiMask: !!(els.snapshotPiiMask && els.snapshotPiiMask.checked),
       // 标签由下拉选择驱动（selectTag 实时持久化），此处带回当前选择以备保存
       selectedTextTag: currentConfig ? currentConfig.selectedTextTag : null,
       selectedOcrTag: currentConfig ? currentConfig.selectedOcrTag : null
@@ -2344,6 +2354,7 @@
     els.systemPromptOcr.value = cfg.systemPromptOcr != null ? cfg.systemPromptOcr : (defs.systemPromptOcr || '');
 
     if (cfg.maxSteps != null) els.maxSteps.value = cfg.maxSteps;
+    if (els.snapshotPiiMask) els.snapshotPiiMask.checked = cfg.snapshotPiiMask === true;
 
     // 保存最新配置并重建标签下拉
     currentConfig = cfg;

@@ -6,7 +6,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、pagebridge.js 的 BRIDGE_VERSION 相同。
-  var CONTENT_VERSION = '3.2.0';
+  var CONTENT_VERSION = '4.0.0';
   if (window.__dsContentLoaded === CONTENT_VERSION) return;
   try {
     if (typeof window.__dsContentDispose === 'function') window.__dsContentDispose();
@@ -218,15 +218,12 @@
     if (list.length > 20) throw new Error('单次结构化操作超过 20 个，请拆分后执行并逐步验证');
     var results = [];
     var lastProbe = null;
-    for (var i = 0; i < list.length; i++) {
-      var item = list[i] || {};
-      if (item.op === 'upload') {
-        var args = Array.isArray(item.args) ? item.args : [];
-        results.push({ op: 'upload', value: await uploadInIsolatedWorld(args[0], args[1]) });
-        continue;
-      }
-      var res = await dsReq('runOps', { operations: [item] }, 300000);
+    var batch = [];
+    async function flushBatch() {
+      if (!batch.length) return;
+      var res = await dsReq('runOps', { operations: batch }, 300000);
       var data = res && res.data;
+      batch = [];
       if (!res || res.ok === false || !data || data.ok === false) {
         throw new Error((data && data.error) || '结构化操作桥接失败');
       }
@@ -235,6 +232,17 @@
       try { parsed = JSON.parse(data.result); } catch (e) {}
       if (parsed && Array.isArray(parsed.results)) results = results.concat(parsed.results);
     }
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i] || {};
+      if (item.op === 'upload') {
+        await flushBatch();
+        var args = Array.isArray(item.args) ? item.args : [];
+        results.push({ op: 'upload', value: await uploadInIsolatedWorld(args[0], args[1]) });
+        continue;
+      }
+      batch.push(item);
+    }
+    await flushBatch();
     return { ok: true, result: JSON.stringify({ kind: 'batch', results: results }), probe: lastProbe };
   }
 
@@ -262,9 +270,22 @@
       var cmd = msg.cmd;
       if (cmd === 'processPdf' || cmd === 'pdfFirstPageToPng') return;
       if (cmd === 'abortRun') {
+        try {
+          var mask = document.getElementById('wpa-busy-mask');
+          if (mask) {
+            mask.style.display = 'none';
+            mask.setAttribute('hidden', '');
+          }
+        } catch (eMask) {}
         document.dispatchEvent(new CustomEvent('__ds_abort'));
         sendResponse({ ok: true });
         return;
+      }
+      if (cmd === 'setBusyMask') {
+        dsReq('setBusyMask', { on: !!msg.on }, 4000).then(function () {
+          sendResponse({ ok: true });
+        });
+        return true;
       }
 
       if (cmd === 'setFiles') {
@@ -308,11 +329,15 @@
         });
         return true;
 
-      } else if (cmd === 'snapshot' || cmd === 'runScript' || cmd === 'probe') {
-        var payload = {};
-        if (cmd === 'runScript') payload.script = msg.script || '';
-        // runScript 可能耗时较长（等待页面异步操作），给予更长超时，避免被误判失败后重试导致重复副作用
-        var timeout = cmd === 'runScript' ? 300000 : (cmd === 'probe' ? 6000 : 12000);
+      } else if (cmd === 'runScript') {
+        sendResponse({ ok: false, error: 'runScript 已禁用' });
+        return;
+
+      } else if (cmd === 'snapshot' || cmd === 'probe' || cmd === 'submitFailureContext') {
+        var payload = cmd === 'submitFailureContext'
+          ? { targets: msg.targets || [] }
+          : (cmd === 'snapshot' ? { full: !!msg.full } : {});
+        var timeout = cmd === 'probe' ? 6000 : (cmd === 'snapshot' && msg.full ? 20000 : 12000);
         dsReq(cmd, payload, timeout).then(function (res) {
           // res = {id, ok, data}. data 可能是 snapshot 对象 或 runScript 结果
           // 对于 runScript 失败，data = {ok:false, error:"..."} ，需要展平 error 字段。

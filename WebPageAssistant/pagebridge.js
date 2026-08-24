@@ -7,12 +7,69 @@
   var INSTALLED = '__assistantPage';
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
   // 已打开页面靠此号决定是否重注入 MAIN world；面板角标读 manifest。
-  var BRIDGE_VERSION = '3.2.0';
+  var BRIDGE_VERSION = '4.0.0';
 
   function install() {
     var scriptAborted = false;
-    function onAbortSignal() { scriptAborted = true; }
+    function isIgnored(el) {
+      if (!el) return true;
+      try {
+        if (el.id === 'wpa-busy-mask' || el.id === '__ai-assistant-root') return true;
+        if (el.getAttribute && el.getAttribute('data-wpa-ignore')) return true;
+        if (el.closest && el.closest('#__ai-assistant-root, #wpa-busy-mask, [data-wpa-ignore]')) return true;
+      } catch (e) {}
+      return false;
+    }
+    function isInsideAssistant(el) { return isIgnored(el); }
+    function hideBusyMask() {
+      try {
+        var el = document.getElementById('wpa-busy-mask');
+        if (el) {
+          el.style.display = 'none';
+          el.setAttribute('hidden', '');
+        }
+      } catch (e) {}
+    }
+    function ensureBusyMask() {
+      var el = document.getElementById('wpa-busy-mask');
+      if (el) return el;
+      el = document.createElement('div');
+      el.id = 'wpa-busy-mask';
+      el.setAttribute('data-wpa-ignore', '1');
+      el.setAttribute('aria-hidden', 'true');
+      el.style.cssText = 'position:fixed;inset:0;z-index:2147483640;background:rgba(15,23,42,0.12);cursor:wait;display:none;';
+      function block(ev) {
+        try { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation(); } catch (e2) {}
+      }
+      el.addEventListener('click', block, true);
+      el.addEventListener('mousedown', block, true);
+      el.addEventListener('wheel', block, true);
+      el.addEventListener('keydown', block, true);
+      var root = document.documentElement || document.body;
+      if (root) root.appendChild(el);
+      return el;
+    }
+    function showBusyMask() {
+      var el = ensureBusyMask();
+      if (!el) return;
+      el.removeAttribute('hidden');
+      el.style.display = 'block';
+    }
+    function setBusyMaskVisible(on) {
+      if (on) showBusyMask();
+      else hideBusyMask();
+    }
+    function onAbortSignal() {
+      hideBusyMask();
+      scriptAborted = true;
+    }
     document.addEventListener('__ds_abort', onAbortSignal);
+
+    var snapIndex = [];
+    var prevSnapEls = null;
+    var lastSnapElements = [];
+    var lastSampleAt = 0;
+    function markSample() { lastSampleAt = Date.now(); }
 
     var SHADOW_SEP = ' >>> ';
     var FRAME_SEP = ' >>frame>> ';
@@ -70,7 +127,11 @@
             try { if (matches[mj].contentDocument) roots.push(matches[mj].contentDocument); } catch (e) {}
           }
         } else {
-          return all ? matches : (matches[0] || null);
+          var kept = [];
+          for (var ki = 0; ki < matches.length; ki++) {
+            if (!isIgnored(matches[ki])) kept.push(matches[ki]);
+          }
+          return all ? kept : (kept[0] || null);
         }
       }
       return all ? [] : null;
@@ -87,7 +148,7 @@
       for (var i = 0; i < roots.length; i++) {
         var hits = safeAll(roots[i], raw);
         for (var j = 0; j < hits.length; j++) {
-          if (!seen.has(hits[j])) { seen.add(hits[j]); out.push(hits[j]); }
+          if (!seen.has(hits[j]) && !isIgnored(hits[j])) { seen.add(hits[j]); out.push(hits[j]); }
         }
       }
       return out;
@@ -339,6 +400,10 @@
     var FORM_ITEM_SEL = '.ivu-form-item, .ivu-form-item, .el-form-item, .ant-form-item, .n-form-item, .van-field, .layui-form-item, .form-group, .form-item';
     var FIELD_HINT_SEL = '.ivu-form-item-error-tip, .ivu-form-item-error-tip, .el-form-item__error, .ant-form-item-explain, .ant-form-item-explain-error, .n-form-item-feedback, .van-field__error-message, .layui-form-mid, .help-block, .invalid-feedback, .form-text, .error-tip';
     var FIELD_COUNT_SEL = '.ivu-input-word-count, .ivu-input-word-count, .el-input__count, .el-input__count-inner, .ant-input-data-count, .n-input-word-count, [class*="word-count"]';
+    var FIELD_LABEL_SEL = '.ivu-form-item-label, .el-form-item__label, .ant-form-item-label, label';
+    var FIELD_HINT_CLASS_RE = /help|tip|extra|explain|remark|note|limit|desc/i;
+    var FIELD_CONSTRAINT_RE = /字以上|字以内|必填|选填|只能|不超过|至少|不可|required|optional|\bmax\b|\bmin\b|characters?/i;
+    var STAR_CHAR_RE = /[\u002a\uff0a]/;
 
     function attrLen(el, name) {
       if (!el || !el.getAttribute) return 0;
@@ -370,6 +435,166 @@
 
     // 把当前页自己的限制挂到输入框上（placeholder / maxlength / 旁侧计数与报错），
     // 不内置任何网站的栏目或字数。换页后自然换成新限制。
+    function classNameOfNode(node) {
+      if (!node) return '';
+      try {
+        return String(node.className && node.className.baseVal != null ? node.className.baseVal : (node.className || ''));
+      } catch (e) { return ''; }
+    }
+
+    function visibleShortText(node, minLen, maxLen) {
+      if (!node) return '';
+      var t = '';
+      try { t = String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e) { t = ''; }
+      if (!t) return '';
+      if (t.length < (minLen || 6) || t.length > (maxLen || 80)) return '';
+      return t;
+    }
+
+    function parseMinLengthFromHint(s) {
+      var t = String(s || '');
+      var m = t.match(/(\d+)\s*字以上/) || t.match(/at\s*least\s*(\d+)/i) ||
+        t.match(/min(?:imum)?(?:\s*length)?\s*[:=]?\s*(\d+)/i);
+      return m ? Number(m[1]) : 0;
+    }
+
+    function stripStarLabel(s) {
+      var t = String(s || '').replace(/\s+/g, ' ').trim();
+      t = t.replace(/^[\u002a\uff0a]+\s*/, '').replace(/\s*[\u002a\uff0a]+\s*$/, '');
+      t = t.replace(/(^|\s)[\u002a\uff0a](?=\s|$)/g, ' ').replace(/\s+/g, ' ').trim();
+      return t;
+    }
+
+    function pseudoHasStar(el) {
+      if (!el) return false;
+      try {
+        var win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+        if (!win || !win.getComputedStyle) return false;
+        var parts = [];
+        try { parts.push(win.getComputedStyle(el, '::before').content); } catch (e1) {}
+        try { parts.push(win.getComputedStyle(el, ':before').content); } catch (e2) {}
+        try { parts.push(win.getComputedStyle(el, '::after').content); } catch (e3) {}
+        try { parts.push(win.getComputedStyle(el, ':after').content); } catch (e4) {}
+        for (var i = 0; i < parts.length; i++) {
+          if (parts[i] && STAR_CHAR_RE.test(String(parts[i]))) return true;
+        }
+      } catch (e) {}
+      return false;
+    }
+
+    function classLooksRequired(cn) {
+      var s = String(cn || '');
+      return /(?:^|[\s_-])(?:is-required|ivu-form-item-required|ant-form-item-required|el-form-item-required|n-form-item-required)(?:[\s_-]|$)/i.test(s);
+    }
+
+    function labelLooksRequired(lab) {
+      if (!lab) return false;
+      var t = '';
+      try { t = String(lab.innerText || lab.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e) { t = ''; }
+      if (/^[\u002a\uff0a]/.test(t)) return true;
+      try {
+        var kids = lab.children ? Array.from(lab.children) : [];
+        for (var i = 0; i < kids.length; i++) {
+          var kt = String(kids[i].innerText || kids[i].textContent || '').replace(/\s+/g, ' ').trim();
+          if (kt === '*' || kt === '\uFF0A') return true;
+        }
+      } catch (e2) {}
+      return pseudoHasStar(lab);
+    }
+
+    function isStarRequired(el) {
+      if (!el) return false;
+      try {
+        if (el.required) return true;
+        if (el.getAttribute && el.getAttribute('aria-required') === 'true') return true;
+      } catch (e) {}
+      var item = formItemOf(el);
+      if (item) {
+        if (classLooksRequired(classNameOfNode(item))) return true;
+        try {
+          var lab = item.querySelector && item.querySelector(FIELD_LABEL_SEL);
+          if (labelLooksRequired(lab)) return true;
+          if (pseudoHasStar(item)) return true;
+        } catch (e2) {}
+      }
+      try {
+        var ownLab = el.labels && el.labels[0];
+        if (labelLooksRequired(ownLab)) return true;
+      } catch (e3) {}
+      return false;
+    }
+
+    function isFillableControl(el, entry) {
+      var tag = String((el && el.tagName) || (entry && entry.tag) || '').toUpperCase();
+      var type = String((entry && entry.type) || (el && el.getAttribute && el.getAttribute('type')) || (el && el.type) || '').toLowerCase();
+      if (/^(button|submit|reset|image|hidden)$/.test(type)) return false;
+      if (tag === 'BUTTON') return false;
+      if (tag === 'A' && !(entry && (entry.box || entry.widget || entry.cascaderRole))) return false;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      if (entry && (entry.contentEditable || entry.box || entry.widget || entry.cascaderRole)) return true;
+      try { if (el && el.isContentEditable) return true; } catch (e) {}
+      return false;
+    }
+
+    function isControlEmpty(el, entry) {
+      if (entry && entry.box) return !entry.checked;
+      var val = entry && entry.value != null ? String(entry.value) : '';
+      if (val && val !== '[REDACTED]') return false;
+      if (!el) return true;
+      try {
+        var type = String(el.type || '').toLowerCase();
+        if (type === 'file') return !(el.files && el.files.length);
+        if (el.tagName === 'SELECT') {
+          if (el.selectedIndex < 0) return true;
+          var opt = el.options[el.selectedIndex];
+          return !opt || !String(opt.value || opt.text || '').trim();
+        }
+        if ('value' in el && String(el.value || '').trim()) return false;
+        if (widgetSelectedTextNear(el)) return false;
+        if (el.isContentEditable && String(el.textContent || '').trim()) return false;
+      } catch (e) {}
+      return true;
+    }
+
+    function collectFormItemSnippets(item, el, maxN) {
+      var out = [];
+      var seen = {};
+      var cap = Math.max(1, Math.min(Number(maxN) || 6, 8));
+      if (!item) return out;
+      function push(t) {
+        var s = String(t || '').replace(/\s+/g, ' ').trim();
+        if (s.length < 6 || s.length > 80) return;
+        if (seen[s]) return;
+        var curVal = '';
+        try { curVal = String((el && el.value) || '').trim(); } catch (e) {}
+        if (curVal && s === curVal) return;
+        seen[s] = true;
+        out.push(s.slice(0, 80));
+      }
+      try { push(firstTextIn(item, FIELD_HINT_SEL, 80)); } catch (e0) {}
+      var nodes = [];
+      try { nodes = item.querySelectorAll ? Array.from(item.querySelectorAll('*')) : []; } catch (e1) { nodes = []; }
+      for (var i = 0; i < nodes.length && out.length < cap; i++) {
+        var n = nodes[i];
+        if (el && (n === el || (el.contains && el.contains(n)))) continue;
+        try {
+          if (n.matches && n.matches(FIELD_COUNT_SEL)) continue;
+        } catch (e2) {}
+        var cn = classNameOfNode(n);
+        var t = visibleShortText(n, 6, 80);
+        if (!t) continue;
+        if (FIELD_HINT_CLASS_RE.test(cn) || FIELD_CONSTRAINT_RE.test(t)) push(t);
+      }
+      if (item.parentElement) {
+        var sibs = [item.previousElementSibling, item.nextElementSibling];
+        for (var s = 0; s < sibs.length && out.length < cap; s++) {
+          var st = visibleShortText(sibs[s], 6, 80);
+          if (st && FIELD_CONSTRAINT_RE.test(st)) push(st);
+        }
+      }
+      return out.slice(0, cap);
+    }
+
     function fieldMetaOf(el) {
       if (!el) return null;
       var tag = String(el.tagName || '').toUpperCase();
@@ -387,7 +612,17 @@
       var hint = firstTextIn(item, FIELD_HINT_SEL, 80);
       var ph = '';
       try { ph = String(el.getAttribute && el.getAttribute('placeholder') || '').replace(/\s+/g, ' ').trim(); } catch (e3) {}
+      if (!hint || hint === ph) {
+        var extras = collectFormItemSnippets(item || (el && el.parentElement), el, 3);
+        for (var hi = 0; hi < extras.length; hi++) {
+          if (extras[hi] && extras[hi] !== ph && extras[hi] !== hint) { hint = extras[hi]; break; }
+        }
+      }
       if (hint && hint !== ph) meta.hint = hint;
+      if (!meta.minLength) {
+        var parsedMin = parseMinLengthFromHint(hint);
+        if (parsedMin) meta.minLength = parsedMin;
+      }
       var count = firstTextIn(item, FIELD_COUNT_SEL, 24);
       if (!count && el.parentElement) count = firstTextIn(el.parentElement, FIELD_COUNT_SEL, 24);
       if (count) meta.wordCount = count;
@@ -405,18 +640,18 @@
 
     function fieldLabelOf(el) {
       var t = nearestLabel(el);
-      if (t) return t;
+      if (t) return stripStarLabel(t).slice(0, 120);
       try {
         var item = formItemOf(el);
         if (item && item.querySelector) {
-          var lab = item.querySelector('.ivu-form-item-label, .el-form-item__label, .ant-form-item-label, label');
+          var lab = item.querySelector(FIELD_LABEL_SEL);
           if (lab && lab !== el) {
             var lt = String(lab.innerText || lab.textContent || '').replace(/\s+/g, ' ').trim();
-            if (lt) return lt.slice(0, 120);
+            if (lt) return stripStarLabel(lt).slice(0, 120);
           }
         }
       } catch (e) {}
-      try { return String(el.getAttribute && el.getAttribute('aria-label') || '').trim(); }
+      try { return stripStarLabel(el.getAttribute && el.getAttribute('aria-label') || '').slice(0, 120); }
       catch (e2) { return ''; }
     }
 
@@ -792,11 +1027,6 @@
         if (role === 'list' || role === 'tree' || role === 'group') return true;
       } catch (e) {}
       return false;
-    }
-
-    function isInsideAssistant(el) {
-      try { return !!(el.closest && el.closest('#__ai-assistant-root')); }
-      catch (e) { return false; }
     }
 
     function isDisabledTree(el) {
@@ -1273,6 +1503,17 @@
         if (String(winners[j].text).length !== shortest) break;
         tied.push(winners[j]);
         distinct[normText(winners[j].text)] = true;
+      }
+      if (/添加/.test(needle)) {
+        var btns = [];
+        for (var bi = 0; bi < tied.length; bi++) {
+          var bel = tied[bi].el;
+          var btag = String((bel && bel.tagName) || '').toUpperCase();
+          var brole = '';
+          try { brole = String(bel.getAttribute && bel.getAttribute('role') || '').toLowerCase(); } catch (eB) {}
+          if (btag === 'BUTTON' || brole === 'button') btns.push(tied[bi]);
+        }
+        if (btns.length) tied = btns;
       }
       if (Object.keys(distinct).length > 1) {
         return { ambiguousEls: tied };
@@ -1924,7 +2165,8 @@
       var icon = fileSelectIcon(row);
       if (!icon) return el;
       if (el === icon) return el;
-      if (el === row || isFileNameEl(el)) return icon;
+      var tag = (el.tagName || '').toUpperCase();
+      if (el === row || isFileNameEl(el) || tag === 'IMG') return icon;
       return el;
     }
 
@@ -1984,7 +2226,105 @@
     }
     // ============ 复选/单选框识别结束 ============
 
+    function isNumericIdx(sel) {
+      if (typeof sel === 'number' && isFinite(sel)) return Math.floor(sel);
+      if (typeof sel === 'string' && /^\d+$/.test(String(sel).trim())) return parseInt(String(sel).trim(), 10);
+      return null;
+    }
+
+    function describeTarget(t) {
+      if (t == null) return '';
+      if (typeof t === 'number' && isFinite(t)) return String(t);
+      if (typeof t === 'string') return t;
+      if (typeof t === 'object') {
+        var parts = [];
+        if (t.idx != null) parts.push('idx=' + t.idx);
+        if (typeof t.text === 'string' && t.text) parts.push('text=' + t.text);
+        if (typeof t.selector === 'string' && t.selector) parts.push(t.selector);
+        if (parts.length) return parts.join(' ');
+        try { return JSON.stringify(t).slice(0, 200); } catch (e) {}
+      }
+      return String(t);
+    }
+
+    function fragileCssHint(sel) {
+      var s = String(sel || '');
+      if (/data-id\s*=/.test(s) || /(?:^|[\s>#.])#\d/.test(s) || /\[id=['"]?\d/.test(s) || /\\3[0-9a-f]/i.test(s)) {
+        return ' 数字/data-id 选择器常失效，请改用 setChecked({text:"完整文件名"}, true)';
+      }
+      return '';
+    }
+
+    function notFoundError(sel) {
+      var desc = describeTarget(sel);
+      return new Error('元素未找到: ' + desc + fragileCssHint(desc));
+    }
+
+    function resolveTarget(sel) {
+      if (sel == null || sel === '') return null;
+      var n = isNumericIdx(sel);
+      if (n != null) {
+        var hit = snapIndex[n];
+        if (!hit) throw new Error('序号已过期，请用本轮快照 idx');
+        return hit;
+      }
+      if (sel && typeof sel === 'object' && !Array.isArray(sel)) {
+        if (sel.idx != null) return resolveTarget(sel.idx);
+        if (typeof sel.selector === 'string' && sel.selector) return queryDeep(sel.selector);
+        if (typeof sel.text === 'string') return queryDeep(sel.selector || '');
+        return null;
+      }
+      return queryDeep(String(sel));
+    }
+
+    function isOverlayEl(el) {
+      if (!el || !el.closest) return false;
+      try {
+        if (el.closest('dialog, [role="dialog"], [role="alertdialog"]')) return true;
+      } catch (e) {}
+      try {
+        var node = el;
+        var hops = 0;
+        while (node && hops < 16) {
+          var cn = '';
+          try {
+            cn = String(node.className && node.className.baseVal != null ? node.className.baseVal : (node.className || ''));
+          } catch (e2) { cn = ''; }
+          if (/(?:^|[\s_-])(?:modal|popup|dialog|drawer|overlay)(?:[\s_-]|$)/i.test(cn)) return true;
+          node = node.parentElement;
+          hops++;
+        }
+      } catch (e) {}
+      return false;
+    }
+
+    function formatOutlineLine(entry, isNew, inOverlay) {
+      function attr(key, val) {
+        if (val === true) return ' ' + key;
+        if (val == null || val === '' || val === false) return '';
+        var s = String(val).replace(/\s+/g, ' ').trim().slice(0, 40);
+        if (!s) return '';
+        return ' ' + key + '=' + s;
+      }
+      var tag = (entry && entry.tag) || '';
+      return (inOverlay ? '\t' : '') + (isNew ? '*' : '') + '[' + (entry && entry.idx) + ']<' + tag
+        + attr('label', entry && entry.label)
+        + attr('text', entry && entry.text)
+        + attr('value', entry && entry.value)
+        + attr('box', entry && entry.box)
+        + attr('checked', entry && entry.checked === true)
+        + attr('hidden', !!(entry && entry.hidden))
+        + attr('widget', entry && entry.widget)
+        + attr('dataAct', entry && entry.dataAct)
+        + attr('icon', entry && entry.icon)
+        + attr('required', !!(entry && entry.required))
+        + attr('minLength', entry && entry.minLength)
+        + attr('hint', entry && entry.hint)
+        + '>';
+    }
+
     function probeSignals() {
+      markSample();
       return JSON.parse(JSON.stringify({
         url: location.href || '',
         title: document.title || '',
@@ -1999,8 +2339,130 @@
       }));
     }
 
-    function snapshot() {
+
+    function isOverflowScrollable(el) {
+      if (!el || el.nodeType !== 1 || isIgnored(el)) return false;
+      var tag = (el.tagName || '').toUpperCase();
+      if (tag === 'OPTION') return false;
+      var st;
+      try {
+        var win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+        st = win.getComputedStyle(el);
+      } catch (e) { return false; }
+      if (!st) return false;
+      var oy = String(st.overflowY || st.overflow || '');
+      if (oy !== 'auto' && oy !== 'scroll') return false;
+      return (el.scrollHeight || 0) > (el.clientHeight || 0) + 2;
+    }
+    function isTinyDropdownPanel(el) {
+      if (!el) return false;
+      var ch = el.clientHeight || 0;
+      if (ch >= 80) return false;
+      try {
+        var role = el.getAttribute && String(el.getAttribute('role') || '').toLowerCase();
+        if (role === 'listbox' || role === 'menu') return true;
+        var cn = String(el.className || '');
+        if (/dropdown|select-dropdown|picker-panel|el-select|ivu-select-dropdown|ant-select-dropdown/i.test(cn)) return true;
+      } catch (e) {}
+      return ch < 40;
+    }
+    function nearestOverflowAncestor(el) {
+      var n = el;
+      while (n && n.nodeType === 1) {
+        if (isOverflowScrollable(n)) return n;
+        n = n.parentElement;
+      }
+      return document.scrollingElement || document.documentElement;
+    }
+    function collectScrollableCandidates() {
+      var nodes = queryAllDeep('*');
+      var raw = [];
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        if (!isOverflowScrollable(el) || isTinyDropdownPanel(el)) continue;
+        var top = el.scrollTop || 0;
+        var below = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0) - top);
+        raw.push({
+          el: el,
+          top: Math.round(top),
+          below: Math.round(below),
+          unrevealed: Math.round(top + below),
+          clientHeight: el.clientHeight || 0
+        });
+      }
+      var keep = [];
+      for (var a = 0; a < raw.length; a++) {
+        var drop = false;
+        for (var b = 0; b < raw.length; b++) {
+          if (a === b) continue;
+          try {
+            if (raw[a].el.contains(raw[b].el) || raw[b].el.contains(raw[a].el)) {
+              if (raw[a].unrevealed < raw[b].unrevealed) { drop = true; break; }
+              if (raw[a].unrevealed === raw[b].unrevealed && raw[a].el.contains(raw[b].el)) { drop = true; break; }
+            }
+          } catch (eC) {}
+        }
+        if (!drop) keep.push(raw[a]);
+      }
+      function overlayBonus(el) {
+        try { return !!(el.closest && el.closest('dialog, [role="dialog"], .modal, .el-dialog, .ivu-modal, .ant-modal')); }
+        catch (e) { return false; }
+      }
+      function formBonus(el) {
+        try { return !!(el.querySelector && el.querySelector('form, input, select, textarea, [data-wpa-i]')); }
+        catch (e) { return false; }
+      }
+      keep.sort(function (x, y) {
+        function score(c) {
+          var s = 0;
+          if (overlayBonus(c.el)) s += 400;
+          if (formBonus(c.el)) s += 200;
+          s += Math.min(c.below, 4000) / 10;
+          if (c.clientHeight >= 80) s += 40;
+          return s;
+        }
+        return score(y) - score(x);
+      });
+      return { all: keep, shown: keep.slice(0, 20) };
+    }
+    function doScroll(target, dir) {
+      dir = String(dir || 'down').toLowerCase();
+      if (dir !== 'up' && dir !== 'down') throw new Error('scroll: 方向只能是 up 或 down');
+      var se = document.scrollingElement || document.documentElement;
+      var box = se;
+      var via = 'page';
+      if (target !== 'page' && target !== 'window') {
+        var el = null;
+        try { el = resolveTarget(target); } catch (eR) { el = null; }
+        if (!el) throw new Error('scroll: 未找到目标: ' + target);
+        box = nearestOverflowAncestor(el);
+        via = (box === se || box === document.documentElement || box === document.body) ? 'page' : 'ancestor';
+      }
+      var before = box.scrollTop || 0;
+      var step = Math.max(80, Math.floor((box.clientHeight || 400) * 0.85));
+      var max = Math.max(0, (box.scrollHeight || 0) - (box.clientHeight || 0));
+      var next = dir === 'down' ? before + step : before - step;
+      if (next < 0) next = 0;
+      if (next > max) next = max;
+      box.scrollTop = next;
+      try { box.dispatchEvent(new Event('scroll', { bubbles: true })); } catch (eS) {}
+      var after = box.scrollTop || 0;
+      return {
+        ok: true,
+        scrolledPx: after - before,
+        atStart: after <= 1,
+        atEnd: after >= max - 1,
+        via: via
+      };
+    }
+
+    function snapshot(opts) {
       var tSnap = Date.now();
+      var full = !!(opts && opts.full);
+      var l0Cap = full ? 500 : 300;
+      snapIndex = [];
+      lastSnapElements = [];
+      markSample();
       var all = queryAllDeep(INTERACTIVE_SELECTOR);
       // 大型后台页面常有数百菜单项。优先保留可见表单控件和可操作控件，
       // 避免前 200 个导航链接把页面深处的表单挤出快照。
@@ -2019,28 +2481,15 @@
       var elements = [];
       var skipHidden = 0;
       var skipNoSel = 0;
-      var wpaSeq = 0;
+      var idx = 0;
       // 全部 SELECT 的候选预览总预算：多 SELECT 表单若不限量会挤占整个快照（每步都发给大模型）
       var optionsBudget = 500;
-      for (var i = 0; i < ordered.length && elements.length < 300; i++) {
+      for (var i = 0; i < ordered.length && elements.length < l0Cap; i++) {
         var el = ordered[i];
         var tag = el.tagName ? el.tagName.toUpperCase() : '';
         var type = el.getAttribute ? (el.getAttribute('type') || '') : '';
         if (tag === 'INPUT' && !isInteractive('INPUT', type)) continue;
         if (tag === 'OPTION') continue;
-        var sel;
-        try { sel = uniqueSelector(el); } catch (e) { sel = null; }
-        if (!sel || !sel.selector) {
-          try {
-            wpaSeq += 1;
-            var wpaId = 'n' + wpaSeq;
-            el.setAttribute('data-wpa', wpaId);
-            sel = { selector: '[data-wpa="' + wpaId + '"]', unique: true };
-          } catch (e2) {
-            skipNoSel++;
-            continue;
-          }
-        }
         // 悬浮所在行才显示的操作控件（mouseenter 该行才出现，默认 display:none）、
         // 以及隐藏的 file 输入框：也收入快照并标注 hidden——合成事件点击对隐藏元素同样有效。
         var visible = isVisible(el);
@@ -2070,7 +2519,6 @@
         if (el.getAttribute) {
           dataAct = el.getAttribute('data-file-act') || el.getAttribute('data-act') || el.getAttribute('data-action') || el.getAttribute('data-op') || '';
         }
-        var cls = (el.className && el.className.toString) ? String(el.className).trim().slice(0, 80) : '';
         // 复选/单选框语义：box 标记 + 当前勾选状态（点击包装器是 toggle，模型必须先读状态再决定操作）
         var box = '';
         try { box = boxKindOf(el); } catch (e) {}
@@ -2085,7 +2533,11 @@
             if (shown) value = shown.slice(0, 200);
           }
         } catch (e) { value = ''; }
+        idx += 1;
+        snapIndex[idx] = el;
+        try { el.setAttribute('data-wpa-i', String(idx)); } catch (eAttr) {}
         var entry = {
+          idx: idx,
           tag: tag,
           type: el.getAttribute ? (el.getAttribute('type') || '') : '',
           name: el.getAttribute ? (el.getAttribute('name') || '') : '',
@@ -2098,14 +2550,12 @@
           text: text,
           disabled: !!el.disabled,
           readOnly: !!el.readOnly,
-          required: !!el.required || !!(el.getAttribute && el.getAttribute('aria-required') === 'true'),
+          required: isStarRequired(el),
           accept: el.getAttribute ? (el.getAttribute('accept') || '') : '',
           multiple: !!el.multiple,
           contentEditable: !!(el.isContentEditable || (el.getAttribute && el.getAttribute('contenteditable') === 'true')),
-          unique: !!sel.unique,
           active: inMenuContainer(el) && isMenuActive(el),
           hidden: !visible,
-          cls: cls,
           dataAct: dataAct,
           icon: icon,
           title: el.getAttribute ? (el.getAttribute('title') || '').slice(0, 60) : '',
@@ -2114,8 +2564,7 @@
           checked: box ? readBoxChecked(el) : undefined,
           cascaderRole: isCascaderSearchInput(el)
             ? 'filter'
-            : (cascaderHostOf(el) ? 'trigger-or-control' : undefined),
-          selector: sel.selector
+            : (cascaderHostOf(el) ? 'trigger-or-control' : undefined)
         };
         applyFieldMeta(entry, el);
         // 原生 SELECT 附带候选预览（value/text，标记当前选中项），模型可据此一步取值，无需先读选项；
@@ -2139,14 +2588,49 @@
         }
         elements.push(entry);
       }
+      lastSnapElements = elements;
+      var starFields = collectStarFields(elements);
+      var outlineLines = [];
+      var nextPrev = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+      for (var oi = 0; oi < elements.length; oi++) {
+        var ent = elements[oi];
+        var live = snapIndex[ent.idx];
+        if (nextPrev && live) nextPrev.add(live);
+        var isNew = !!(prevSnapEls && live && !prevSnapEls.has(live));
+        outlineLines.push(formatOutlineLine(ent, isNew, isOverlayEl(live)));
+      }
+      prevSnapEls = nextPrev;
+      var sc = collectScrollableCandidates();
+      var seenScroll = typeof Set !== 'undefined' ? new Set() : null;
+      for (var sk = 1; sk < snapIndex.length; sk++) {
+        if (snapIndex[sk] && seenScroll) seenScroll.add(snapIndex[sk]);
+      }
+      for (var sj = 0; sj < sc.shown.length; sj++) {
+        var cand = sc.shown[sj];
+        var existingIdx = 0;
+        for (var ek = 1; ek < snapIndex.length; ek++) {
+          if (snapIndex[ek] === cand.el) { existingIdx = ek; break; }
+        }
+        if (!existingIdx) {
+          idx += 1;
+          snapIndex[idx] = cand.el;
+          existingIdx = idx;
+          try { cand.el.setAttribute('data-wpa-i', String(existingIdx)); } catch (eIdx) {}
+        }
+        outlineLines.push('[' + existingIdx + ']<' + (cand.el.tagName || 'DIV') + ' scrollable top=' + cand.top + ' below=' + cand.below + '>');
+      }
       return JSON.parse(JSON.stringify({
+        outline: outlineLines.join('\n'),
+        starFields: starFields,
         title: document.title || '',
         url: location.href || '',
         heading: extractHeading(),
         activeMenu: extractActiveMenu(),
         interactiveCount: all.length,
         snapshotCount: elements.length,
-        truncated: elements.length >= 300,
+        scrollableShown: sc.shown.length,
+        scrollableTotal: sc.all.length,
+        truncated: elements.length >= l0Cap || sc.all.length > sc.shown.length,
         skipHidden: skipHidden,
         skipNoSel: skipNoSel,
         snapshotMs: Date.now() - tSnap,
@@ -2159,6 +2643,93 @@
         textActions: collectPageTextActions(),
         elements: elements
       }));
+    }
+
+    function collectStarFields(elements) {
+      var out = [];
+      var seenItem = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+      var list = Array.isArray(elements) ? elements : [];
+      for (var i = 0; i < list.length; i++) {
+        var ent = list[i];
+        if (!ent || !ent.required) continue;
+        var live = snapIndex[ent.idx];
+        if (!isFillableControl(live, ent)) continue;
+        var item = live ? formItemOf(live) : null;
+        if (seenItem && item) {
+          if (seenItem.has(item)) continue;
+          seenItem.add(item);
+        }
+        out.push({
+          idx: ent.idx,
+          label: stripStarLabel(ent.label || ent.text || ''),
+          empty: isControlEmpty(live, ent),
+          hint: String(ent.hint || '').slice(0, 80)
+        });
+      }
+      out.sort(function (a, b) {
+        if (!!a.empty !== !!b.empty) return a.empty ? -1 : 1;
+        return (a.idx || 0) - (b.idx || 0);
+      });
+      return out;
+    }
+
+    function collectSubmitFailureContext(targets) {
+      var star = [];
+      try { star = collectStarFields(lastSnapElements || []); } catch (e0) { star = []; }
+      if (!star.length) {
+        try {
+          var rebuilt = [];
+          for (var k = 1; k < snapIndex.length; k++) {
+            var live0 = snapIndex[k];
+            if (!live0) continue;
+            rebuilt.push({
+              idx: k,
+              tag: live0.tagName || '',
+              type: live0.getAttribute ? (live0.getAttribute('type') || '') : '',
+              label: fieldLabelOf(live0),
+              value: '',
+              required: isStarRequired(live0),
+              hint: (fieldMetaOf(live0) || {}).hint || '',
+              box: boxKindOf(live0),
+              checked: boxKindOf(live0) ? readBoxChecked(live0) : undefined,
+              widget: tagHostOf(live0) ? 'tags' : undefined
+            });
+          }
+          star = collectStarFields(rebuilt);
+        } catch (e1) {}
+      }
+      var neighborhoods = [];
+      var seenIdx = {};
+      var list = Array.isArray(targets) ? targets : [];
+      for (var i = 0; i < list.length; i++) {
+        var t = list[i];
+        var el = null;
+        try { el = resolveTarget(t); } catch (e2) { el = null; }
+        if (!el && t && typeof t === 'object') {
+          try { if (t.idx != null) el = snapIndex[t.idx]; } catch (e3) {}
+        }
+        if (!el) continue;
+        var idx = 0;
+        for (var j = 1; j < snapIndex.length; j++) {
+          if (snapIndex[j] === el) { idx = j; break; }
+        }
+        if (idx && seenIdx[idx]) continue;
+        if (idx) seenIdx[idx] = true;
+        var item = formItemOf(el);
+        var snippets = collectFormItemSnippets(item, el, 6);
+        var joined = snippets.join(' | ').slice(0, 400);
+        neighborhoods.push({
+          idx: idx || undefined,
+          label: stripStarLabel(fieldLabelOf(el) || '').slice(0, 80),
+          texts: snippets,
+          hint: joined
+        });
+      }
+      return {
+        ok: true,
+        starFields: star,
+        neighborhoods: neighborhoods
+      };
     }
 
     function dsReq(cmd, payload) {
@@ -3121,6 +3692,125 @@
       };
     }
 
+    function personSearchBlob(el) {
+      var parts = [];
+      try { parts.push(el.getAttribute && el.getAttribute('placeholder') || el.placeholder || ''); } catch (e) {}
+      try { parts.push(fieldLabelOf(el) || ''); } catch (e2) {}
+      try { parts.push(el.getAttribute && el.getAttribute('aria-label') || ''); } catch (e3) {}
+      return parts.join(' ');
+    }
+
+    function looksLikePersonSearchInput(el) {
+      if (!el) return false;
+      var tag = String(el.tagName || '').toUpperCase();
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA') return false;
+      var type = String(el.type || 'text').toLowerCase();
+      if (tag === 'INPUT' && type && !/^(text|search)?$/.test(type)) return false;
+      return /姓名|作者|人员|搜索.*人|person|author/i.test(personSearchBlob(el));
+    }
+
+    function personPickerScope(el) {
+      if (!el) return document;
+      try {
+        var item = formItemOf(el);
+        if (item) {
+          var modal = item.closest && item.closest('.ivu-modal, .el-dialog, .ant-modal, [role="dialog"]');
+          if (modal) return modal;
+          return item.parentElement || item;
+        }
+      } catch (e) {}
+      return el.parentElement || document;
+    }
+
+    function findSearchList(scope) {
+      if (!scope || !scope.querySelector) return null;
+      var sel = '.search-list, [class*="search-list"], .user-list, [class*="author-list"]';
+      var n = null;
+      try { n = scope.querySelector(sel); } catch (e) { n = null; }
+      if (n && isVisible(n)) return n;
+      return null;
+    }
+
+    function personCardRoot(el) {
+      var n = el;
+      var hops = 0;
+      while (n && n.nodeType === 1 && hops < 12) {
+        var tag = (n.tagName || '').toUpperCase();
+        var cn = classNameOfNode(n);
+        if (tag === 'LI' || /search-item|user-item|author-item|list-item/i.test(cn)) return n;
+        n = n.parentElement;
+        hops++;
+      }
+      return el;
+    }
+
+    async function completePersonPicker(el, name) {
+      var want = String(name == null ? '' : name).trim();
+      if (!want) return null;
+      var expectList = looksLikePersonSearchInput(el);
+      var scope = personPickerScope(el);
+      var list = findSearchList(scope) || findSearchList(document);
+      if (!list && !expectList) return null;
+      var waited = 0;
+      while (!list && waited < 1800) {
+        await sleepMs(80);
+        waited += 80;
+        list = findSearchList(scope) || findSearchList(document);
+      }
+      if (!list) return null;
+      var cards = [];
+      try { cards = Array.from(list.querySelectorAll('li, [class*="search-item"], [class*="user-item"], [class*="list-item"]')); }
+      catch (e) { cards = []; }
+      if (!cards.length) {
+        try { cards = Array.from(list.children || []); } catch (e2) { cards = []; }
+      }
+      var needle = normText(want);
+      var match = null;
+      for (var i = 0; i < cards.length; i++) {
+        var card = cards[i];
+        if (!card || !isVisible(card)) continue;
+        var t = '';
+        try { t = String(card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e3) { t = ''; }
+        if (!t) continue;
+        if (normText(t).indexOf(needle) >= 0 || needle.indexOf(normText(t).slice(0, needle.length)) >= 0) {
+          match = personCardRoot(card);
+          break;
+        }
+      }
+      if (!match) {
+        return {
+          ok: false,
+          reason: 'person-card-missing',
+          continueBatch: true,
+          hint: '已填入「' + want.slice(0, 40) + '」，但未找到匹配的搜索卡片。请点卡片根节点，不要点禁用的「选择」。',
+          expected: want
+        };
+      }
+      try { if (typeof match.scrollIntoView === 'function') match.scrollIntoView({ block: 'nearest' }); } catch (e4) {}
+      dispatchClick(match);
+      var until = Date.now() + 1200;
+      var verified = false;
+      while (Date.now() < until) {
+        await sleepMs(80);
+        var still = findSearchList(scope);
+        var blob = '';
+        try { blob = String((scope && scope.innerText) || ''); } catch (e5) {}
+        if (!still || !isVisible(still) || /已选择/.test(blob) || blob.indexOf(want) >= 0) {
+          verified = true;
+          break;
+        }
+      }
+      return {
+        ok: true,
+        kind: 'mutation',
+        via: 'person-picker',
+        expected: want,
+        actual: want,
+        verified: verified,
+        hint: verified ? '' : '已点击匹配卡片。若未选中，请再点该卡片根节点，不要点禁用的「选择」。'
+      };
+    }
+
     function isSearchTypedInput(el) {
       if (!el) return false;
       if (el.disabled) return false;
@@ -3395,10 +4085,10 @@
 
     function createPageApi() {
       var page = {
-          q: function (sel) { return queryDeep(sel); },
+          q: function (sel) { return resolveTarget(sel); },
           qa: function (sel) { return queryAllDeep(sel); },
           setVal: async function (sel, val) {
-            var el = page.q(sel); if (!el) throw new Error('元素未找到: ' + sel);
+            var el = page.q(sel); if (!el) throw notFoundError(sel);
             if (el.disabled) throw new Error('元素已禁用，不能填写: ' + sel);
             // 级联只读展示框/筛选框都不是最终表单值。模型若仍对它们 setVal，
             // 直接走完整选择闭环，避免“只读不能填”或“筛了但没选中”。
@@ -3479,14 +4169,17 @@
               Object.getOwnPropertyDescriptor(iproto, 'value').set.call(el, val);
               fireValueEvents(el, val);
               var iv = validityOf(el);
-              return { ok: true, kind: 'mutation', expected: String(val), actual: String(el.value),
+              var inputResult = { ok: true, kind: 'mutation', expected: String(val), actual: String(el.value),
                 valid: iv.valid, validationMessage: iv.validationMessage,
                 verified: String(el.value) === String(val) && iv.valid };
+              var picked = await completePersonPicker(el, val);
+              if (picked) return picked;
+              return inputResult;
             }
             throw new Error('不支持对该元素赋值: ' + sel);
           },
           click: async function (sel) {
-            var el = page.q(sel); if (!el) throw new Error('元素未找到: ' + sel);
+            var el = page.q(sel); if (!el) throw notFoundError(sel);
             if (cascaderOptionOf(el)) {
               throw new Error(
                 '级联菜单选项禁止直接 page.click（点击分支/旧 li 选择器无法可靠确认层级）。' +
@@ -3508,7 +4201,14 @@
                 retargeted: false
               };
             }
-            if (el.disabled || el.getAttribute && el.getAttribute('aria-disabled') === 'true') throw new Error('元素已禁用，不能点击: ' + sel);
+            if (isDisabledTree(el) || el.disabled || (el.getAttribute && el.getAttribute('aria-disabled') === 'true')) {
+              return {
+                ok: false,
+                reason: 'disabled',
+                continueBatch: true,
+                hint: '目标已禁用。人员搜索请点匹配姓名的卡片根节点，不要点禁用的「选择」按钮。'
+              };
+            }
             var target = retargetFileSelectClick(el);
             try { if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' }); } catch (e) {}
             dispatchClick(target);
@@ -3523,7 +4223,7 @@
             };
           },
           select: function (sel, valOrLabel) {
-            var el = page.q(sel); if (!el) throw new Error('元素未找到: ' + sel);
+            var el = page.q(sel); if (!el) throw notFoundError(sel);
             if (el.disabled) throw new Error('元素已禁用，不能选择: ' + sel);
             if (cascaderHostOf(el)) {
               throw new Error(
@@ -3629,7 +4329,12 @@
             }
             if (!picked) {
               if (found.disabled.length) {
-                throw new Error('clickByText: 文本目标已禁用，不能点击: ' + found.disabled.join(' / '));
+                return {
+                  ok: false,
+                  reason: 'disabled',
+                  continueBatch: true,
+                  hint: '「' + raw + '」已禁用。人员搜索请点匹配姓名的卡片根节点，不要点禁用的「选择」。'
+                };
               }
               if (within && scope.missing) {
                 throw new Error('clickByText: within 容器未找到: ' + within +
@@ -3685,13 +4390,12 @@
           // 多层 li：默认不深入非根下的嵌套 ul/ol/[role=tree|group]，只列当前层；
           // nestedCollapsed>0 时再 inspect 某一子项。selector 最多成功计算 30 条。
           inspect: function (selector, opts) {
-            var sel = String(selector == null ? '' : selector).trim();
-            if (!sel) throw new Error('inspect: 缺少容器选择器');
+            if (selector == null || selector === '') throw new Error('inspect: 缺少容器选择器');
             opts = opts && typeof opts === 'object' && !Array.isArray(opts) ? opts : {};
             var maxNodes = Math.max(1, Math.min(Number(opts.maxNodes) || 120, 300));
             var textLen = Math.max(4, Math.min(Number(opts.textLen) || 32, 80));
-            var root = page.q(sel);
-            if (!root) throw new Error('inspect: 容器未找到: ' + sel);
+            var root = page.q(selector);
+            if (!root) throw new Error('inspect: 容器未找到: ' + selector);
             var CLICK_TAGS = { A: 1, BUTTON: 1, INPUT: 1, SELECT: 1, TEXTAREA: 1, SUMMARY: 1 };
             var CLICK_ROLES = {
               button: 1, link: 1, checkbox: 1, radio: 1, option: 1,
@@ -3785,7 +4489,7 @@
             return {
               ok: true,
               kind: 'query',
-              selector: sel,
+              selector: selector,
               count: out.length,
               truncated: out.length >= maxNodes || nestedCollapsed > 0,
               nestedCollapsed: nestedCollapsed,
@@ -3947,12 +4651,8 @@
             }
             var raw = String(text || '').trim();
             if (!raw) throw new Error('selectOption: 目标文本为空');
-            var triggerArg = triggerSel;
-            if (triggerSel && typeof triggerSel === 'object' && typeof triggerSel.selector === 'string') {
-              triggerArg = triggerSel.selector;
-            }
-            var el = page.q(triggerArg);
-            if (!el) throw new Error('下拉触发器未找到: ' + triggerArg);
+            var el = page.q(triggerSel);
+            if (!el) throw new Error('下拉触发器未找到: ' + triggerSel);
             var cascadeHost = cascaderHostOf(el);
             if (cascadeHost) return await selectCascaderOption(el, raw, o);
             var w = resolveWidget(el);
@@ -4036,11 +4736,14 @@
             });
           },
           sleep: function (ms) {
+            var want = Number(ms) || 0;
+            var elapsed = lastSampleAt ? (Date.now() - lastSampleAt) : 0;
+            if (elapsed > 0) want = Math.max(0, want - elapsed);
             return new Promise(function (resolve, reject) {
               var start = Date.now();
               var t = setInterval(function () {
                 if (scriptAborted) { clearInterval(t); reject(new Error('已停止')); return; }
-                if (Date.now() - start >= ms) { clearInterval(t); resolve(); }
+                if (Date.now() - start >= want) { clearInterval(t); resolve(); }
               }, 50);
             });
           },
@@ -4087,10 +4790,8 @@
                   '若目标在级联/下拉菜单里，请用 page.selectOption(触发器, 选项文本[, {filter:"短词"}])。');
               }
             } else {
-              var sel = target;
-              if (target && typeof target === 'object' && typeof target.selector === 'string') sel = target.selector;
-              el = page.q(String(sel));
-              if (!el) throw new Error('元素未找到: ' + sel);
+              el = page.q(target);
+              if (!el) throw notFoundError(target);
               if (isCascaderChoice(el)) {
                 throw new Error(
                   '下拉/级联选项不能用 setChecked（菜单里的方框只是级联多选样式）。' +
@@ -4098,7 +4799,7 @@
                   '需要多个值时对每个值各调用一次，或传入文本数组。'
                 );
               }
-              if (!boxKindOf(el)) throw new Error('目标不是复选/单选框: ' + sel);
+              if (!boxKindOf(el)) throw new Error('目标不是复选/单选框: ' + describeTarget(target));
             }
             function boxLabelText(node) {
               try { return String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80); }
@@ -4130,7 +4831,7 @@
               if (typeof test === 'function') {
                 try { return !!test(); } catch (e) { return false; }
               }
-              try { return !!queryDeep(test); } catch (e) { return false; }
+              try { return !!resolveTarget(test); } catch (e) { return false; }
             }
             if (check()) return Promise.resolve(true);
             return new Promise(function (resolve, reject) {
@@ -4150,6 +4851,9 @@
                 }
               }, poll);
             });
+          },
+          scroll: function (target, dir) {
+            return doScroll(target, dir);
           },
           probe: function () { return probeSignals(); },
           log: function () {
@@ -4171,7 +4875,7 @@
         clickByText: 1, inspect: 1,
         optionTexts: 1, clickOptionByText: 1, findOption: 1, selectOption: 1,
         listOptions: 1, filterSelect: 1,
-        setChecked: 1, sleep: 1, waitFor: 1, probe: 1
+        setChecked: 1, sleep: 1, waitFor: 1, probe: 1, scroll: 1
       };
       var page = createPageApi();
       var list = Array.isArray(operations) ? operations : [];
@@ -4189,7 +4893,7 @@
           results.push({ op: op, value: value });
           // selectOption 未命中会返回 {ok:false,kind:'query'} 而不是抛错；
           // 同一批后续 click（例如「下一步」）不应在选值失败后继续执行。
-          if (value && typeof value === 'object' && value.ok === false) break;
+          if (value && typeof value === 'object' && value.ok === false && !value.continueBatch) break;
         }
         return {
           ok: true,
@@ -4207,20 +4911,13 @@
       }
     }
 
-    // 仅保留旧配置兼容。新任务使用 runOperations，避免 strict CSP 页面禁止 new Function。
     async function runScript(source) {
-      scriptAborted = false;
-      try {
-        var page = createPageApi();
-        var fn = new Function('page', 'return (async()=>{\n' + source + '\n})();');
-        var result = await fn(page);
-        if (scriptAborted) return { ok: false, error: '已停止', probe: probeSignals(), logs: window.__assistantLogs || [] };
-        window.__assistantLogs = window.__assistantLogs || [];
-        return { ok: true, result: JSON.stringify(result !== undefined ? result : null), probe: probeSignals(), logs: window.__assistantLogs };
-      } catch (e) {
-        window.__assistantLogs = window.__assistantLogs || [];
-        return { ok: false, error: (e && e.stack) ? e.stack : String(e), probe: probeSignals(), logs: window.__assistantLogs };
-      }
+      return {
+        ok: false,
+        error: 'runScript 已禁用',
+        probe: probeSignals(),
+        logs: window.__assistantLogs || []
+      };
     }
 
     // 处理来自 content.js（隔离 world）的 __ds_req
@@ -4235,7 +4932,7 @@
         }));
       }
       if (cmd === 'snapshot') {
-        try { respond(snapshot()); } catch (err) { respond(String(err && err.stack || err), false); }
+        try { respond(snapshot(detail.payload)); } catch (err) { respond(String(err && err.stack || err), false); }
       } else if (cmd === 'probe') {
         try { respond(probeSignals()); } catch (err) { respond(String(err && err.stack || err), false); }
       } else if (cmd === 'runScript') {
@@ -4248,6 +4945,15 @@
         runOperations(operations || []).then(function (res) {
           respond(res, res && res.ok !== false);
         });
+      } else if (cmd === 'setBusyMask') {
+        try {
+          setBusyMaskVisible(!!(detail.payload && detail.payload.on));
+          respond({ ok: true });
+        } catch (errM) { respond({ ok: false, error: String(errM && errM.message || errM) }, false); }
+      } else if (cmd === 'submitFailureContext') {
+        try {
+          respond(collectSubmitFailureContext((detail.payload && detail.payload.targets) || []));
+        } catch (errC) { respond(String(errC && errC.stack || errC), false); }
       } else if (cmd === 'captureImage') {
         var capSel = detail.payload && detail.payload.selector;
         captureImage(capSel || '').then(function (res) {
