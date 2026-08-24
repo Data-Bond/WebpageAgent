@@ -9,6 +9,7 @@ const ATTACHMENT_CONTEXT_MAX_CHARS = 150000;
 const LLM_TEXT_TIMEOUT_BASE_MS = 120000;
 const LLM_TEXT_TIMEOUT_MAX_MS = 300000;
 const LLM_TEXT_TIMEOUT_RETRY = 1;
+const LLM_TEXT_ERROR_RETRY = 2;
 const LLM_OCR_TIMEOUT_MS = 120000;
 
 const DEFAULT_CONFIG = {
@@ -123,6 +124,7 @@ const RUNTIME_PLAYBOOK =
   '【文件列表勾选】选择发布文件/数据空间文件列表里，点文件名（p.name）常常是进入目录或预览，不会勾选。勾选控件是行内 checkmark 图标（如 ivu-icon-md-checkmark-circle）。选中某个文件一律 setChecked({text:"完整文件名"}, true)，或 clickByText("完整文件名")——引擎会改点行内勾选图标。不要对文件名 p/li 的 nth-of-type 路径连点。选中后看已选列表/右侧栏是否出现该文件名；没有则不要重复点文件名。文件夹名（无后缀）仍点名称进入，不要当成勾选。\n' +
   '【容器探查】快照含独立的 textActions[]（约 100 条短可点文案，截断时优先于 elements 尾巴保留）。文案不在 L0、或用户给了容器但内部看不清时，调用 inspect(容器选择器) 查看该子树（默认最多 120 个节点），不要对容器本身乱点，也不要为了找控件去输出 plan/script。inspect 对嵌套 ul/ol/[role=tree|group] 默认只列当前层（nestedCollapsed>0 表示还有下层），要看某一枝再 inspect 该子项，不要指望一次扫完整棵多层树。\n' +
   '【当前指令优先】只完成最新一条标了【当前指令】的用户要求。标为【历史背景·勿再执行】的内容只帮助理解页面和已完成进度，禁止当成新任务再做一遍。若当前指令是在旧结果上继续（例如“接着选那两个文件”），应接着当前页面往下做，而不是把历史里的登录/上传/发布整段重跑。用户补充（【用户补充·继续原任务】）是对你上一个提问的回答，要结合原任务继续，不要另起炉灶。\n' +
+  '【中断恢复】若当前指令写明【原任务】并要求从中断处继续：目标仍是该原任务，不是“继续”这句空话。必须跳过【已完成且验证通过·禁止重做】中的步骤；对照最新快照，页面上已经生效的字段、标签、已选项不要重填、不要重开已完成的弹窗。卡在弹窗里就只做该弹窗尚未完成的确认；目标已出现在表单上则进入下一字段。禁止用中断前的旧选择器从头再跑一遍。\n' +
   '【指令闭环】当前指令写明的操作一旦成功，必须立刻 {"action":"done","summary":"..."}。禁止根据快照里新出现的弹层、文件列表、确定按钮去猜测用户没写的下一步。用户只说 clickByText「选择数据文件」时，点开选择框即完成，不要自行勾选文件或点确定。不要等用户在指令末尾写“停止/结束”。指令没覆盖的事一律不做；缺信息时 action:ask，不要发明流程。开放式任务（如“把这两个文件发布出去”）仍按该目标做到完成再 done。\n' +
   PLAYBOOK_END;
 
@@ -532,6 +534,7 @@ async function notifyCancelled(postMsg, cancelRef, origin, messages) {
   if (cancelRef) cancelRef.notified = true;
   if (origin && messages) {
     try { await saveHistory(origin, messages); } catch (e) {}
+    rememberResumeCheckpoint(origin, messages, '用户停止了任务');
   }
   postMsg({ type: 'cancelled', summary: '已停止当前任务' });
   return 'cancelled';
@@ -915,6 +918,14 @@ function llmTimeoutMs(kind, messages, model) {
 
 function isLlmTimeout(err) {
   return !!(err && err.code === 'LLM_TIMEOUT');
+}
+
+function isLlmTransientError(err) {
+  if (isLlmTimeout(err)) return true;
+  const msg = String((err && err.message) || err || '');
+  if (/HTTP 429|HTTP 502|HTTP 503|HTTP 504/.test(msg)) return true;
+  if (/upstream connect error|disconnect\/reset|connection termination|ECONNRESET|ETIMEDOUT|Failed to fetch|network/i.test(msg)) return true;
+  return false;
 }
 
 // 文本模型调用：每次实时 resolve 当前选中标签（面板切换下拉即对下一次调用生效）
@@ -2054,6 +2065,180 @@ function isCurrentTaskMessage(content) {
   return s.indexOf('【当前指令】') === 0 || s.indexOf('【用户补充·继续原任务】') === 0;
 }
 
+function parseResumeTask(task) {
+  const raw = String(task || '').trim();
+  if (!raw) return null;
+  const compact = raw.replace(/\s+/g, '');
+  if (/^(请)?(继续|接着)(做|干|弄)?((一下)?)?((前面|之前|刚才|上次|此前|上一步)的)?(工作|任务|流程|步骤|操作)?[。.!！]?$/.test(compact)) {
+    return { extra: '' };
+  }
+  if (/^(请)?从(中断|停下|失败|断开|出错)(处|的地方)?继续[。.!！]?$/.test(compact)) {
+    return { extra: '' };
+  }
+  if (/^(please\s+)?(continue|resume)(\s+((with|from)\s+)?((the\s+)?(previous|last|earlier)\s+)?(work|task))?\.?$/i.test(raw)) {
+    return { extra: '' };
+  }
+  const lead = raw.match(/^\s*(请)?((继续|接着)((前面|之前|刚才|上次|此前)的)?(工作|任务|流程|步骤)|从(中断|停下)处继续)[，,。：:\s]+/);
+  if (lead) {
+    const extra = raw.slice(lead[0].length).trim();
+    return { extra: extra };
+  }
+  return null;
+}
+
+function originalTaskFromResumeBody(content) {
+  const m = String(content || '').match(/【原任务】\s*([\s\S]*?)(?=\n【|$)/);
+  return m ? m[1].trim() : '';
+}
+
+function stripTaskDecorations(content) {
+  let s = String(content || '').trim();
+  s = s.replace(/^【当前指令】[^\n]*\n/, '');
+  s = s.replace(/^【用户补充·继续原任务】[^\n]*\n/, '');
+  s = s.replace(/^【历史背景·勿再执行】用户当时曾提出：/, '');
+  s = s.replace(/^用户任务：/, '');
+  s = s.replace(/^用户回复：/, '');
+  s = s.replace(/\n已附加文件[\s\S]*$/, '');
+  const fromResume = originalTaskFromResumeBody(s);
+  if (fromResume) return fromResume;
+  return s.trim();
+}
+
+function extractOriginalTask(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  let fallback = '';
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    if (!m || m.role !== 'user') continue;
+    if (isEngineUserMessage(m.content)) continue;
+    const body = stripTaskDecorations(m.content);
+    if (!body) continue;
+    if (parseResumeTask(body)) continue;
+    if (isCurrentTaskMessage(m.content) || isBackgroundTaskMessage(m.content) || isUserTaskMessage(m.content)) {
+      return body;
+    }
+    if (!fallback) fallback = body;
+  }
+  return fallback;
+}
+
+const PROGRESS_SKIP_OPS = {
+  inspect: 1, getText: 1, findControls: 1, listOptions: 1, probe: 1,
+  sleep: 1, waitFor: 1, optionTexts: 1, findOption: 1
+};
+
+function extractExecuteSummary(assistantContent) {
+  const c = String(assistantContent || '');
+  try {
+    const j = JSON.parse(c);
+    if (j && j.summary) return String(j.summary).slice(0, 80);
+  } catch (e) {}
+  const m = c.match(/"summary"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  return m ? m[1].replace(/\\"/g, '"').slice(0, 80) : '';
+}
+
+function formatProgressLine(execBody, summary) {
+  const ops = [];
+  const re = /"op"\s*:\s*"(\w+)"/g;
+  let m;
+  while ((m = re.exec(execBody))) ops.push(m[1]);
+  const unique = [];
+  const seen = {};
+  for (let i = 0; i < ops.length; i++) {
+    if (PROGRESS_SKIP_OPS[ops[i]] || seen[ops[i]]) continue;
+    seen[ops[i]] = 1;
+    unique.push(ops[i]);
+  }
+  if (!unique.length && !summary) return '';
+  if (unique.length === 0) return '';
+  const expected = execBody.match(/"expected"\s*:\s*"((?:\\.|[^"\\]){1,80})"/);
+  const actual = execBody.match(/"actual"\s*:\s*"((?:\\.|[^"\\]){1,80})"/);
+  const val = (expected && expected[1]) || (actual && actual[1]) || '';
+  const bits = [];
+  if (summary) bits.push(summary);
+  bits.push(unique.join('+'));
+  if (val) bits.push(val.replace(/\\"/g, '"'));
+  if (/"verified"\s*:\s*true/.test(execBody)) bits.push('verified');
+  return bits.join(' · ');
+}
+
+function summarizeVerifiedProgress(messages) {
+  const out = [];
+  const list = Array.isArray(messages) ? messages : [];
+  let pendingSummary = '';
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i];
+    if (!m) continue;
+    const c = String(m.content || '');
+    if (m.role === 'assistant') {
+      pendingSummary = extractExecuteSummary(c);
+      continue;
+    }
+    if (m.role === 'user' && c.indexOf('【执行结果】') === 0) {
+      if (/\nOK result=/.test(c) && !/VERIFY FAILED/.test(c) && !/\nERROR:/.test(c)) {
+        const line = formatProgressLine(c, pendingSummary);
+        if (line) out.push(line);
+      }
+      pendingSummary = '';
+    }
+  }
+  return out.length > 20 ? out.slice(-20) : out;
+}
+
+function lastInterruptHint(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    if (!m || m.role !== 'user') continue;
+    const c = String(m.content || '');
+    if (c.indexOf('【执行结果】') === 0) {
+      if (/\nERROR:/.test(c) || /VERIFY FAILED/.test(c)) {
+        return c.replace(/^【执行结果】\n/, '').replace(/\s+/g, ' ').slice(0, 220);
+      }
+      return '';
+    }
+  }
+  return '';
+}
+
+function resumeCheckpointKey(origin) {
+  return 'resumeTask:' + String(origin || '');
+}
+
+function rememberResumeCheckpoint(origin, messages, interrupt) {
+  const originalTask = extractOriginalTask(messages);
+  if (!origin || !originalTask) return;
+  const payload = {
+    originalTask: originalTask,
+    done: summarizeVerifiedProgress(messages),
+    interrupt: String(interrupt || '').slice(0, 300),
+    savedAt: Date.now()
+  };
+  try {
+    const write = chrome.storage.session.set({ [resumeCheckpointKey(origin)]: payload });
+    if (write && typeof write.catch === 'function') write.catch(function () {});
+  } catch (e) {}
+}
+
+async function loadResumeCheckpoint(origin) {
+  if (!origin) return null;
+  try {
+    const key = resumeCheckpointKey(origin);
+    const saved = await chrome.storage.session.get(key);
+    const cp = saved && saved[key];
+    if (!cp || Date.now() - Number(cp.savedAt || 0) > 24 * 60 * 60 * 1000) return null;
+    return cp;
+  } catch (e) { return null; }
+}
+
+function clearResumeCheckpoint(origin) {
+  if (!origin) return;
+  try {
+    const removal = chrome.storage.session.remove(resumeCheckpointKey(origin));
+    if (removal && typeof removal.catch === 'function') removal.catch(function () {});
+  } catch (e) {}
+}
+
 function isUserTaskMessage(content) {
   const s = String(content || '');
   if (isEngineUserMessage(s) || isBackgroundTaskMessage(s)) return false;
@@ -2068,6 +2253,8 @@ function toBackgroundTaskContent(content) {
   s = s.replace(/^【用户补充·继续原任务】[^\n]*\n/, '');
   s = s.replace(/^用户任务：/, '');
   s = s.replace(/^用户回复：/, '');
+  const orig = originalTaskFromResumeBody(s);
+  if (orig) return '【历史背景·勿再执行】用户当时曾提出：' + orig;
   return '【历史背景·勿再执行】用户当时曾提出：' + s;
 }
 
@@ -2108,7 +2295,25 @@ function demotePriorUserTasks(messages) {
   return { messages: out, changed: changed };
 }
 
-function buildUserPrompt(task, files, mode) {
+function buildUserPrompt(task, files, mode, resumeMeta) {
+  if (mode === 'resume' && resumeMeta && resumeMeta.originalTask) {
+    let s = '【当前指令】从中断处继续下面的原任务，禁止当成新任务，禁止从头重做。\n';
+    s += '【原任务】' + resumeMeta.originalTask + '\n';
+    if (resumeMeta.extra) s += '【用户补充】' + resumeMeta.extra + '\n';
+    if (resumeMeta.done && resumeMeta.done.length) {
+      s += '【已完成且验证通过·禁止重做】\n' + resumeMeta.done.map(function (line, i) {
+        return (i + 1) + '. ' + line;
+      }).join('\n') + '\n';
+    }
+    if (resumeMeta.interrupt) s += '【中断原因】' + resumeMeta.interrupt + '\n';
+    s += '【恢复规则】对照最新快照：页面上已经生效的字段、标签、已选项直接跳过；只做尚未完成的后续步骤。禁止用过期选择器重开已完成的弹窗。若弹窗已打开且目标已填入，只完成该弹窗内未完成的确认/选择；若目标已出现在表单中，进入下一字段。禁止把整份原任务从头再跑一遍。\n';
+    if (files && files.length) {
+      const list = files.map((f) => `- ${f.name}（key="${f.key}"，类型 ${f.type || '未知'}）`).join('\n');
+      s += '已附加文件（上传用 key；正文仅在需要抽字段时另发）：\n' + list +
+        '\n页面需要上传时，请输出结构化操作 {"op":"upload","args":["<文件输入选择器>","<key>"]}。';
+    }
+    return s;
+  }
   const head = mode === 'continue'
     ? '【用户补充·继续原任务】请结合尚未完成的原任务理解下面的回复，不要把历史旧任务当成要重新执行的新指令。\n用户回复：'
     : '【当前指令】只执行下面这一条。标有【历史背景·勿再执行】的内容只用于理解页面与进度，禁止从头重做旧任务。\n用户任务：';
@@ -2437,10 +2642,11 @@ function decideAttachMode(opts) {
   if (!o.files || !o.files.length) return 'none';
   if (o.modelAskedNeedAttach) return 'pin';
   const t = String(o.task || '');
-  if (isBoundedInstruction(t) || isUploadOnlyTask(t)) return 'catalog';
-  if (hasExtractIntent(t)) return 'pin';
+  const goal = String(o.originalTask || t);
+  if ((isBoundedInstruction(t) && !o.resumeTask) || isUploadOnlyTask(t) || (o.resumeTask && isUploadOnlyTask(goal))) return 'catalog';
+  if (hasExtractIntent(t) || (o.resumeTask && hasExtractIntent(goal))) return 'pin';
   if (opsIncludeFillFromAttach(o.lastOps) && !isUploadOnlyTask(t)) return 'pin';
-  if (o.continueAsk && historySuggestsFillFromAttach(o.messages)) return 'pin';
+  if ((o.continueAsk || o.resumeTask) && historySuggestsFillFromAttach(o.messages)) return 'pin';
   return 'catalog';
 }
 
@@ -2453,6 +2659,8 @@ function needsAttachBody(task, files, lastOps, alreadyPinned, extra) {
     alreadyPinned: alreadyPinned,
     continueAsk: x.continueAsk,
     messages: x.messages,
+    resumeTask: x.resumeTask,
+    originalTask: x.originalTask,
     modelAskedNeedAttach: x.modelAskedNeedAttach
   }) === 'pin';
 }
@@ -3387,17 +3595,38 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
   } else {
     messages.unshift({ role: 'system', content: RUNTIME_PLAYBOOK });
   }
+  let resumeMeta = null;
+  const resumeReq = (!continueAsk && parseResumeTask(task)) || null;
+  if (resumeReq) {
+    const cp = await loadResumeCheckpoint(origin);
+    const originalTask = (cp && cp.originalTask) || extractOriginalTask(messages);
+    if (originalTask) {
+      resumeMeta = {
+        originalTask: originalTask,
+        extra: resumeReq.extra,
+        done: (cp && Array.isArray(cp.done) && cp.done.length) ? cp.done : summarizeVerifiedProgress(messages),
+        interrupt: (cp && cp.interrupt) || lastInterruptHint(messages)
+      };
+    }
+  }
+  if (resumeReq && !resumeMeta) {
+    postMsg({ type: 'error', message: '没有找到可继续的原任务。请重新发送完整指令。' });
+    return 'error';
+  }
   if (!continueAsk && hasPriorUserTask(messages)) {
     const demoted = demotePriorUserTasks(messages);
     messages = demoted.messages;
-    if (demoted.changed) {
+    if (demoted.changed && !resumeMeta) {
       postMsg({ type: 'status', text: '已将此前对话视为背景，本次只执行新发送的指令。' });
     }
   }
+  if (resumeMeta) {
+    postMsg({ type: 'status', text: '已从中断处恢复原任务，将跳过已验证完成的步骤。' });
+  }
   messages.push({
     role: 'user',
-    kind: continueAsk ? 'continue' : 'task',
-    content: buildUserPrompt(task, files, continueAsk ? 'continue' : 'current')
+    kind: continueAsk ? 'continue' : (resumeMeta ? 'resume' : 'task'),
+    content: buildUserPrompt(task, files, continueAsk ? 'continue' : (resumeMeta ? 'resume' : 'current'), resumeMeta)
   });
 
   // 文件字节仍同步到页面（上传用）。正文不预提取：前缀缓存要求历史只追加不改写，
@@ -3410,6 +3639,8 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
     const force = !!(opts && opts.force);
     if (!force && decideAttachMode({
       task: task,
+      originalTask: resumeMeta && resumeMeta.originalTask,
+      resumeTask: !!resumeMeta,
       files: files,
       lastOps: lastOps,
       alreadyPinned: false,
@@ -3510,8 +3741,14 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
           postMsg({ type: 'status', text: '文本模型超时，正在重试（' + llmTries + '/' + LLM_TEXT_TIMEOUT_RETRY + '）…' });
           continue;
         }
+        if (isLlmTransientError(e) && llmTries <= LLM_TEXT_ERROR_RETRY) {
+          postMsg({ type: 'status', text: '文本模型暂时不可用，正在重试（' + llmTries + '/' + LLM_TEXT_ERROR_RETRY + '）…' });
+          await new Promise(function (r) { setTimeout(r, 400 * llmTries); });
+          continue;
+        }
         postMsg({ type: 'error', message: '调用大模型失败：' + String(e && e.message || e) });
         await saveHistory(origin, messages);
+        rememberResumeCheckpoint(origin, messages, String(e && e.message || e).slice(0, 300));
         return 'error';
       }
     }
@@ -3556,6 +3793,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
       }
       postMsg({ type: 'error', message: '无法解析大模型输出（完整回复见上方调用卡片）' + (parseInfo.note ? '：' + parseInfo.note : '') });
       await saveHistory(origin, messages);
+      rememberResumeCheckpoint(origin, messages, '模型输出无法解析');
       return 'error';
     }
     jsonNudgeCount = 0;
@@ -3605,7 +3843,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
       lastOps = parsed.operations;
       const hash = guardKey(parsed);
       const guard = checkRepeat(actionLog, hash);
-      const bounded = !continueAsk && isBoundedInstruction(task);
+      const bounded = !continueAsk && !resumeMeta && isBoundedInstruction(task);
 
       if (guard.forceAsk) {
         const question = '操作反复无效："' + truncate(parsed.summary || parsed.script || JSON.stringify(parsed.operations), 100) + '"已多次执行但页面无变化。请确认该操作是否已成功？是否需要换一种方式重做？';
@@ -3631,10 +3869,11 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
         continue;
       }
 
-      postMsg({ type: 'step', step: i, summary: parsed.summary || ('步骤 ' + i) });
+      postMsg({ type: 'step', step: i, summary: parsed.summary || ('步骤 ' + i), output: llmText });
 
       // 导航安全执行：结构化操作不依赖 eval/CSP；两种路径均不自动重试，避免重复副作用
-      const execution = await runOperationsSafe(tabId, attachTaskHintToOps(parsed.operations, task), { postMsg, cancelRef, origin });
+      const hintTask = (resumeMeta && resumeMeta.originalTask) || task;
+      const execution = await runOperationsSafe(tabId, attachTaskHintToOps(parsed.operations, hintTask), { postMsg, cancelRef, origin });
       const { resp: runResp, navigated } = execution;
       if (cancelRef.cancelled || execution.cancelled) {
         return await notifyCancelled(postMsg, cancelRef, origin, messages);
@@ -3795,8 +4034,9 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
           role: 'assistant',
           content: JSON.stringify({ action: 'done', summary: doneSummary })
         });
-        postMsg({ type: 'done', summary: doneSummary });
+        postMsg({ type: 'done', summary: doneSummary, output: JSON.stringify({ action: 'done', summary: doneSummary }) });
         await saveHistory(origin, messages);
+        clearResumeCheckpoint(origin);
         return 'done';
       }
       continue;
@@ -3818,22 +4058,25 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
         postMsg({ type: 'status', text: '已阻止级联筛选后的无依据完成声明' });
         continue;
       }
-      postMsg({ type: 'done', summary: parsed.summary || llmText });
+      postMsg({ type: 'done', summary: parsed.summary || llmText, output: llmText });
       await saveHistory(origin, messages);
+      clearResumeCheckpoint(origin);
       return 'done';
     }
     if (action === 'ask') {
-      postMsg({ type: 'ask', question: parsed.question || llmText });
+      postMsg({ type: 'ask', question: parsed.question || llmText, output: llmText });
       await saveHistory(origin, messages);
       return 'ask';
     }
     postMsg({ type: 'error', message: '无法识别大模型动作：' + action });
     await saveHistory(origin, messages);
+    rememberResumeCheckpoint(origin, messages, '无法识别大模型动作：' + action);
     return 'error';
   }
 
   postMsg({ type: 'error', message: '达到最大步数，任务未确认完成；已停止后续操作，请人工检查当前页面。' });
   await saveHistory(origin, messages);
+  rememberResumeCheckpoint(origin, messages, '达到最大步数');
   return 'maxsteps';
 }
 
@@ -4231,10 +4474,12 @@ chrome.runtime.onConnect.addListener((port) => {
         }
         await storageSet({ ['hist:' + origin]: [] });
         pendingInstructions.delete(tabId);
-        await ocrCacheClear(origin); // 清空对话时同步清除持久化 OCR 缓存
+        if (!msg.keepFiles) {
+          await ocrCacheClear(origin); // 连附件一起清空时，同步丢掉该页 OCR 缓存
+        }
         ocrBreakerReset(origin); // 清空对话视为“修复后再试”信号，复位熔断
         clearLlmTraces();
-        postMsg({ type: 'historyCleared', ok: true });
+        postMsg({ type: 'historyCleared', ok: true, keepFiles: !!msg.keepFiles });
       })();
     } else if (cmd === 'cancel') {
       const a = stopActiveTask(tabId, { closeOffscreen: false });

@@ -7,7 +7,7 @@
   var INSTALLED = '__assistantPage';
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
   // 已打开页面靠此号决定是否重注入 MAIN world；面板角标读 manifest。
-  var BRIDGE_VERSION = '3.1.0';
+  var BRIDGE_VERSION = '3.2.0';
 
   function install() {
     var scriptAborted = false;

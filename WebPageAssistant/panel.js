@@ -150,6 +150,8 @@
     .header-right {
       display: flex;
       align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
       gap: 6px;
       flex-shrink: 0;
     }
@@ -592,20 +594,58 @@
     }
     .llm-call-actions button:hover { background: #f3f5fb; }
     .llm-call-actions button:disabled { opacity: 0.45; cursor: default; }
-    .llm-call-body {
-      display: none;
-      margin-top: 8px;
-      border-top: 1px dashed #e0e3ee;
-      padding-top: 8px;
+    .assistant-block {
+      align-self: flex-start;
+      max-width: 82%;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
     }
-    .llm-call-body.open { display: block; }
-    .llm-call-body pre {
-      max-height: 240px;
-      overflow: auto;
+    .assistant-block .bubble.assistant {
+      max-width: 100%;
+      align-self: stretch;
+    }
+    .assistant-detail-btn {
+      border: none;
+      background: transparent;
+      color: #4f7cff;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 0 2px;
+      font-family: inherit;
+      line-height: 1.4;
+    }
+    .assistant-detail-btn:hover { text-decoration: underline; }
+    .assistant-output {
+      display: none;
+      position: relative;
+      align-self: stretch;
       background: #fff;
       border: 1px solid #e6e8f0;
       border-radius: 8px;
-      padding: 8px;
+    }
+    .assistant-output.open { display: block; }
+    .assistant-output-copy {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      z-index: 1;
+      border: 1px solid #d8dbe7;
+      background: #fff;
+      border-radius: 6px;
+      padding: 2px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      color: #2b2f3a;
+      font-family: inherit;
+    }
+    .assistant-output-copy:hover { background: #f3f5fb; }
+    .assistant-output pre {
+      margin: 0;
+      max-height: 280px;
+      overflow: auto;
+      padding: 28px 10px 10px;
       font-size: 11px;
       line-height: 1.45;
       white-space: pre-wrap;
@@ -940,6 +980,51 @@
       color: #c0392b;
       min-height: 14px;
     }
+    .archive-lead {
+      font-size: 12px;
+      color: #5a6072;
+      line-height: 1.45;
+    }
+    .archive-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .archive-action {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 3px;
+      width: 100%;
+      text-align: left;
+      border: 1px solid #d8dbe7;
+      background: #ffffff;
+      border-radius: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+    }
+    .archive-action:hover {
+      background: #f6f7fb;
+      border-color: #4f7cff;
+    }
+    .archive-action.danger:hover {
+      background: #fff6f5;
+      border-color: #c0392b;
+    }
+    .archive-action-title {
+      font-size: 13px;
+      font-weight: 650;
+      color: #2b2f3a;
+      line-height: 1.4;
+    }
+    .archive-action-hint {
+      font-size: 11px;
+      color: #6a7080;
+      font-weight: 400;
+      line-height: 1.4;
+    }
   `;
 
   // ============ 状态 ============
@@ -1162,7 +1247,7 @@
     const headerRight = mk('div', 'header-right');
     const saveSkillBtn = mk('button', 'header-action', { type: 'button', textContent: '存为SKILL', title: '把本次对话中的用户任务存为可复用技能' });
     const skillLibBtn = mk('button', 'header-action', { type: 'button', textContent: '加载SKILL', title: '查看、导入或触发已保存的技能' });
-    const clearBtn = mk('button', 'header-action', { type: 'button', textContent: '清空对话', title: '清空对话与附件' });
+    const clearBtn = mk('button', 'header-action', { type: 'button', textContent: '清空/存档对话', title: '清空对话或保存存档' });
     const settingsBtn = mk('button', 'icon-btn', { textContent: '⚙', title: '设置' });
     const closeBtn = mk('button', 'icon-btn', { textContent: '✕', title: '关闭面板' });
     headerRight.appendChild(saveSkillBtn);
@@ -1323,6 +1408,48 @@
     confirmDialog.appendChild(confirmActions);
     confirmModal.appendChild(confirmDialog);
 
+    const archiveModal = mk('div', 'modal-backdrop hidden');
+    const archiveDialog = mk('div', 'modal');
+    archiveDialog.appendChild(mk('h3', null, { textContent: '清空/存档对话' }));
+    archiveDialog.appendChild(mk('div', 'archive-lead', {
+      textContent: '请选择一项操作。清空不可撤销；保存会下载到本机。'
+    }));
+    function mkArchiveAction(title, hint, extraClass) {
+      const btn = mk('button', 'archive-action' + (extraClass ? ' ' + extraClass : ''), { type: 'button' });
+      btn.appendChild(mk('span', 'archive-action-title', { textContent: title }));
+      if (hint) btn.appendChild(mk('span', 'archive-action-hint', { textContent: hint }));
+      return btn;
+    }
+    const archiveActions = mk('div', 'archive-actions');
+    const archiveClearKeepFiles = mkArchiveAction(
+      '清空对话（仅对话历史、保留附件）',
+      '删除聊天记录与模型历史，已添加的附件仍保留。',
+      'danger'
+    );
+    const archiveClearAll = mkArchiveAction(
+      '清空对话（包括对话历史与附件）',
+      '删除聊天记录、模型历史和全部附件。',
+      'danger'
+    );
+    const archiveSaveFull = mkArchiveAction(
+      '保存对话（所有用户输入与系统响应的内容与时间线）',
+      '下载带时间戳的完整对话（用户、助手、系统与模型调用）。'
+    );
+    const archiveSaveUser = mkArchiveAction(
+      '保存对话（仅用户输入）',
+      '只下载你发送过的任务原文与时间。'
+    );
+    archiveActions.appendChild(archiveClearKeepFiles);
+    archiveActions.appendChild(archiveClearAll);
+    archiveActions.appendChild(archiveSaveFull);
+    archiveActions.appendChild(archiveSaveUser);
+    archiveDialog.appendChild(archiveActions);
+    const archiveFooter = mk('div', 'modal-actions');
+    const archiveCancel = mk('button', 'btn', { type: 'button', textContent: '取消' });
+    archiveFooter.appendChild(archiveCancel);
+    archiveDialog.appendChild(archiveFooter);
+    archiveModal.appendChild(archiveDialog);
+
     const connStatus = mk('div', 'conn-status hidden');
 
     const attachArea = mk('section', 'attach-area hidden');
@@ -1374,6 +1501,7 @@
     shadow.appendChild(tagRow);
     shadow.appendChild(saveSkillModal);
     shadow.appendChild(confirmModal);
+    shadow.appendChild(archiveModal);
 
     return {
       header, settingsBtn, closeBtn, clearBtn,
@@ -1389,6 +1517,7 @@
       saveSkillNeedsInput, saveSkillHint, saveSkillPrompt, saveSkillError,
       saveSkillCancel, saveSkillConfirm,
       confirmModal, confirmWarn, confirmCancel, confirmOk,
+      archiveModal, archiveCancel, archiveClearKeepFiles, archiveClearAll, archiveSaveFull, archiveSaveUser,
       connStatus, attachArea, chips, fileInput, attachBtn,
       messages, userInput, sendBtn,
       textTagSelect, ocrTagSelect
@@ -1442,6 +1571,8 @@
     if (!canPersist()) return;
     const compact = transcript.filter((m) => !isConnHintMessage(m)).slice(-200).map((m) => {
       const row = { role: m.role, text: String(m.text || '').slice(0, 4000) };
+      if (m.at) row.at = m.at;
+      if (m.output) row.output = String(m.output).slice(0, 20000);
       if (m.llmId) row.llmId = m.llmId;
       if (m.llm && typeof m.llm === 'object') row.llm = m.llm;
       return row;
@@ -1472,14 +1603,108 @@
   }
 
   // ============ 气泡渲染 ============
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
   function addBubble(role, text) {
     if (text == null || text === '') return;
     const div = mk('div', 'bubble ' + role, { textContent: String(text) });
     els.messages.appendChild(div);
     scrollDown();
-    transcript.push({ role: role, text: String(text) });
+    transcript.push({ role: role, text: String(text), at: nowIso() });
     persistTranscript();
     return div;
+  }
+
+  function formatModelOutput(raw) {
+    const s = String(raw == null ? '' : raw).trim();
+    if (!s) return '';
+    try {
+      return JSON.stringify(JSON.parse(s), null, 2);
+    } catch (e) {
+      const start = s.indexOf('{');
+      const end = s.lastIndexOf('}');
+      if (start >= 0 && end > start) {
+        try { return JSON.stringify(JSON.parse(s.slice(start, end + 1)), null, 2); } catch (e2) {}
+      }
+      return s;
+    }
+  }
+
+  function copyViaTextarea(text) {
+    const ta = document.createElement('textarea');
+    ta.value = String(text || '');
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function copyTextToClipboard(text, btn) {
+    const s = String(text || '');
+    const old = btn ? btn.textContent : '';
+    function mark(label) {
+      if (!btn) return;
+      btn.textContent = label;
+      setTimeout(function () { btn.textContent = old; }, 1200);
+    }
+    function fail() { mark('复制失败'); }
+    function ok() { mark('已复制'); }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      navigator.clipboard.writeText(s).then(ok, function () {
+        if (copyViaTextarea(s)) ok(); else fail();
+      });
+      return;
+    }
+    if (copyViaTextarea(s)) ok(); else fail();
+  }
+
+  function renderAssistantBubble(text, output) {
+    const summary = String(text == null ? '' : text);
+    const rawOut = output == null ? '' : String(output);
+    const display = rawOut ? formatModelOutput(rawOut) : '';
+    if (!display) {
+      if (!summary) return null;
+      const div = mk('div', 'bubble assistant', { textContent: summary });
+      els.messages.appendChild(div);
+      return div;
+    }
+    const wrap = mk('div', 'assistant-block');
+    const bubble = mk('div', 'bubble assistant', { textContent: summary || '模型返回' });
+    const toggle = mk('button', 'assistant-detail-btn', { type: 'button', textContent: '详情' });
+    toggle.setAttribute('aria-expanded', 'false');
+    const detail = mk('div', 'assistant-output');
+    const copyBtn = mk('button', 'assistant-output-copy', { type: 'button', textContent: '复制' });
+    const pre = mk('pre', null, { textContent: display });
+    detail.appendChild(copyBtn);
+    detail.appendChild(pre);
+    wrap.appendChild(bubble);
+    wrap.appendChild(toggle);
+    wrap.appendChild(detail);
+    toggle.addEventListener('click', function () {
+      const open = detail.classList.toggle('open');
+      toggle.textContent = open ? '收起' : '详情';
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    copyBtn.addEventListener('click', function () { copyTextToClipboard(display, copyBtn); });
+    els.messages.appendChild(wrap);
+    return wrap;
+  }
+
+  function addAssistantBubble(text, output) {
+    const summary = String(text == null ? '' : text);
+    const rawOut = output == null ? '' : String(output);
+    if (!summary && !rawOut) return null;
+    renderAssistantBubble(summary, rawOut);
+    scrollDown();
+    transcript.push({ role: 'assistant', text: summary, output: rawOut || undefined, at: nowIso() });
+    persistTranscript();
   }
 
   function findLlmCard(id) {
@@ -1540,7 +1765,15 @@
     for (let i = 1; i < bits.length; i++) {
       const b = bits[i];
       if (badgeRe.test(b)) continue;
-      let m = /^(\d+)字$/.exec(b);
+      let m = /^发(\d+)字·收(\d+)字$/.exec(b);
+      if (m) {
+        out.chars = parseInt(m[1], 10);
+        out.outputChars = parseInt(m[2], 10);
+        continue;
+      }
+      m = /^收(\d+)字$/.exec(b);
+      if (m) { out.outputChars = parseInt(m[1], 10); continue; }
+      m = /^(\d+)字$/.exec(b);
       if (m) { out.outputChars = parseInt(m[1], 10); continue; }
       m = /^上下文 (\d+) 字$/.exec(b);
       if (m) { out.chars = parseInt(m[1], 10); continue; }
@@ -1572,8 +1805,13 @@
     const bits = [state.label || '模型'];
     if (state.model) bits.push(state.model);
     if (state.fileName) bits.push(state.fileName);
-    if (state.outputChars != null) bits.push(state.outputChars + '字');
-    else if (state.chars != null) bits.push('上下文 ' + state.chars + ' 字');
+    if (state.chars != null && state.outputChars != null) {
+      bits.push('发' + state.chars + '字·收' + state.outputChars + '字');
+    } else if (state.outputChars != null) {
+      bits.push('收' + state.outputChars + '字');
+    } else if (state.chars != null) {
+      bits.push('上下文 ' + state.chars + ' 字');
+    }
     if (state.elapsedMs != null) {
       const elapsed = formatElapsed(state.elapsedMs);
       if (elapsed) bits.push(elapsed);
@@ -1615,29 +1853,13 @@
       meta.appendChild(title);
       meta.appendChild(note);
       const actions = mk('div', 'llm-call-actions');
-      const toggleBtn = mk('button', null, { type: 'button', textContent: '展开' });
       const dlBtn = mk('button', null, { type: 'button', textContent: '下载详情' });
-      actions.appendChild(toggleBtn);
       actions.appendChild(dlBtn);
       head.appendChild(badge);
       head.appendChild(meta);
       head.appendChild(actions);
-      const body = mk('div', 'llm-call-body');
-      const pre = mk('pre');
-      body.appendChild(pre);
       card.appendChild(head);
-      card.appendChild(body);
-      card._llm = { badge: badge, title: title, note: note, toggleBtn: toggleBtn, dlBtn: dlBtn, body: body, pre: pre, open: false, state: {} };
-      toggleBtn.addEventListener('click', () => {
-        const ui = card._llm;
-        if (!ui) return;
-        if (!ui.open && !(ui.state.output || ui.state.error) && port && !portDead) {
-          try { port.postMessage({ cmd: 'getLlmCall', id: id }); } catch (e) {}
-        }
-        ui.open = !ui.open;
-        ui.body.classList.toggle('open', ui.open);
-        ui.toggleBtn.textContent = ui.open ? '收拢' : '展开';
-      });
+      card._llm = { badge: badge, title: title, note: note, dlBtn: dlBtn, state: {} };
       dlBtn.addEventListener('click', () => {
         if (!port || portDead) {
           addBubble('error', '未连接后台，无法下载调用详情');
@@ -1664,12 +1886,10 @@
     const noteText = llmCallNoteText(state);
     ui.note.textContent = noteText;
     card.classList.toggle('llm-call-compact', !noteText);
-    const bodyText = state.output || state.error || '';
-    if (bodyText) ui.pre.textContent = bodyText;
     const line = llmCallStatusLine(state);
     const persist = llmCallPersistFields(state);
     if (created) {
-      transcript.push({ role: 'llm-call', text: line, llmId: id, llm: persist });
+      transcript.push({ role: 'llm-call', text: line, llmId: id, llm: persist, at: nowIso() });
     } else {
       for (let i = transcript.length - 1; i >= 0; i--) {
         if (transcript[i] && transcript[i].llmId === id) {
@@ -1715,12 +1935,24 @@
               id: m.llmId || ('restored-' + transcript.length),
               phase: 'restored'
             }));
+            const last = transcript[transcript.length - 1];
+            if (last && last.llmId && m.at) last.at = m.at;
+            continue;
+          }
+          if (m.role === 'assistant') {
+            renderAssistantBubble(m.text, m.output);
+            transcript.push({
+              role: 'assistant',
+              text: String(m.text),
+              output: m.output ? String(m.output) : undefined,
+              at: m.at || undefined
+            });
             continue;
           }
           const div = mk('div', 'bubble ' + m.role);
           div.textContent = String(m.text);
           els.messages.appendChild(div);
-          transcript.push({ role: m.role, text: String(m.text) });
+          transcript.push({ role: m.role, text: String(m.text), at: m.at || undefined });
         }
       }
       if (stripped) persistTranscript();
@@ -1963,19 +2195,122 @@
     }, 12000);
   }
 
-  function clearAll() {
+  function clearConversation(keepFiles) {
+    hideArchiveModal();
     if (running) requestStop();
     try {
-      if (port && !portDead) port.postMessage({ cmd: 'clearHistory' });
+      if (port && !portDead) port.postMessage({ cmd: 'clearHistory', keepFiles: !!keepFiles });
     } catch (e) {}
     clearMessagesDOM();
     transcript = [];
-    attachedFiles.length = 0;
-    renderChips();
-    if (canPersist()) {
-      storeSet({ [trKey()]: [], [fileKey()]: [] });
+    if (!keepFiles) {
+      attachedFiles.length = 0;
+      renderChips();
+      if (canPersist()) storeSet({ [fileKey()]: [] });
     }
     els.settingsStatus.textContent = '';
+    addBubble('status', keepFiles ? '已清空对话历史（附件已保留）' : '已清空对话历史与附件');
+  }
+
+  function clearAll() {
+    clearConversation(false);
+  }
+
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+  function formatLocalDateTime(d) {
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
+      ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+  }
+
+  function formatStampForFile(d) {
+    return String(d.getFullYear()) + pad2(d.getMonth() + 1) + pad2(d.getDate()) + '-' +
+      pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds());
+  }
+
+  function formatMessageTime(at) {
+    if (!at) return '';
+    const d = new Date(at);
+    if (isNaN(d.getTime())) return String(at);
+    return formatLocalDateTime(d);
+  }
+
+  function archiveRoleLabel(role) {
+    const map = {
+      user: '用户',
+      assistant: '助手',
+      system: '系统',
+      status: '状态',
+      error: '错误',
+      'llm-call': '模型调用'
+    };
+    return map[role] || String(role || '');
+  }
+
+  function archiveItems(userOnly) {
+    return transcript.filter((m) => {
+      if (!m) return false;
+      if (isConnHintMessage(m)) return false;
+      if (userOnly) return m.role === 'user';
+      return true;
+    });
+  }
+
+  function buildArchiveMarkdown(items, userOnly) {
+    const now = new Date();
+    const lines = [
+      '# 对话存档',
+      '',
+      '- 页面：' + (location.href || ''),
+      '- 保存时间：' + formatLocalDateTime(now),
+      '- 范围：' + (userOnly ? '仅用户输入' : '全部（用户输入与系统响应）'),
+      ''
+    ];
+    if (!items.length) {
+      lines.push('（当前没有可保存的内容）');
+      return lines.join('\n');
+    }
+    items.forEach((m) => {
+      const t = formatMessageTime(m.at);
+      const title = t ? (t + ' · ' + archiveRoleLabel(m.role)) : archiveRoleLabel(m.role);
+      lines.push('## ' + title);
+      lines.push('');
+      const body = String(m.text || '').trim();
+      lines.push(body || '（无文本）');
+      if (!userOnly && m.output) {
+        lines.push('');
+        lines.push('### 完整输出');
+        lines.push('');
+        lines.push('```');
+        lines.push(formatModelOutput(m.output));
+        lines.push('```');
+      }
+      lines.push('');
+    });
+    return lines.join('\n');
+  }
+
+  function saveConversation(userOnly) {
+    const items = archiveItems(!!userOnly);
+    if (!items.length) {
+      addBubble('status', userOnly ? '当前没有用户输入可保存' : '当前没有可保存的对话');
+      return;
+    }
+    hideArchiveModal();
+    const stamp = formatStampForFile(new Date());
+    const filename = (userOnly ? '对话存档-用户输入-' : '对话存档-完整-') + stamp + '.md';
+    downloadTextFile(buildArchiveMarkdown(items, !!userOnly), filename, 'text/markdown;charset=utf-8');
+    addBubble('status', '已保存：' + filename);
+  }
+
+  function hideArchiveModal() {
+    els.archiveModal.classList.add('hidden');
+  }
+
+  function openArchiveModal() {
+    els.settingsPanel.classList.add('hidden');
+    els.skillLibrary.classList.add('hidden');
+    els.archiveModal.classList.remove('hidden');
   }
 
   // ============ 配置 ============
@@ -2059,9 +2394,9 @@
   // ============ 配置导入 / 导出（后台为权威：校验/合并/落库/刷新） ============
   // 导出：后台 exportPayload 返回严格 7 键 JSON（含 apiKey 明文，重装免重配）；面板仅用 Blob+<a download> 落盘。
   // 导入：面板原样把文件文本交给后台 importConfig → validateImportConfig 校验/合并 → 回推 configImported + 新 config。
-  function downloadJsonText(json, filename) {
+  function downloadTextFile(text, filename, mime) {
     try {
-      const blob = new Blob([json], { type: 'application/json' });
+      const blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -2074,6 +2409,10 @@
     } catch (e) {
       addBubble('error', '下载失败：' + String(e && e.message || e));
     }
+  }
+
+  function downloadJsonText(json, filename) {
+    downloadTextFile(json, filename, 'application/json');
   }
 
   function exportConfig() {
@@ -2470,14 +2809,14 @@
 
   function handleAsk(msg) {
     const q = msg.question != null ? String(msg.question) : '';
-    addBubble('assistant', q || '需要更多信息');
+    addAssistantBubble(q || '需要更多信息', msg.output);
     addBubble('system', '请回复后继续');
     setRunning(false);
     els.userInput.focus();
   }
 
   function handleDone(msg) {
-    addBubble('assistant', msg.summary != null ? String(msg.summary) : '完成');
+    addAssistantBubble(msg.summary != null ? String(msg.summary) : '完成', msg.output);
     addBubble('system', '任务完成');
     setRunning(false);
     els.userInput.focus();
@@ -2547,16 +2886,12 @@
         case 'llmCallDetail':
           if (msg.ok) {
             const card = findLlmCard(String(msg.id || ''));
-            if (card && card._llm) {
-              const text = msg.output || msg.error || '';
-              if (text) card._llm.pre.textContent = text;
-              if (card._llm.state) {
-                if (msg.output) card._llm.state.output = String(msg.output);
-                if (msg.parseNote) card._llm.state.parseNote = String(msg.parseNote);
-                const noteText = llmCallNoteText(card._llm.state);
-                card._llm.note.textContent = noteText;
-                card.classList.toggle('llm-call-compact', !noteText);
-              }
+            if (card && card._llm && card._llm.state) {
+              if (msg.output) card._llm.state.output = String(msg.output);
+              if (msg.parseNote) card._llm.state.parseNote = String(msg.parseNote);
+              const noteText = llmCallNoteText(card._llm.state);
+              card._llm.note.textContent = noteText;
+              card.classList.toggle('llm-call-compact', !noteText);
             }
           }
           break;
@@ -2564,7 +2899,10 @@
           addBubble('status', '已同步附件 ' + (msg.count != null ? msg.count : 0) + ' 个');
           break;
         case 'step':
-          addBubble('assistant', msg.summary != null ? String(msg.summary) : ('步骤 ' + msg.step));
+          addAssistantBubble(
+            msg.summary != null ? String(msg.summary) : ('步骤 ' + msg.step),
+            msg.output
+          );
           break;
         case 'tool':
           addBubble(msg.ok ? 'status' : 'error', msg.text != null ? String(msg.text) : '');
@@ -2574,12 +2912,7 @@
         case 'error': handleError(msg); break;
         case 'cancelled': handleCancelled(msg); break;
         case 'historyCleared':
-          if (msg.ok) {
-            clearMessagesDOM();
-            transcript = [];
-            attachedFiles.length = 0;
-            renderChips();
-          }
+          // 面板已按 keepFiles 完成本地清空；此处不再改 DOM/附件，避免晚到的确认冲掉新附件或刚写入的提示。
           break;
         case 'webSkills':
           cachedSkills = Array.isArray(msg.skills) ? msg.skills : [];
@@ -2770,6 +3103,15 @@
     els.confirmModal.addEventListener('click', (e) => {
       if (e.target === els.confirmModal) hideConfirmModal();
     });
+    els.clearBtn.addEventListener('click', () => openArchiveModal());
+    els.archiveCancel.addEventListener('click', () => hideArchiveModal());
+    els.archiveClearKeepFiles.addEventListener('click', () => clearConversation(true));
+    els.archiveClearAll.addEventListener('click', () => clearConversation(false));
+    els.archiveSaveFull.addEventListener('click', () => saveConversation(false));
+    els.archiveSaveUser.addEventListener('click', () => saveConversation(true));
+    els.archiveModal.addEventListener('click', (e) => {
+      if (e.target === els.archiveModal) hideArchiveModal();
+    });
     els.skillSearch.addEventListener('input', () => renderSkillList());
     els.skillFilterAll.addEventListener('click', () => setSkillFilter('all'));
     els.skillFilterMatch.addEventListener('click', () => setSkillFilter('match'));
@@ -2843,7 +3185,6 @@
         sendMessage();
       }
     });
-    els.clearBtn.addEventListener('click', clearAll);
     initDrag();
 
     // chrome.runtime.onMessage：仅响应 showPanel，其余忽略

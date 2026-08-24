@@ -39,6 +39,15 @@ ok(/function upsertLlmCallCard/.test(panelSrc), '面板有模型调用可收拢�
 ok(/downloadLlmCall/.test(panelSrc), '面板可请求下载调用详情');
 ok(/llm-call-badge/.test(panelSrc), '调用卡片有解析状态徽标');
 ok(/textContent: '存为SKILL'/.test(panelSrc), '标题栏按钮文案为存为SKILL');
+ok(/textContent: '清空\/存档对话'/.test(panelSrc), '标题栏按钮为清空/存档对话');
+ok(!/textContent: '清空对话', title: '清空对话与附件'/.test(panelSrc), '标题栏不再直接清空对话');
+ok(/清空对话（仅对话历史、保留附件）/.test(panelSrc), '可清空对话并保留附件');
+ok(/清空对话（包括对话历史与附件）/.test(panelSrc), '可清空对话与附件');
+ok(/保存对话（所有用户输入与系统响应的内容与时间线）/.test(panelSrc), '可保存完整对话时间线');
+ok(/保存对话（仅用户输入）/.test(panelSrc), '可仅保存用户输入');
+ok(/keepFiles/.test(panelSrc) && /keepFiles/.test(bg), '清空历史可选择保留附件');
+ok(/function saveConversation/.test(panelSrc) && /function archiveItems/.test(panelSrc), '保存对话从 transcript 导出');
+ok(/function openArchiveModal/.test(panelSrc), '点击标题栏打开清空/存档页');
 ok(/textContent: '加载SKILL'/.test(panelSrc), '标题栏按钮文案为加载SKILL');
 ok(!/存为 WEB-SKILL/.test(panelSrc), '不再使用「存为 WEB-SKILL」');
 ok(!/WEB-SKILL 库/.test(panelSrc), '不再使用「WEB-SKILL 库」');
@@ -51,6 +60,11 @@ ok(!/展开可看全文/.test(panelSrc), '收到态不重复「展开可看全�
 ok(!/已收到返回（/.test(panelSrc), '收到态不重复标题中的字数');
 ok(!/刷新后面板只保留摘要/.test(panelSrc), '恢复态不重复下载提示');
 ok(!/下载 JSON 含本次请求的完整输入/.test(panelSrc), '展开区不重复下载说明');
+ok(!/textContent: '展开'/.test(panelSrc), '模型调用卡片不再提供展开按钮');
+ok(/textContent: '下载详情'/.test(panelSrc), '模型调用卡片保留下载详情');
+ok(/assistant-detail-btn/.test(panelSrc), '助手回复提供详情按钮');
+ok(/assistant-output-copy/.test(panelSrc), '详情文本框右上角有复制按钮');
+ok(/function formatModelOutput/.test(panelSrc), '助手详情展示完整 output JSON');
 ok(/llm-call-note:empty/.test(panelSrc), '空备注不占行');
 ok(/llm-call-compact/.test(panelSrc), '无备注时卡片单行对齐');
 ok(/function llmOutputPreview/.test(panelSrc), '卡片用返回预览代替重复状态句');
@@ -77,12 +91,13 @@ const llmHelpers = [
   extractFn(panelSrc, 'looksLikeLlmStatusLine'),
   extractFn(panelSrc, 'parseStoredLlmStatusLine'),
   extractFn(panelSrc, 'llmCallStatusLine'),
-  extractFn(panelSrc, 'llmCallNoteText')
+  extractFn(panelSrc, 'llmCallNoteText'),
+  extractFn(panelSrc, 'formatModelOutput')
 ].join('\n');
 ok(llmHelpers.indexOf('function llmCallNoteText') >= 0, '可抽出卡片备注函数做行为断言');
 let llmUi = null;
 try {
-  llmUi = vm.runInNewContext(llmHelpers + '\n({ llmCallNoteText: llmCallNoteText, llmCallStatusLine: llmCallStatusLine, parseStoredLlmStatusLine: parseStoredLlmStatusLine, llmOutputPreview: llmOutputPreview })');
+  llmUi = vm.runInNewContext(llmHelpers + '\n({ llmCallNoteText: llmCallNoteText, llmCallStatusLine: llmCallStatusLine, parseStoredLlmStatusLine: parseStoredLlmStatusLine, llmOutputPreview: llmOutputPreview, formatModelOutput: formatModelOutput })');
 } catch (e) {
   ok(false, '卡片文案函数可在 vm 中执行: ' + (e && e.message));
 }
@@ -98,13 +113,14 @@ if (llmUi) {
   };
   const title = llmUi.llmCallStatusLine(ocrReceived);
   const note = llmUi.llmCallNoteText(ocrReceived);
-  ok(title.indexOf('41字') >= 0, '加粗标题含字数');
+  ok(title.indexOf('收41字') >= 0, '加粗标题含返回字数');
   ok(title.indexOf('已收到') < 0 && title.indexOf('已解析') < 0, '标题不重复徽章上的已收到/已解析');
   ok(/ · 已收到$/.test(title) === false, '标题不以状态词结尾');
   ok(note.indexOf('已收到') < 0, '备注不再重复「已收到」');
   ok(llmUi.llmCallStatusLine({
-    phase: 'parsed', parseOk: true, label: '文本模型', model: 'glm-5.2', outputChars: 2, elapsedMs: 7100
-  }) === '文本模型 · glm-5.2 · 2字 · 7.1s', '已解析后标题只留模型与耗时');
+    phase: 'parsed', parseOk: true, label: '文本模型', model: 'glm-5.2',
+    chars: 10000, outputChars: 170, elapsedMs: 7300
+  }) === '文本模型 · glm-5.2 · 发10000字·收170字 · 7.3s', '完成后同时展示发/收字数与耗时');
   ok(!/\d+字/.test(note), '备注不再重复字数');
   ok(note === ocrReceived.output, '41 字 OCR 原文进备注，不写状态套话');
   ok(llmUi.llmCallNoteText({ phase: 'received', output: '4cYs', outputChars: 4 }) === '4cYs', '短验证码原文直接展示');
@@ -120,9 +136,11 @@ if (llmUi) {
   const restored = llmUi.parseStoredLlmStatusLine('OCR · kimi-k2.6 · page:captcha · 41字 · 已收到');
   ok(restored.label === 'OCR' && restored.model === 'kimi-k2.6' && restored.fileName === 'page:captcha' && restored.outputChars === 41,
     '旧会话标题行能还原成卡片字段');
-  const restoredNew = llmUi.parseStoredLlmStatusLine('文本模型 · glm-5.2 · 2字 · 7.1s');
-  ok(restoredNew.label === '文本模型' && restoredNew.model === 'glm-5.2' && restoredNew.outputChars === 2,
-    '无状态词的新标题行也能还原');
+  const restoredNew = llmUi.parseStoredLlmStatusLine('文本模型 · glm-5.2 · 发10000字·收170字 · 7.3s');
+  ok(restoredNew.label === '文本模型' && restoredNew.model === 'glm-5.2' && restoredNew.chars === 10000 && restoredNew.outputChars === 170,
+    '发/收字数标题行也能还原');
+  ok(/"result": "hello"/.test(llmUi.formatModelOutput('{"action":"done","summary":"s","result":"hello"}')),
+    '详情展开会带上 output 里的 result');
 }
 
 ok(/function coerceAgentAction/.test(bg), '可把 action=click 改写为 execute');
@@ -201,6 +219,24 @@ ok(/within 必须来自当前这一轮快照/.test(bg), 'PLAYBOOK 禁止沿用�
 ok(/LLM_TEXT_TIMEOUT_RETRY/.test(bg), '文本模型超时会重试');
 ok(/err\.code === 'LLM_TIMEOUT'/.test(bg), '超时错误有 LLM_TIMEOUT 标记');
 ok(/文本模型超时，正在重试/.test(bg), '超时后有重试状态文案');
+const transStart = bg.indexOf('function isLlmTimeout');
+const transEnd = bg.indexOf('\nasync function callLLM');
+ok(transStart >= 0 && transEnd > transStart, '可截取瞬时错误判定函数');
+const transSandbox = {};
+try {
+  vm.runInNewContext(
+    bg.slice(transStart, transEnd) +
+      '\nthis.isLlmTimeout = isLlmTimeout;\nthis.isLlmTransientError = isLlmTransientError;',
+    transSandbox
+  );
+  ok(typeof transSandbox.isLlmTransientError === 'function', 'isLlmTransientError 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 isLlmTransientError 失败: ' + (e && e.message));
+}
+ok(transSandbox.isLlmTransientError({ message: 'LLM 请求失败 HTTP 503 @ https://api.example/v1/chat/completions: upstream connect error or disconnect/reset before headers. reset reason: connection termination' }),
+  'HTTP 503 断连视为可重试瞬时错误');
+ok(transSandbox.isLlmTransientError({ message: 'HTTP 429' }), 'HTTP 429 视为可重试瞬时错误');
+ok(!transSandbox.isLlmTransientError({ message: 'HTTP 401 unauthorized' }), 'HTTP 401 不视为瞬时错误');
 ok(/【文件列表勾选】/.test(bg), 'PLAYBOOK 含文件列表勾选说明');
 ok(/setChecked\(\{text:"完整文件名"\}/.test(bg), 'PLAYBOOK 要求用 setChecked 选文件');
 ok(/不要因为页面外观无变化而重复操作/.test(bg), 'PLAYBOOK：verified=true 即成功，不因页面无变化重试');
@@ -315,7 +351,10 @@ try {
       '\nthis.demotePriorUserTasks = demotePriorUserTasks;' +
       '\nthis.buildUserPrompt = buildUserPrompt;' +
       '\nthis.hasPriorUserTask = hasPriorUserTask;' +
-      '\nthis.toBackgroundTaskContent = toBackgroundTaskContent;',
+      '\nthis.toBackgroundTaskContent = toBackgroundTaskContent;' +
+      '\nthis.parseResumeTask = parseResumeTask;' +
+      '\nthis.extractOriginalTask = extractOriginalTask;' +
+      '\nthis.summarizeVerifiedProgress = summarizeVerifiedProgress;',
     demoteSandbox
   );
   ok(typeof demoteSandbox.demotePriorUserTasks === 'function', 'demotePriorUserTasks 可在测试中加载');
@@ -339,6 +378,50 @@ ok(demoteSandbox.buildUserPrompt('选中这两个文件', []).indexOf('【当前
 ok(demoteSandbox.buildUserPrompt('张三', [], 'continue').indexOf('【用户补充·继续原任务】') === 0, '回答提问标为继续原任务');
 const twice = demoteSandbox.demotePriorUserTasks(demoted.messages);
 ok(!twice.changed, '已是背景的任务不会重复改写');
+
+ok(!!demoteSandbox.parseResumeTask('继续前面的工作'), '纯“继续前面的工作”视为恢复');
+ok(!!demoteSandbox.parseResumeTask('请接着做'), '“请接着做”视为恢复');
+ok(!!demoteSandbox.parseResumeTask('从中断处继续'), '“从中断处继续”视为恢复');
+ok(!!demoteSandbox.parseResumeTask('continue'), '英文 continue 视为恢复');
+ok(demoteSandbox.parseResumeTask('继续前面的工作，然后提交表单').extra === '然后提交表单', '恢复句带补充时拆出后续要求');
+ok(!demoteSandbox.parseResumeTask('继续填写学科分类'), '具体新工作“继续填写…”不当成空恢复');
+ok(!demoteSandbox.parseResumeTask('把这两个文件发布出去'), '普通任务不是恢复');
+
+const origMsgs = [
+  { role: 'system', content: 'sys' },
+  { role: 'user', content: demoteSandbox.buildUserPrompt('根据附件把表单未填字段补全', []) },
+  { role: 'assistant', content: '{"action":"execute","summary":"填写单位","operations":[{"op":"setVal","args":["#org","示例单位"]}]}' },
+  { role: 'user', content: '【执行结果】\nOK result={"kind":"batch","results":[{"op":"setVal","value":{"ok":true,"expected":"示例单位","actual":"示例单位","verified":true}}]}' }
+];
+ok(demoteSandbox.extractOriginalTask(origMsgs).indexOf('根据附件把表单未填字段补全') >= 0, '可从当前指令还原原任务');
+const origDemoted = demoteSandbox.demotePriorUserTasks(origMsgs).messages;
+ok(demoteSandbox.extractOriginalTask(origDemoted).indexOf('根据附件把表单未填字段补全') >= 0, '降级为背景后仍能还原原任务');
+const resumeBody = demoteSandbox.buildUserPrompt('继续前面的工作', [], 'resume', {
+  originalTask: '根据附件把表单未填字段补全',
+  extra: '',
+  done: ['填写单位 · setVal · 示例单位 · verified'],
+  interrupt: 'LLM 请求失败 HTTP 503'
+});
+ok(resumeBody.indexOf('【原任务】') >= 0 && resumeBody.indexOf('根据附件把表单未填字段补全') >= 0, '恢复提示含原任务');
+ok(resumeBody.indexOf('禁止重做') >= 0 && resumeBody.indexOf('填写单位') >= 0, '恢复提示列出已验证完成的步骤');
+ok(resumeBody.indexOf('用户任务：继续前面的工作') < 0, '恢复时不把“继续前面的工作”当成新任务正文');
+ok(demoteSandbox.toBackgroundTaskContent(resumeBody).indexOf('根据附件把表单未填字段补全') >= 0, '再次降级恢复提示时仍保留原任务');
+const progress = demoteSandbox.summarizeVerifiedProgress(origMsgs);
+ok(progress.length === 1 && /setVal/.test(progress[0]) && /示例单位/.test(progress[0]), '已验证的 setVal 记入完成进度');
+const inspectOnly = origMsgs.concat([
+  { role: 'assistant', content: '{"action":"execute","summary":"查看弹窗","operations":[{"op":"inspect","args":[".modal"]}]}' },
+  { role: 'user', content: '【执行结果】\nOK result={"kind":"batch","results":[{"op":"inspect","value":{"ok":true}}]}' }
+]);
+ok(demoteSandbox.summarizeVerifiedProgress(inspectOnly).length === 1, 'inspect 查询不记入完成进度');
+
+ok(/【中断恢复】/.test(bg), 'PLAYBOOK 含中断恢复');
+ok(/已从中断处恢复原任务/.test(bg), '恢复时有明确状态文案');
+ok(/没有找到可继续的原任务/.test(bg), '找不到原任务时不把“继续”当新指令');
+ok(/!continueAsk && !resumeMeta && isBoundedInstruction/.test(bg), '单步自动收束在恢复任务时关闭');
+ok(/LLM_TEXT_ERROR_RETRY/.test(bg), '文本模型瞬时错误会重试');
+ok(/文本模型暂时不可用，正在重试/.test(bg), '瞬时错误有重试状态文案');
+ok(/rememberResumeCheckpoint/.test(bg) && /clearResumeCheckpoint/.test(bg), '中断会记下检查点，完成时清除');
+ok(!/张文帅/.test(bg) && !/学科分类等级联字段必须/.test(bg), 'PLAYBOOK 不写某一站字段名');
 
 const boundStart = bg.indexOf('\nconst MUTATING_HELPER_OPS');
 const boundEnd = bg.indexOf('\nfunction truncate');
@@ -386,7 +469,9 @@ function attachMode(task, extra) {
     alreadyPinned: !!x.alreadyPinned,
     continueAsk: !!x.continueAsk,
     messages: x.messages || [],
-    modelAskedNeedAttach: !!x.modelAskedNeedAttach
+    modelAskedNeedAttach: !!x.modelAskedNeedAttach,
+    resumeTask: !!x.resumeTask,
+    originalTask: x.originalTask || ''
   });
 }
 const attachCases = [
@@ -412,6 +497,11 @@ ok(attachMode('好的继续', {
   continueAsk: true,
   messages: [{ role: 'assistant', content: '{"operations":[{"op":"setVal","args":["#x","v"]}]}' }]
 }) === 'pin', '续答且历史在填表时钉正文');
+ok(attachMode('继续前面的工作', {
+  resumeTask: true,
+  originalTask: '根据附件填写姓名和单位',
+  messages: [{ role: 'assistant', content: '{"operations":[{"op":"setVal","args":["#name","李四"]}]}' }]
+}) === 'pin', '恢复且原任务/历史在填表时钉正文');
 ok(attachMode('随便点一下', { modelAskedNeedAttach: true }) === 'pin', '模型声明 needAttach 则钉正文');
 ok(boundSandbox.historySuggestsFillFromAttach([
   { role: 'assistant', content: '{"action":"execute","operations":[{"op":"setVal","args":["#a","1"]}]}' }
