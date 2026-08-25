@@ -222,6 +222,21 @@
       font-size: 12px;
       color: #5a6072;
     }
+    .settings-check-row {
+      display: flex !important;
+      flex-direction: row !important;
+      align-items: center;
+      gap: 8px;
+    }
+    .settings-check-row input {
+      width: auto;
+      margin: 0;
+    }
+    .run-settings {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
     .settings-panel input {
       border: 1px solid #d8dbe7;
       border-radius: 8px;
@@ -1317,16 +1332,41 @@
     const systemPromptOcr = mk('textarea', null, { rows: 3, placeholder: 'OCR 模型 System Prompt（视觉模型调用时置于最前）' });
     settingsPanel.appendChild(mkLabel('OCR 模型 System Prompt', systemPromptOcr));
 
-    const maxSteps = mk('input', null, { type: 'number', min: 1, max: 100, placeholder: '15', value: '15' });
-    settingsPanel.appendChild(mkLabel('最大步数', maxSteps));
+    const runSection = mk('div', 'provider-section run-settings');
+    runSection.appendChild(mk('div', 'provider-heading', { textContent: '运行参数' }));
+    const maxSteps = mk('input', null, { type: 'number', min: 1, max: 100, step: '1', placeholder: '15', value: '15' });
+    runSection.appendChild(mkLabel('最大步数', maxSteps));
+    const llmCallGapSec = mk('input', null, {
+      type: 'number', min: 0, max: 10, step: '0.1', placeholder: '0.5', value: '0.5',
+      title: '两次文本模型调用之间的最短间隔，避免连续请求被接口限流'
+    });
+    runSection.appendChild(mkLabel('模型调用间隔（秒）', llmCallGapSec));
+    const llmTimeoutRetry = mk('input', null, { type: 'number', min: 0, max: 3, step: '1', placeholder: '1', value: '1' });
+    runSection.appendChild(mkLabel('超时重试次数', llmTimeoutRetry));
+    const llmErrorRetry = mk('input', null, { type: 'number', min: 0, max: 5, step: '1', placeholder: '2', value: '2' });
+    runSection.appendChild(mkLabel('瞬时错误重试次数', llmErrorRetry));
+    const pageQuietSec = mk('input', null, {
+      type: 'number', min: 1, max: 15, step: '0.5', placeholder: '4', value: '4',
+      title: '操作后等待页面 DOM 稳定的上限'
+    });
+    runSection.appendChild(mkLabel('页面稳定等待上限（秒）', pageQuietSec));
+    const suggestWaitSec = mk('input', null, {
+      type: 'number', min: 0, max: 5, step: '0.1', placeholder: '1.4', value: '1.4',
+      title: '填写后等待搜索建议/选项卡片出现的上限'
+    });
+    runSection.appendChild(mkLabel('填写后等待建议层（秒）', suggestWaitSec));
+    const busyMaskEnabled = mk('input', null, { type: 'checkbox' });
+    busyMaskEnabled.checked = true;
+    const busyMaskRow = mk('label', 'settings-check-row');
+    busyMaskRow.appendChild(busyMaskEnabled);
+    busyMaskRow.appendChild(document.createTextNode('操作时显示半透明遮罩'));
+    runSection.appendChild(busyMaskRow);
     const snapshotPiiMask = mk('input', null, { type: 'checkbox' });
-    snapshotPiiMask.style.width = 'auto';
-    snapshotPiiMask.style.display = 'inline-block';
-    snapshotPiiMask.style.marginRight = '8px';
-    const snapshotPiiRow = mk('label');
+    const snapshotPiiRow = mk('label', 'settings-check-row');
     snapshotPiiRow.appendChild(snapshotPiiMask);
     snapshotPiiRow.appendChild(document.createTextNode('快照脱敏（邮箱 / 手机 / 证件号；默认关）'));
-    settingsPanel.appendChild(snapshotPiiRow);
+    runSection.appendChild(snapshotPiiRow);
+    settingsPanel.appendChild(runSection);
 
     const settingsActions = mk('div', 'settings-actions');
     const saveBtn = mk('button', 'btn primary', { textContent: '保存' });
@@ -1518,7 +1558,8 @@
       saveSkillBtn: saveSkillBtn, skillLibBtn: skillLibBtn,
       settingsPanel, textProvidersList, ocrProvidersList,
       addTextProviderBtn, addOcrProviderBtn,
-      systemPromptText, systemPromptOcr, maxSteps, snapshotPiiMask, saveBtn, testBtn, settingsStatus,
+      systemPromptText, systemPromptOcr, maxSteps, llmCallGapSec, llmTimeoutRetry, llmErrorRetry,
+      pageQuietSec, suggestWaitSec, busyMaskEnabled, snapshotPiiMask, saveBtn, testBtn, settingsStatus,
       downloadConfigBtn, uploadConfigBtn, uploadConfigInput,
       skillLibrary, skillSearch, skillFilterAll, skillFilterMatch, skillList,
       importSkillsBtn, exportSelectedBtn, exportAllBtn, importSkillsInput, skillLibStatus,
@@ -2323,13 +2364,38 @@
   }
 
   // ============ 配置 ============
+  function clampInt(n, min, max, fallback) {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return fallback;
+    const i = Math.round(v);
+    if (i < min) return min;
+    if (i > max) return max;
+    return i;
+  }
+  function secInputToMs(el, minMs, maxMs, fallbackMs) {
+    const n = Number(el && el.value);
+    if (!Number.isFinite(n)) return fallbackMs;
+    return clampInt(Math.round(n * 1000), minMs, maxMs, fallbackMs);
+  }
+  function msToSecValue(ms, fallbackMs) {
+    const n = Number(ms);
+    const v = Number.isFinite(n) ? n : fallbackMs;
+    return String(Math.round(v) / 1000);
+  }
+
   function collectConfig() {
     return {
       textProviders: collectProviders(els.textProvidersList, 'text'),
       ocrProviders: collectProviders(els.ocrProvidersList, 'ocr'),
       systemPromptText: els.systemPromptText.value,
       systemPromptOcr: els.systemPromptOcr.value,
-      maxSteps: Number(els.maxSteps.value) || 15,
+      maxSteps: clampInt(els.maxSteps.value, 1, 100, 15),
+      llmCallGapMs: secInputToMs(els.llmCallGapSec, 0, 10000, 500),
+      llmTimeoutRetry: clampInt(els.llmTimeoutRetry && els.llmTimeoutRetry.value, 0, 3, 1),
+      llmErrorRetry: clampInt(els.llmErrorRetry && els.llmErrorRetry.value, 0, 5, 2),
+      pageQuietMs: secInputToMs(els.pageQuietSec, 1000, 15000, 4000),
+      suggestWaitMs: secInputToMs(els.suggestWaitSec, 0, 5000, 1400),
+      busyMaskEnabled: !(els.busyMaskEnabled) || !!els.busyMaskEnabled.checked,
       snapshotPiiMask: !!(els.snapshotPiiMask && els.snapshotPiiMask.checked),
       // 标签由下拉选择驱动（selectTag 实时持久化），此处带回当前选择以备保存
       selectedTextTag: currentConfig ? currentConfig.selectedTextTag : null,
@@ -2354,6 +2420,12 @@
     els.systemPromptOcr.value = cfg.systemPromptOcr != null ? cfg.systemPromptOcr : (defs.systemPromptOcr || '');
 
     if (cfg.maxSteps != null) els.maxSteps.value = cfg.maxSteps;
+    if (els.llmCallGapSec) els.llmCallGapSec.value = msToSecValue(cfg.llmCallGapMs, 500);
+    if (els.llmTimeoutRetry && cfg.llmTimeoutRetry != null) els.llmTimeoutRetry.value = cfg.llmTimeoutRetry;
+    if (els.llmErrorRetry && cfg.llmErrorRetry != null) els.llmErrorRetry.value = cfg.llmErrorRetry;
+    if (els.pageQuietSec) els.pageQuietSec.value = msToSecValue(cfg.pageQuietMs, 4000);
+    if (els.suggestWaitSec) els.suggestWaitSec.value = msToSecValue(cfg.suggestWaitMs, 1400);
+    if (els.busyMaskEnabled) els.busyMaskEnabled.checked = cfg.busyMaskEnabled !== false;
     if (els.snapshotPiiMask) els.snapshotPiiMask.checked = cfg.snapshotPiiMask === true;
 
     // 保存最新配置并重建标签下拉
@@ -2403,7 +2475,7 @@
   }
 
   // ============ 配置导入 / 导出（后台为权威：校验/合并/落库/刷新） ============
-  // 导出：后台 exportPayload 返回严格 7 键 JSON（含 apiKey 明文，重装免重配）；面板仅用 Blob+<a download> 落盘。
+  // 导出：后台 exportPayload 返回白名单字段 JSON（含 apiKey 明文，重装免重配）；面板仅用 Blob+<a download> 落盘。
   // 导入：面板原样把文件文本交给后台 importConfig → validateImportConfig 校验/合并 → 回推 configImported + 新 config。
   function downloadTextFile(text, filename, mime) {
     try {

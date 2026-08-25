@@ -7,10 +7,12 @@
   var INSTALLED = '__assistantPage';
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
   // 已打开页面靠此号决定是否重注入 MAIN world；面板角标读 manifest。
-  var BRIDGE_VERSION = '4.0.0';
+  var BRIDGE_VERSION = '4.1.0';
 
   function install() {
     var scriptAborted = false;
+    var trafficHook = null;
+    var trafficLog = [];
     function isIgnored(el) {
       if (!el) return true;
       try {
@@ -322,6 +324,44 @@
         } catch (e) {}
       }
       return local;
+    }
+
+    function sameOriginFrameDoc(el) {
+      if (!el) return null;
+      var tag = String(el.tagName || '').toUpperCase();
+      if (tag !== 'IFRAME' && tag !== 'FRAME') return null;
+      try {
+        var doc = el.contentDocument;
+        if (doc) return doc;
+      } catch (e) {}
+      return null;
+    }
+
+    // 预览常把正文放在同源 iframe 的 body/<pre> 里；iframe 元素自身 innerText 为空。
+    // 目标是 iframe，或容器几乎只有一个 iframe 时，改读 contentDocument.body。
+    function enterSameOriginFrame(el) {
+      if (!el) return null;
+      var doc = sameOriginFrameDoc(el);
+      if (doc) return doc.body || doc.documentElement || null;
+      if (!el.querySelectorAll) return null;
+      var frames = null;
+      try { frames = el.querySelectorAll('iframe, frame'); } catch (e1) { return null; }
+      if (!frames || frames.length !== 1) return null;
+      var own = '';
+      try { own = String(el.innerText || '').replace(/\s+/g, ' ').trim(); } catch (e2) {}
+      if (own && own.length >= 40) return null;
+      doc = sameOriginFrameDoc(frames[0]);
+      if (!doc) return null;
+      return doc.body || doc.documentElement || null;
+    }
+
+    function readableTextOf(el) {
+      if (!el) return null;
+      var inner = enterSameOriginFrame(el);
+      var target = inner || el;
+      var t = '';
+      try { t = String(target.innerText || target.value || target.textContent || '').trim(); } catch (e) { t = ''; }
+      return t || null;
     }
 
     function isVisible(el, style, ignorePointer) {
@@ -1479,6 +1519,69 @@
       return { root: null, used: '', missing: true, relaxed: false };
     }
 
+    function isFileActionMenuEl(el) {
+      if (!el) return false;
+      try {
+        var role = String(el.getAttribute && el.getAttribute('role') || '').toLowerCase();
+        if (role === 'menuitem' || role === 'menu') return true;
+        if (el.closest && el.closest(
+          '[role="menu"], [role="menuitem"], .el-dropdown-menu, .ivu-dropdown-menu, ' +
+          '.ant-dropdown-menu, .ant-dropdown, [class*="context-menu"], [class*="contextmenu"], ' +
+          '[class*="dropdown-menu"]'
+        )) return true;
+      } catch (e) {}
+      var n = el;
+      for (var hops = 0; n && hops < 10; hops++) {
+        var cn = '';
+        try {
+          cn = String(n.className && n.className.baseVal != null ? n.className.baseVal : (n.className || ''));
+        } catch (e1) { cn = ''; }
+        if (/(?:^|[\s_-])(?:menu|dropdown|popover|context)(?:[\s_-]|$)/i.test(cn) ||
+          /contextmenu|dropdown-menu|more-menu|file-menu|operate-menu/i.test(cn)) {
+          return true;
+        }
+        n = n.parentElement;
+      }
+      return isOverlayEl(el);
+    }
+
+    function isPageChromeDownload(el) {
+      if (!el) return false;
+      try {
+        if (el.closest && el.closest(
+          '.download_box, .download-box, [class*="download_box"], [class*="downloadBox"], ' +
+          'header, nav, .header, .navbar, [class*="top-bar"], [class*="topBar"]'
+        )) return true;
+      } catch (e) {}
+      var n = el;
+      for (var hops = 0; n && hops < 8; hops++) {
+        var cn = '';
+        try {
+          cn = String(n.className && n.className.baseVal != null ? n.className.baseVal : (n.className || ''));
+        } catch (e1) { cn = ''; }
+        if (/download_box|downloadBox/.test(cn) && !/dropdown|menu|context/i.test(cn)) return true;
+        n = n.parentElement;
+      }
+      return false;
+    }
+
+    // 「下载/预览」全页同文时优先点自定义菜单，避开页头 download_box。
+    function preferFileActionHits(tied, needle) {
+      var n = normText(needle);
+      if (!n || !/下载|预览|复制名称|download|preview|copy/.test(n)) return tied;
+      if (!tied || !tied.length) return tied;
+      var menu = [];
+      var rest = [];
+      for (var i = 0; i < tied.length; i++) {
+        var el = tied[i] && tied[i].el;
+        if (isFileActionMenuEl(el)) menu.push(tied[i]);
+        else if (!isPageChromeDownload(el)) rest.push(tied[i]);
+      }
+      if (menu.length) return menu;
+      if (rest.length) return rest;
+      return [];
+    }
+
     function chooseClickByText(list, raw) {
       var needle = normText(raw);
       if (!needle) return null;
@@ -1514,6 +1617,12 @@
           if (btag === 'BUTTON' || brole === 'button') btns.push(tied[bi]);
         }
         if (btns.length) tied = btns;
+      }
+      if (/下载|预览|复制名称|download|preview/.test(needle)) {
+        tied = preferFileActionHits(tied, needle);
+        if (!tied.length) return null;
+        distinct = {};
+        for (var dj = 0; dj < tied.length; dj++) distinct[normText(tied[dj].text)] = true;
       }
       if (Object.keys(distinct).length > 1) {
         return { ambiguousEls: tied };
@@ -2320,7 +2429,20 @@
         + attr('required', !!(entry && entry.required))
         + attr('minLength', entry && entry.minLength)
         + attr('hint', entry && entry.hint)
+        + attr('handoff', entry && entry.handoff)
         + '>';
+    }
+
+    function desktopHandoffOf(entry) {
+      var blob = [
+        entry && entry.text,
+        entry && entry.label,
+        entry && entry.title,
+        entry && entry.ariaLabel,
+        entry && entry.name
+      ].join(' ');
+      if (/FTP|SFTP|FTPS|FileZilla|WinSCP|客户端下载|空间挂载|网盘挂载/i.test(blob)) return 'desktop';
+      return '';
     }
 
     function probeSignals() {
@@ -2456,6 +2578,258 @@
       };
     }
 
+    var VIEW_PANEL_RE = /suggest|autocomplete|typeahead|search-list|search-result|picker-panel|select-dropdown|dropdown-menu|cascader|option-list|result-list|user-list|author-list|combo-panel|suggestion/i;
+    var VIEW_ITEM_RE = /suggest|suggestion|search-item|list-item|dropdown-item|picker-item|result-item|select-item|user-item|author-item|auto-complete|typeahead|cascader-node/i;
+    var VIEW_PANEL_SEL = [
+      '[role="listbox"]', '[role="menu"]', '[role="tablist"]', '[role="list"]', '[role="tree"]',
+      '[class*="suggest"]', '[class*="autocomplete"]', '[class*="typeahead"]',
+      '[class*="search-list"]', '[class*="select-dropdown"]', '[class*="dropdown-menu"]',
+      '[class*="picker-panel"]', '[class*="result-list"]', '[class*="user-list"]',
+      '[class*="author-list"]', '[class*="suggestion"]'
+    ].join(',');
+
+    function classLooksViewPanel(cn) {
+      return VIEW_PANEL_RE.test(String(cn || ''));
+    }
+    function classLooksViewItem(cn) {
+      return VIEW_ITEM_RE.test(String(cn || ''));
+    }
+    function viewRoleOf(el) {
+      try { return String(el && el.getAttribute && el.getAttribute('role') || '').toLowerCase(); } catch (e) { return ''; }
+    }
+    function isViewPanel(el) {
+      if (!el || el.nodeType !== 1) return false;
+      var role = viewRoleOf(el);
+      if (role === 'listbox' || role === 'menu' || role === 'tablist' || role === 'tree' || role === 'list') return true;
+      return classLooksViewPanel(classNameOf(el));
+    }
+    function isViewItemRoot(el) {
+      if (!el || el.nodeType !== 1 || isIgnored(el)) return false;
+      var tag = (el.tagName || '').toUpperCase();
+      var role = viewRoleOf(el);
+      if (role === 'option' || role === 'tab' || role === 'menuitem' || role === 'treeitem') return true;
+      if (tag === 'LI' || tag === 'DD') return true;
+      return classLooksViewItem(classNameOf(el));
+    }
+    function viewItemRootOf(el) {
+      var n = el;
+      var hops = 0;
+      var best = null;
+      while (n && n.nodeType === 1 && hops < 10) {
+        if (isViewItemRoot(n)) best = n;
+        if (isViewPanel(n) && best) return best;
+        n = n.parentElement;
+        hops++;
+      }
+      return best || el;
+    }
+    function classifyViewKind(el) {
+      var role = viewRoleOf(el);
+      var cn = classNameOf(el);
+      if (role === 'tab' || /(?:^|[\s_-])tabs?(?:[\s_-]|$)/i.test(cn)) return 'tab';
+      if (role === 'option' || /select-dropdown|select-item|el-option|ivu-select-item|ant-select-item/i.test(cn)) return 'option';
+      if (/search-item|user-item|author-item|list-item/i.test(cn)) return 'card';
+      if (role === 'menuitem' || role === 'treeitem') return 'option';
+      return 'suggest';
+    }
+    function viewClsToken(el) {
+      var parts = String(classNameOf(el) || '').split(/\s+/);
+      var keep = [];
+      for (var i = 0; i < parts.length && keep.length < 3; i++) {
+        if (!parts[i] || parts[i].length < 3) continue;
+        if (VIEW_ITEM_RE.test(parts[i]) || VIEW_PANEL_RE.test(parts[i])) keep.push(parts[i]);
+        else if (!/^(is-|has-|el-|ant-|ivu-|css-)/.test(parts[i])) keep.push(parts[i]);
+      }
+      if (!keep.length && parts[0]) keep.push(String(parts[0]).slice(0, 24));
+      return keep.join('.');
+    }
+    function makeViewItemKey(kind, near, text, tag, cls) {
+      return [
+        kind || '',
+        String(near || '').slice(0, 40),
+        String(text || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+        tag || '',
+        String(cls || '').slice(0, 40)
+      ].join('|');
+    }
+    function compactViewStructure(el, maxDepth, maxNodes) {
+      maxDepth = maxDepth == null ? 3 : maxDepth;
+      maxNodes = maxNodes == null ? 18 : maxNodes;
+      var out = [];
+      function walk(n, d) {
+        if (!n || n.nodeType !== 1 || out.length >= maxNodes || d > maxDepth) return;
+        if (isIgnored(n)) return;
+        var tag = (n.tagName || '').toUpperCase();
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'SVG' || tag === 'PATH') return;
+        var own = '';
+        try { own = ownText(n).slice(0, 80); } catch (e0) {}
+        if (!own) {
+          try {
+            var nodes = n.childNodes;
+            var onlyText = true;
+            for (var i = 0; i < nodes.length; i++) {
+              if (nodes[i].nodeType === 1) { onlyText = false; break; }
+            }
+            if (onlyText) own = String(n.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+          } catch (e1) {}
+        }
+        var rec = { t: tag };
+        var tok = viewClsToken(n);
+        if (tok) rec.c = tok.slice(0, 40);
+        if (own) rec.x = own;
+        out.push(rec);
+        var ch = n.children;
+        if (!ch) return;
+        for (var j = 0; j < ch.length; j++) walk(ch[j], d + 1);
+      }
+      walk(el, 0);
+      return out;
+    }
+    function compactViewHtml(el) {
+      try {
+        return String(el.outerHTML || '')
+          .replace(/<script[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[\s\S]*?<\/style>/gi, '')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 480);
+      } catch (e) { return ''; }
+    }
+    function serializeViewItem(el) {
+      var kind = classifyViewKind(el);
+      var near = '';
+      try {
+        near = stripStarLabel(fieldLabelOf(el) || '').slice(0, 80);
+        if (!near) {
+          var item = formItemOf(el);
+          if (item) near = stripStarLabel(fieldLabelOf(item) || '').slice(0, 80);
+        }
+      } catch (e0) {}
+      var text = '';
+      try { text = String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 200); } catch (e1) {}
+      var value = '';
+      try {
+        value = String((el.getAttribute && (el.getAttribute('data-value') || el.getAttribute('title'))) || '');
+        if (!value && 'value' in el) value = String(el.value || '');
+      } catch (e2) {}
+      var tag = (el.tagName || '').toUpperCase();
+      var cls = viewClsToken(el);
+      return {
+        key: makeViewItemKey(kind, near, text, tag, cls),
+        kind: kind,
+        tag: tag,
+        role: viewRoleOf(el),
+        cls: cls,
+        near: near,
+        label: near,
+        text: text,
+        value: String(value || '').slice(0, 80),
+        structure: compactViewStructure(el),
+        html: compactViewHtml(el)
+      };
+    }
+    function collectViewPrint(opts) {
+      opts = opts || {};
+      var maxItems = opts.maxItems || 40;
+      var keepLive = !!opts.keepLive;
+      var items = [];
+      var seenEl = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+      var seenKey = {};
+
+      function addEl(el, preferNear) {
+        if (!el || items.length >= maxItems) return;
+        if (isIgnored(el) || !isVisible(el)) return;
+        var root = viewItemRootOf(el) || el;
+        if (seenEl && seenEl.has(root)) return;
+        var rec = serializeViewItem(root);
+        if (preferNear && !rec.near) {
+          rec.near = preferNear;
+          rec.label = rec.label || preferNear;
+          rec.key = makeViewItemKey(rec.kind, rec.near, rec.text, rec.tag, rec.cls);
+        }
+        if (!rec.text && !rec.value && !rec.html) return;
+        if (seenKey[rec.key]) rec.key = rec.key + '#' + items.length;
+        seenKey[rec.key] = true;
+        if (seenEl) seenEl.add(root);
+        if (keepLive) rec._el = root;
+        items.push(rec);
+      }
+
+      var targets = Array.isArray(opts.targets) ? opts.targets : [];
+      for (var t = 0; t < targets.length; t++) {
+        var tel = null;
+        try { tel = resolveTarget(targets[t]); } catch (eT) { tel = null; }
+        if (!tel) continue;
+        var near = '';
+        try { near = stripStarLabel(fieldLabelOf(tel) || '').slice(0, 80); } catch (eN) {}
+        var scope = formItemOf(tel) || tel.parentElement || tel;
+        var parent = tel.parentElement;
+        var hops = 0;
+        while (parent && hops < 6) {
+          if (isViewPanel(parent) || classLooksViewPanel(classNameOf(parent))) addEl(parent, near);
+          parent = parent.parentElement;
+          hops++;
+        }
+        var hunt = [];
+        if (scope && scope.querySelectorAll) {
+          try { hunt = scope.querySelectorAll('ul, ol, li, [role="option"], [role="tab"], [role="listbox"], [class*="search"], [class*="suggest"]'); } catch (eH) { hunt = []; }
+        }
+        for (var hi = 0; hi < hunt.length && items.length < maxItems; hi++) {
+          if (isViewItemRoot(hunt[hi]) || isViewPanel(hunt[hi])) addEl(hunt[hi], near);
+        }
+        var sib = scope && scope.nextElementSibling;
+        var sc = 0;
+        while (sib && sc < 4 && items.length < maxItems) {
+          if (isVisible(sib) && (isViewPanel(sib) || classLooksViewPanel(classNameOf(sib)) || isViewItemRoot(sib))) {
+            addEl(sib, near);
+          }
+          try {
+            var nested = sib.querySelectorAll && sib.querySelectorAll('li, [role="option"], [role="tab"]');
+            if (nested) {
+              for (var ni = 0; ni < nested.length && items.length < maxItems; ni++) addEl(nested[ni], near);
+            }
+          } catch (eS) {}
+          sib = sib.nextElementSibling;
+          sc++;
+        }
+      }
+
+      var panels = [];
+      try { panels = queryAllDeep(VIEW_PANEL_SEL); } catch (eP) { panels = []; }
+      for (var p = 0; p < panels.length && items.length < maxItems; p++) {
+        var panel = panels[p];
+        if (!isVisible(panel) || isIgnored(panel)) continue;
+        if (!isViewPanel(panel) && !classLooksViewPanel(classNameOf(panel))) continue;
+        var kids = [];
+        try {
+          kids = panel.querySelectorAll(
+            '[role="option"], [role="tab"], [role="menuitem"], li, dd, ' +
+            '.el-select-dropdown__item, .el-option, .ant-select-item, .ivu-select-item'
+          );
+        } catch (eK) { kids = []; }
+        var kidCount = 0;
+        for (var k = 0; k < kids.length && items.length < maxItems; k++) {
+          if (isVisible(kids[k])) { addEl(kids[k], ''); kidCount++; }
+        }
+        if (!kidCount) {
+          var divKids = panel.children || [];
+          for (var d = 0; d < divKids.length && items.length < maxItems; d++) {
+            if (isViewItemRoot(divKids[d]) || classLooksViewItem(classNameOf(divKids[d]))) addEl(divKids[d], '');
+          }
+        }
+      }
+
+      var keys = [];
+      var out = [];
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        if (!keepLive && it._el) delete it._el;
+        keys.push(it.key);
+        out.push(it);
+      }
+      return { items: out, sig: keys.join('\n'), truncated: out.length >= maxItems };
+    }
+
     function snapshot(opts) {
       var tSnap = Date.now();
       var full = !!(opts && opts.full);
@@ -2567,6 +2941,8 @@
             : (cascaderHostOf(el) ? 'trigger-or-control' : undefined)
         };
         applyFieldMeta(entry, el);
+        var handoff = desktopHandoffOf(entry);
+        if (handoff) entry.handoff = handoff;
         // 原生 SELECT 附带候选预览（value/text，标记当前选中项），模型可据此一步取值，无需先读选项；
         // 预算耗尽后只保留 selectedText/optionsTotal，把空间留给其他元素
         if (tag === 'SELECT' && el.options) {
@@ -2599,6 +2975,42 @@
         var isNew = !!(prevSnapEls && live && !prevSnapEls.has(live));
         outlineLines.push(formatOutlineLine(ent, isNew, isOverlayEl(live)));
       }
+      var viewPrint = collectViewPrint({ maxItems: 40, keepLive: true });
+      var viewItems = [];
+      var viewList = (viewPrint && viewPrint.items) || [];
+      for (var vi = 0; vi < viewList.length; vi++) {
+        var vrec = viewList[vi];
+        var vlite = vrec._el;
+        if (vrec._el) delete vrec._el;
+        var vIdx = 0;
+        if (vlite) {
+          for (var vek = 1; vek < snapIndex.length; vek++) {
+            if (snapIndex[vek] === vlite) { vIdx = vek; break; }
+          }
+          if (!vIdx) {
+            idx += 1;
+            snapIndex[idx] = vlite;
+            vIdx = idx;
+            try { vlite.setAttribute('data-wpa-i', String(vIdx)); } catch (eV) {}
+          }
+          if (nextPrev && vlite) nextPrev.add(vlite);
+        }
+        vrec.idx = vIdx || undefined;
+        viewItems.push(vrec);
+        var alreadyOutlined = false;
+        for (var oi2 = 0; oi2 < elements.length; oi2++) {
+          if (elements[oi2] && elements[oi2].idx === vIdx) { alreadyOutlined = true; break; }
+        }
+        if (!alreadyOutlined && vIdx) {
+          var vNew = !!(prevSnapEls && vlite && !prevSnapEls.has(vlite));
+          outlineLines.push(
+            (vNew ? '*' : '') + '[' + vIdx + ']<VIEW kind=' + (vrec.kind || '') +
+            (vrec.near ? ' near=' + String(vrec.near).replace(/\s+/g, ' ').slice(0, 30) : '') +
+            (vrec.text ? ' text=' + String(vrec.text).replace(/\s+/g, ' ').slice(0, 60) : '') +
+            '>'
+          );
+        }
+      }
       prevSnapEls = nextPrev;
       var sc = collectScrollableCandidates();
       var seenScroll = typeof Set !== 'undefined' ? new Set() : null;
@@ -2622,6 +3034,7 @@
       return JSON.parse(JSON.stringify({
         outline: outlineLines.join('\n'),
         starFields: starFields,
+        viewItems: viewItems,
         title: document.title || '',
         url: location.href || '',
         heading: extractHeading(),
@@ -2775,6 +3188,530 @@
       fireMouse('mouseup', el);
       if (typeof el.click === 'function') { try { el.click(); } catch (e) {} }
       else { fireMouse('click', el); }
+    }
+
+    function fireMouseAt(el, type, extra) {
+      if (!el) return;
+      try {
+        var win = el.ownerDocument && el.ownerDocument.defaultView || window;
+        var rect = el.getBoundingClientRect();
+        var init = {
+          bubbles: true, cancelable: true, composed: true, view: win,
+          clientX: rect.left + Math.max(rect.width / 2, 1),
+          clientY: rect.top + Math.max(rect.height / 2, 1),
+          button: 0, buttons: 0
+        };
+        if (extra) { for (var k in extra) init[k] = extra[k]; }
+        el.dispatchEvent(new win.MouseEvent(type, init));
+      } catch (e) {}
+    }
+
+    function fileCardByName(raw) {
+      var needle = normText(raw);
+      if (!needle) return null;
+      var nodes = queryAllDeep('div, li, article, section, span, p, a, label');
+      var best = null;
+      var bestLen = Infinity;
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        if (isIgnored(el)) continue;
+        var t = '';
+        try { t = String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e0) {}
+        if (!t || t.length > 400) continue;
+        if (normText(t).indexOf(needle) < 0) continue;
+        if (t.length < bestLen) { best = el; bestLen = t.length; }
+      }
+      if (!best) return null;
+      try {
+        var card = best.closest(
+          '.chartItem, [class*="chartItem"], [class*="file-item"], [class*="fileItem"], ' +
+          '[class*="file-card"], [class*="fileCard"], [class*="grid-item"], li'
+        );
+        if (card && !isIgnored(card)) return card;
+      } catch (e1) {}
+      return best;
+    }
+
+    function resolveFileTarget(target) {
+      if (target == null || target === '') return null;
+      if (typeof target === 'string') {
+        var s = target.trim();
+        if (s && !/^[.#\[]/.test(s) && /\.[A-Za-z0-9]{1,8}$/.test(s)) {
+          var byName = fileCardByName(s);
+          if (byName) return byName;
+        }
+      }
+      try {
+        var byIdx = resolveTarget(target);
+        if (byIdx) {
+          try {
+            var up = byIdx.closest && byIdx.closest(
+              '.chartItem, [class*="chartItem"], [class*="file-item"], [class*="fileItem"], li'
+            );
+            if (up) return up;
+          } catch (e2) {}
+          return byIdx;
+        }
+      } catch (e3) {}
+      return fileCardByName(target);
+    }
+
+    function hasBoxSize(el) {
+      if (!el) return false;
+      try {
+        var r = el.getBoundingClientRect();
+        return r.width > 2 && r.height > 2;
+      } catch (e) { return false; }
+    }
+
+    function pickTopRight(card, list) {
+      if (!card || !list || !list.length) return list && list[0] || null;
+      var cr;
+      try { cr = card.getBoundingClientRect(); } catch (e) { return list[0]; }
+      var best = list[0];
+      var bestScore = -Infinity;
+      for (var i = 0; i < list.length; i++) {
+        var r;
+        try { r = list[i].getBoundingClientRect(); } catch (e1) { continue; }
+        var score = (r.left - cr.left) + (cr.bottom - r.bottom) * 0.3;
+        if (r.top - cr.top < 48) score += 80;
+        if (score > bestScore) { bestScore = score; best = list[i]; }
+      }
+      return best;
+    }
+
+    function findMoreButton(card) {
+      if (!card || !card.querySelectorAll) return null;
+      var found = [];
+      var seen = typeof Set === 'function' ? new Set() : null;
+      function add(el) {
+        if (!el || !card.contains(el) || isIgnored(el)) return;
+        if (seen) {
+          if (seen.has(el)) return;
+          seen.add(el);
+        } else if (found.indexOf(el) >= 0) return;
+        found.push(el);
+      }
+      var sels = [
+        '[aria-label*="更多"]', '[aria-label*="more" i]', '[title*="更多"]', '[title*="more" i]',
+        '[class*="ellipsis"]', '[class*="more-btn"]', '[class*="moreBtn"]', '[class*="icon-more"]',
+        '[class*="ios-more"]', '[class*="md-more"]', '[class*="icon-ellipsis"]', '.anticon-ellipsis',
+        '.el-dropdown', '.el-icon-more', '.el-dropdown-link', '.ant-dropdown-trigger',
+        '.ivu-dropdown', '.ivu-icon-ios-more', '[class*="dropdown"]'
+      ];
+      for (var i = 0; i < sels.length; i++) {
+        var nodes = [];
+        try { nodes = card.querySelectorAll(sels[i]); } catch (e0) {}
+        for (var j = 0; j < nodes.length; j++) add(nodes[j]);
+      }
+      var kids = [];
+      try { kids = card.querySelectorAll('i, span, button, a, em, svg'); } catch (e1) {}
+      for (var k = 0; k < kids.length; k++) {
+        var tx = '';
+        try { tx = String(kids[k].textContent || '').replace(/\s+/g, ''); } catch (e2) {}
+        if (tx === '...' || tx === '…' || tx === '···' || tx === '⋯' || tx === '•••') add(kids[k]);
+      }
+      var sized = [];
+      for (var m = 0; m < found.length; m++) {
+        if (hasBoxSize(found[m])) sized.push(found[m]);
+      }
+      return pickTopRight(card, sized.length ? sized : found);
+    }
+
+    function findCornerControls(card) {
+      if (!card || !card.querySelectorAll) return null;
+      var cr;
+      try { cr = card.getBoundingClientRect(); } catch (e) { return null; }
+      var kids = [];
+      try { kids = card.querySelectorAll('i, span, button, a, em, svg, div'); } catch (e1) { return null; }
+      var hits = [];
+      for (var i = 0; i < kids.length; i++) {
+        var el = kids[i];
+        if (!el || isIgnored(el)) continue;
+        if (String(el.tagName || '').toUpperCase() === 'IMG') continue;
+        var tx = '';
+        try { tx = String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e2) {}
+        if (tx.length > 12) continue;
+        var r;
+        try { r = el.getBoundingClientRect(); } catch (e3) { continue; }
+        if (!(r.width >= 6 && r.width <= 44 && r.height >= 6 && r.height <= 44)) continue;
+        if (r.left < cr.left + cr.width * 0.55) continue;
+        if (r.top > cr.top + 48) continue;
+        if (r.right < cr.right - 48) continue;
+        hits.push(el);
+      }
+      return pickTopRight(card, hits);
+    }
+
+    function findMoreNearCard(card) {
+      var inside = findMoreButton(card) || findCornerControls(card);
+      if (inside) return inside;
+      if (!card) return null;
+      var cr;
+      try { cr = card.getBoundingClientRect(); } catch (e0) { return null; }
+      var x = cr.right - 12;
+      var y = cr.top + 10;
+      var hit = null;
+      try { hit = (card.ownerDocument || document).elementFromPoint(x, y); } catch (e1) {}
+      if (hit && !isIgnored(hit)) {
+        var n = hit;
+        for (var hop = 0; n && hop < 6; hop++) {
+          if (n === card) break;
+          if (String(n.tagName || '').toUpperCase() === 'IMG') { n = n.parentElement; continue; }
+          var nr;
+          try { nr = n.getBoundingClientRect(); } catch (e2) { nr = null; }
+          if (nr && nr.width >= 6 && nr.width <= 48 && nr.height >= 6 && nr.height <= 48) {
+            var ntx = '';
+            try { ntx = String(n.innerText || '').replace(/\s+/g, ' ').trim(); } catch (e3) {}
+            if (ntx.length <= 8) return n;
+          }
+          n = n.parentElement;
+        }
+      }
+      var zoneHits = [];
+      var nodes = [];
+      try { nodes = queryAllDeep('i, span, button, a, em, svg'); } catch (e4) { nodes = []; }
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        if (!el || isIgnored(el)) continue;
+        try { if (card.contains(el)) continue; } catch (e5) {}
+        var r;
+        try { r = el.getBoundingClientRect(); } catch (e6) { continue; }
+        if (!(r.width >= 6 && r.width <= 44 && r.height >= 6 && r.height <= 44)) continue;
+        if (r.left < cr.right - 44 || r.right > cr.right + 8) continue;
+        if (r.top < cr.top - 8 || r.bottom > cr.top + 48) continue;
+        zoneHits.push(el);
+      }
+      return pickTopRight(card, zoneHits);
+    }
+
+    function hoverElement(el) {
+      if (!el) return { ok: false, reason: 'missing' };
+      try { el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+      fireMouseAt(el, 'pointerover');
+      fireMouseAt(el, 'mouseover');
+      fireMouseAt(el, 'mouseenter', { bubbles: false });
+      fireMouseAt(el, 'mousemove');
+      return { ok: true, kind: 'action', via: 'hover', verified: null };
+    }
+
+    function dispatchContextMenu(el) {
+      var win = el.ownerDocument && el.ownerDocument.defaultView || window;
+      var rect;
+      try { rect = el.getBoundingClientRect(); } catch (e) { rect = { left: 0, top: 0, width: 0, height: 0 }; }
+      var x = rect.left + Math.max(rect.width / 2, 1);
+      var y = rect.top + Math.max(rect.height / 2, 1);
+      var extra = { button: 2, buttons: 2, clientX: x, clientY: y };
+      fireMouseAt(el, 'mousemove', { clientX: x, clientY: y });
+      fireMouseAt(el, 'pointerdown', extra);
+      fireMouseAt(el, 'mousedown', extra);
+      try {
+        el.dispatchEvent(new win.MouseEvent('contextmenu', {
+          bubbles: true, cancelable: true, composed: true, view: win,
+          button: 2, buttons: 2, clientX: x, clientY: y
+        }));
+      } catch (e1) {}
+      fireMouseAt(el, 'pointerup', extra);
+      fireMouseAt(el, 'mouseup', extra);
+    }
+
+    function classifyTrafficUrl(url) {
+      var u = String(url || '');
+      if (/check\/token|oauth|\/refresh|\/auth\/|csrf/i.test(u)) return 'authNoise';
+      if (/^data:image\//i.test(u)) return 'iconData';
+      if (/^blob:/i.test(u)) return 'blob';
+      if (/^https?:/i.test(u) || u.charAt(0) === '/') return 'http';
+      return 'other';
+    }
+
+    function trafficEntry(via, method, url) {
+      var u = String(url || '').slice(0, 300);
+      return { via: via, method: String(method || 'GET').toUpperCase(), url: u, kind: classifyTrafficUrl(u) };
+    }
+
+    function startTrafficHook() {
+      stopTrafficHook();
+      trafficLog = [];
+      var origFetch = window.fetch;
+      var origOpen = XMLHttpRequest.prototype.open;
+      var origWinOpen = window.open;
+      var origAClick = HTMLAnchorElement.prototype.click;
+      var origSetAttribute = Element.prototype.setAttribute;
+      var iframeSrcDesc = null;
+      try { iframeSrcDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src'); } catch (eD) {}
+      var locAssign = null;
+      var locReplace = null;
+      try { locAssign = window.location.assign; } catch (eA) {}
+      try { locReplace = window.location.replace; } catch (eR) {}
+      trafficHook = {
+        fetch: origFetch, xhrOpen: origOpen, winOpen: origWinOpen, aClick: origAClick,
+        setAttribute: origSetAttribute, iframeSrcDesc: iframeSrcDesc,
+        locAssign: locAssign, locReplace: locReplace
+      };
+      if (typeof origFetch === 'function') {
+        window.fetch = function (input, init) {
+          try {
+            var url = '';
+            var method = 'GET';
+            if (typeof input === 'string') url = input;
+            else if (input && typeof input.url === 'string') url = input.url;
+            else if (input && input.href) url = String(input.href);
+            if (init && init.method) method = init.method;
+            else if (input && input.method) method = input.method;
+            trafficLog.push(trafficEntry('fetch', method, url));
+          } catch (e) {}
+          return origFetch.apply(this, arguments);
+        };
+      }
+      XMLHttpRequest.prototype.open = function (method, url) {
+        try { trafficLog.push(trafficEntry('xhr', method, url)); } catch (e) {}
+        return origOpen.apply(this, arguments);
+      };
+      window.open = function (url) {
+        try { trafficLog.push(trafficEntry('open', 'GET', url)); } catch (e) {}
+        return origWinOpen.apply(this, arguments);
+      };
+      HTMLAnchorElement.prototype.click = function () {
+        try {
+          if (this && (this.href || this.download)) {
+            trafficLog.push(trafficEntry('a.click', 'GET', this.href || ''));
+          }
+        } catch (e) {}
+        return origAClick.apply(this, arguments);
+      };
+      Element.prototype.setAttribute = function (name, val) {
+        try {
+          var tag = String(this.tagName || '').toUpperCase();
+          var key = String(name || '').toLowerCase();
+          if ((tag === 'IFRAME' || tag === 'FRAME') && key === 'src') {
+            trafficLog.push(trafficEntry('iframe.src', 'GET', val));
+          }
+        } catch (eS) {}
+        return origSetAttribute.apply(this, arguments);
+      };
+      if (iframeSrcDesc && typeof iframeSrcDesc.set === 'function' && iframeSrcDesc.configurable !== false) {
+        try {
+          Object.defineProperty(HTMLIFrameElement.prototype, 'src', {
+            configurable: true,
+            enumerable: iframeSrcDesc.enumerable,
+            get: iframeSrcDesc.get,
+            set: function (v) {
+              try { trafficLog.push(trafficEntry('iframe.src', 'GET', v)); } catch (eI) {}
+              return iframeSrcDesc.set.call(this, v);
+            }
+          });
+        } catch (eP) {}
+      }
+      try {
+        if (typeof locAssign === 'function') {
+          window.location.assign = function (url) {
+            try { trafficLog.push(trafficEntry('location.assign', 'GET', url)); } catch (eL) {}
+            return locAssign.call(window.location, url);
+          };
+        }
+      } catch (eLA) {}
+      try {
+        if (typeof locReplace === 'function') {
+          window.location.replace = function (url) {
+            try { trafficLog.push(trafficEntry('location.replace', 'GET', url)); } catch (eR2) {}
+            return locReplace.call(window.location, url);
+          };
+        }
+      } catch (eLR) {}
+    }
+
+    function stopTrafficHook() {
+      if (!trafficHook) {
+        var copy = trafficLog.slice();
+        return copy;
+      }
+      try { if (trafficHook.fetch) window.fetch = trafficHook.fetch; } catch (e0) {}
+      try { if (trafficHook.xhrOpen) XMLHttpRequest.prototype.open = trafficHook.xhrOpen; } catch (e1) {}
+      try { if (trafficHook.winOpen) window.open = trafficHook.winOpen; } catch (e2) {}
+      try { if (trafficHook.aClick) HTMLAnchorElement.prototype.click = trafficHook.aClick; } catch (e3) {}
+      try { if (trafficHook.setAttribute) Element.prototype.setAttribute = trafficHook.setAttribute; } catch (e4) {}
+      try {
+        if (trafficHook.iframeSrcDesc) {
+          Object.defineProperty(HTMLIFrameElement.prototype, 'src', trafficHook.iframeSrcDesc);
+        }
+      } catch (e5) {}
+      try { if (trafficHook.locAssign) window.location.assign = trafficHook.locAssign; } catch (e6) {}
+      try { if (trafficHook.locReplace) window.location.replace = trafficHook.locReplace; } catch (e7) {}
+      trafficHook = null;
+      return trafficLog.slice();
+    }
+
+    function harvestScriptEndpoints(source) {
+      var out = [];
+      var seen = {};
+      var text = String(source || '');
+      var re = /["'`](\/api\/[^"'`\s\\]{2,160}|https?:\/\/[^"'`\s\\]{8,180})["'`]/g;
+      var m;
+      while ((m = re.exec(text)) && out.length < 48) {
+        var url = m[1];
+        if (/check\/token|sockjs|hot-update|__webpack|sourceMappingURL/i.test(url)) continue;
+        var kind = /^https?:/i.test(url) ? 'http' : 'path';
+        var hint = /download|preview|file|oss|export|attachment|vasp/i.test(url) ? 'fileish' : 'other';
+        var key = kind + '\0' + url;
+        if (seen[key]) continue;
+        seen[key] = 1;
+        out.push({ url: url.slice(0, 180), kind: kind, hint: hint });
+      }
+      out.sort(function (a, b) {
+        return (a.hint === 'fileish' ? 0 : 1) - (b.hint === 'fileish' ? 0 : 1);
+      });
+      return out.slice(0, 30);
+    }
+
+    function collectVueMethodNames(el) {
+      var names = {};
+      function add(obj) {
+        if (!obj || typeof obj !== 'object') return;
+        var keys = [];
+        try { keys = Object.keys(obj); } catch (e) { return; }
+        for (var i = 0; i < keys.length && i < 60; i++) {
+          var k = keys[i];
+          if (!k || k.charAt(0) === '_' || k.charAt(0) === '$') continue;
+          if (k.length < 3) continue;
+          try {
+            if (typeof obj[k] === 'function') names[k] = 1;
+          } catch (e1) {}
+        }
+      }
+      var node = el;
+      for (var d = 0; node && d < 10; d++) {
+        try {
+          if (node.__vue__) {
+            add(node.__vue__);
+            add(node.__vue__.$options && node.__vue__.$options.methods);
+          }
+          if (node.__vueParentComponent) {
+            add(node.__vueParentComponent.ctx);
+            add(node.__vueParentComponent.exposed);
+          }
+        } catch (e2) {}
+        node = node.parentElement;
+      }
+      var keys2 = Object.keys(names);
+      var hit = [];
+      var rest = [];
+      for (var j = 0; j < keys2.length; j++) {
+        if (/download|preview|file|export|save|fetch|url/i.test(keys2[j])) hit.push(keys2[j]);
+        else rest.push(keys2[j]);
+      }
+      return hit.concat(rest).slice(0, 16);
+    }
+
+    function collectUrlHintsFrom(el) {
+      var attrs = [];
+      var discarded = [];
+      if (!el) return { attrs: attrs, discarded: discarded };
+      var nodes = [el];
+      try { nodes = [el].concat(Array.prototype.slice.call(el.querySelectorAll('a, img, [href], [download], [src], [data-url], [data-href], [data-src], [data-file]'))); } catch (e) {}
+      var seen = {};
+      for (var i = 0; i < nodes.length && attrs.length < 20; i++) {
+        var n = nodes[i];
+        var pairs = [];
+        try {
+          pairs = [
+            ['href', n.getAttribute && n.getAttribute('href')],
+            ['download', n.getAttribute && n.getAttribute('download')],
+            ['src', n.src || (n.getAttribute && n.getAttribute('src'))],
+            ['data-url', n.getAttribute && n.getAttribute('data-url')],
+            ['data-href', n.getAttribute && n.getAttribute('data-href')],
+            ['data-src', n.getAttribute && n.getAttribute('data-src')],
+            ['data-file', n.getAttribute && n.getAttribute('data-file')]
+          ];
+        } catch (e1) { pairs = []; }
+        for (var p = 0; p < pairs.length; p++) {
+          var val = pairs[p][1];
+          if (!val) continue;
+          var s = String(val);
+          var key = pairs[p][0] + s;
+          if (seen[key]) continue;
+          seen[key] = 1;
+          if (/^data:image\//i.test(s) && s.length < 8000) {
+            discarded.push({ attr: pairs[p][0], reason: 'iconData' });
+            continue;
+          }
+          if (/^data:/i.test(s) && s.length < 200) {
+            discarded.push({ attr: pairs[p][0], reason: 'tinyData' });
+            continue;
+          }
+          attrs.push({ attr: pairs[p][0], url: s.slice(0, 240), kind: classifyTrafficUrl(s) });
+        }
+      }
+      return { attrs: attrs, discarded: discarded };
+    }
+
+    async function collectScriptHints(needle) {
+      var tags = [];
+      try { tags = document.getElementsByTagName('script'); } catch (e) { tags = []; }
+      var catalog = [];
+      var chunks = [];
+      var total = 0;
+      var MAX_EACH = 400000;
+      var MAX_TOTAL = 1200000;
+      var MAX_FETCH = 8;
+      var origin = '';
+      try { origin = String(location.origin || ''); } catch (e1) {}
+      for (var i = 0; i < tags.length; i++) {
+        var tag = tags[i];
+        var src = '';
+        try { src = String(tag.src || ''); } catch (e2) {}
+        if (src) {
+          catalog.push({ src: src.slice(0, 220), inline: false });
+        } else {
+          var inline = '';
+          try { inline = String(tag.textContent || ''); } catch (e3) {}
+          if (inline.length > 60) {
+            catalog.push({ src: '', inline: true, bytes: inline.length });
+            chunks.push(inline.slice(0, MAX_EACH));
+            total += Math.min(inline.length, MAX_EACH);
+          }
+        }
+      }
+      var fetched = 0;
+      for (var j = 0; j < tags.length && fetched < MAX_FETCH && total < MAX_TOTAL; j++) {
+        var src2 = '';
+        try { src2 = String(tags[j].src || ''); } catch (e4) {}
+        if (!src2) continue;
+        var abs = '';
+        try { abs = String(new URL(src2, location.href)); } catch (e5) { continue; }
+        if (origin && abs.indexOf(origin) !== 0) continue;
+        fetched += 1;
+        try {
+          var resp = await fetch(abs, { credentials: 'same-origin' });
+          var body = await resp.text();
+          var take = String(body || '').slice(0, MAX_EACH);
+          chunks.push(take);
+          total += take.length;
+          for (var ci = 0; ci < catalog.length; ci++) {
+            if (catalog[ci].src && abs.indexOf(catalog[ci].src) >= 0) {
+              catalog[ci].fetched = take.length;
+              break;
+            }
+          }
+        } catch (e6) {}
+      }
+      var endpoints = harvestScriptEndpoints(chunks.join('\n'));
+      var q = normText(needle);
+      if (q) {
+        var boosted = [];
+        for (var b = 0; b < endpoints.length; b++) {
+          if (normText(endpoints[b].url).indexOf(q) >= 0) endpoints[b].hint = 'needle';
+          boosted.push(endpoints[b]);
+        }
+        endpoints = boosted;
+      }
+      return {
+        ok: true,
+        kind: 'query',
+        scripts: catalog.slice(0, 40),
+        endpoints: endpoints,
+        truncated: tags.length > catalog.length || fetched >= MAX_FETCH,
+        note: '只返回脚本里的 URL 字符串线索，不是可执行代码。禁止 eval/runScript，禁止把打包文件全文塞进对话。'
+      };
     }
 
     // ============ 下拉框共用工具 ============
@@ -4245,7 +5182,7 @@
           },
           getText: function (sel) {
             var el = page.q(sel);
-            return el ? (el.innerText || el.value || null) : null;
+            return readableTextOf(el);
           },
           // 大型页面快照被截断时，按 label/name/placeholder/aria/title/text 反查控件。
           // 同时扫描 textActions 同源短文本（pointer / 空状态），避免 Vue span 不在 INTERACTIVE 里。
@@ -4396,6 +5333,16 @@
             var textLen = Math.max(4, Math.min(Number(opts.textLen) || 32, 80));
             var root = page.q(selector);
             if (!root) throw new Error('inspect: 容器未找到: ' + selector);
+            var enteredFrame = false;
+            var walkRoot = root;
+            var frameBody = enterSameOriginFrame(root);
+            if (frameBody) {
+              walkRoot = frameBody;
+              enteredFrame = true;
+            }
+            var frameOpaque = false;
+            var rootTag = String((root.tagName || '')).toUpperCase();
+            if (!enteredFrame && (rootTag === 'IFRAME' || rootTag === 'FRAME')) frameOpaque = true;
             var CLICK_TAGS = { A: 1, BUTTON: 1, INPUT: 1, SELECT: 1, TEXTAREA: 1, SUMMARY: 1 };
             var CLICK_ROLES = {
               button: 1, link: 1, checkbox: 1, radio: 1, option: 1,
@@ -4485,7 +5432,7 @@
               }
             }
 
-            walk(root, true);
+            walk(walkRoot, true);
             return {
               ok: true,
               kind: 'query',
@@ -4493,6 +5440,8 @@
               count: out.length,
               truncated: out.length >= maxNodes || nestedCollapsed > 0,
               nestedCollapsed: nestedCollapsed,
+              enteredFrame: enteredFrame,
+              frameOpaque: frameOpaque,
               nodes: out
             };
           },
@@ -4855,6 +5804,117 @@
           scroll: function (target, dir) {
             return doScroll(target, dir);
           },
+          urlHints: function (target) {
+            var el = resolveFileTarget(target);
+            var name = String(target == null ? '' : target);
+            var pack = collectUrlHintsFrom(el);
+            var resources = [];
+            try {
+              var entries = performance.getEntriesByType && performance.getEntriesByType('resource') || [];
+              var q = normText(name);
+              for (var i = 0; i < entries.length && resources.length < 15; i++) {
+                var n = String(entries[i].name || '');
+                if (!n) continue;
+                if (q && normText(n).indexOf(q) < 0 && !/download|preview|file/i.test(n)) continue;
+                resources.push({ url: n.slice(0, 240), kind: classifyTrafficUrl(n) });
+              }
+            } catch (e) {}
+            return {
+              ok: true,
+              kind: 'query',
+              name: name.slice(0, 80),
+              found: !!el,
+              attrs: pack.attrs,
+              discarded: pack.discarded,
+              resources: resources
+            };
+          },
+          scriptHints: async function (target) {
+            var needle = '';
+            var el = null;
+            if (target != null && target !== '') {
+              needle = String(typeof target === 'object' ? (target.needle || target.query || '') : target);
+              try { el = resolveFileTarget(target); } catch (e) { el = null; }
+            }
+            var hints = await collectScriptHints(needle);
+            hints.vueMethods = el ? collectVueMethodNames(el).map(function (n) {
+              return { name: n, unverified: true };
+            }) : [];
+            return hints;
+          },
+          hover: async function (target) {
+            var el = resolveFileTarget(target);
+            if (!el) throw new Error('hover: 未找到目标 ' + describeTarget(target));
+            var out = hoverElement(el);
+            await sleepMs(200);
+            return out;
+          },
+          openFileMenu: async function (target) {
+            var el = resolveFileTarget(target);
+            if (!el) throw new Error('openFileMenu: 未找到文件卡片 ' + describeTarget(target));
+            hoverElement(el);
+            await sleepMs(220);
+            var more = findMoreNearCard(el);
+            if (!more) {
+              return {
+                ok: false,
+                kind: 'query',
+                menuLikely: false,
+                reason: 'noMoreButton',
+                continueBatch: true,
+                hint: '该卡片内或右上角附近没有「…/更多」控件（可能仍未入 DOM 或仅 CSS :hover 可见）。可改 contextClick 或请用户先把鼠标停在文件上。这不是失败。'
+              };
+            }
+            try { more.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+            dispatchClick(more);
+            await sleepMs(280);
+            return {
+              ok: true,
+              kind: 'action',
+              via: 'file-more',
+              verified: null,
+              menuLikely: true
+            };
+          },
+          contextClick: async function (target) {
+            var el = resolveFileTarget(target);
+            if (!el) throw new Error('contextClick: 未找到目标 ' + describeTarget(target));
+            hoverElement(el);
+            await sleepMs(120);
+            dispatchClick(el);
+            await sleepMs(80);
+            dispatchContextMenu(el);
+            var inner = null;
+            try { inner = el.querySelector('.textBox, img, [class*="text"]'); } catch (e) {}
+            if (inner && inner !== el) dispatchContextMenu(inner);
+            return { ok: true, kind: 'action', via: 'contextmenu', verified: null };
+          },
+          watchTraffic: async function (arg) {
+            var mode = arg;
+            var ms = 0;
+            if (arg && typeof arg === 'object' && !Array.isArray(arg)) {
+              if (arg.stop) mode = 'stop';
+              else if (arg.start) mode = 'start';
+              if (arg.ms != null) ms = Number(arg.ms) || 0;
+            } else if (typeof arg === 'number') {
+              mode = 'wait';
+              ms = arg;
+            } else {
+              mode = String(arg || 'wait').toLowerCase();
+            }
+            if (mode === 'start') {
+              startTrafficHook();
+              return { ok: true, kind: 'query', watching: true, count: 0, traffic: [] };
+            }
+            if (mode === 'stop') {
+              var stopped = stopTrafficHook();
+              return { ok: true, kind: 'query', watching: false, count: stopped.length, traffic: stopped.slice(0, 40) };
+            }
+            startTrafficHook();
+            await sleepMs(Math.max(ms || 4000, 500));
+            var log = stopTrafficHook();
+            return { ok: true, kind: 'query', watching: false, count: log.length, traffic: log.slice(0, 40) };
+          },
           probe: function () { return probeSignals(); },
           log: function () {
             window.__assistantLogs = window.__assistantLogs || [];
@@ -4875,7 +5935,8 @@
         clickByText: 1, inspect: 1,
         optionTexts: 1, clickOptionByText: 1, findOption: 1, selectOption: 1,
         listOptions: 1, filterSelect: 1,
-        setChecked: 1, sleep: 1, waitFor: 1, probe: 1, scroll: 1
+        setChecked: 1, sleep: 1, waitFor: 1, probe: 1, scroll: 1,
+        urlHints: 1, scriptHints: 1, hover: 1, openFileMenu: 1, contextClick: 1, watchTraffic: 1
       };
       var page = createPageApi();
       var list = Array.isArray(operations) ? operations : [];
@@ -4895,6 +5956,13 @@
           // 同一批后续 click（例如「下一步」）不应在选值失败后继续执行。
           if (value && typeof value === 'object' && value.ok === false && !value.continueBatch) break;
         }
+        if (trafficHook) {
+          var leftover = stopTrafficHook();
+          results.push({
+            op: 'watchTraffic',
+            value: { ok: true, kind: 'query', autoStopped: true, count: leftover.length, traffic: leftover.slice(0, 40) }
+          });
+        }
         return {
           ok: true,
           result: JSON.stringify({ kind: 'batch', results: results }),
@@ -4902,6 +5970,7 @@
           logs: window.__assistantLogs || []
         };
       } catch (e) {
+        try { if (trafficHook) stopTrafficHook(); } catch (e2) {}
         return {
           ok: false,
           error: (e && e.stack) ? e.stack : String(e),
@@ -4954,6 +6023,8 @@
         try {
           respond(collectSubmitFailureContext((detail.payload && detail.payload.targets) || []));
         } catch (errC) { respond(String(errC && errC.stack || errC), false); }
+      } else if (cmd === 'viewPrint') {
+        try { respond(collectViewPrint(detail.payload || {})); } catch (errV) { respond(String(errV && errV.stack || errV), false); }
       } else if (cmd === 'captureImage') {
         var capSel = detail.payload && detail.payload.selector;
         captureImage(capSel || '').then(function (res) {

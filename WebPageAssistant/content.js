@@ -6,7 +6,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、pagebridge.js 的 BRIDGE_VERSION 相同。
-  var CONTENT_VERSION = '4.0.0';
+  var CONTENT_VERSION = '4.1.0';
   if (window.__dsContentLoaded === CONTENT_VERSION) return;
   try {
     if (typeof window.__dsContentDispose === 'function') window.__dsContentDispose();
@@ -333,10 +333,10 @@
         sendResponse({ ok: false, error: 'runScript 已禁用' });
         return;
 
-      } else if (cmd === 'snapshot' || cmd === 'probe' || cmd === 'submitFailureContext') {
-        var payload = cmd === 'submitFailureContext'
-          ? { targets: msg.targets || [] }
-          : (cmd === 'snapshot' ? { full: !!msg.full } : {});
+      } else if (cmd === 'snapshot' || cmd === 'probe' || cmd === 'submitFailureContext' || cmd === 'viewPrint') {
+        var payload = {};
+        if (cmd === 'submitFailureContext' || cmd === 'viewPrint') payload = { targets: msg.targets || [] };
+        else if (cmd === 'snapshot') payload = { full: !!msg.full };
         var timeout = cmd === 'probe' ? 6000 : (cmd === 'snapshot' && msg.full ? 20000 : 12000);
         dsReq(cmd, payload, timeout).then(function (res) {
           // res = {id, ok, data}. data 可能是 snapshot 对象 或 runScript 结果

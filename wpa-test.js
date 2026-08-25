@@ -154,7 +154,7 @@ const codeOps = m
   ? Array.from(allowedBody.matchAll(/(\w+)\s*:/g)).map((x) => x[1]).sort()
   : [];
 
-for (const op of ['clickByText', 'inspect']) {
+for (const op of ['clickByText', 'inspect', 'scriptHints', 'openFileMenu', 'watchTraffic']) {
   ok(new RegExp('\\b' + op + '\\s*:').test(allowedBody), 'pagebridge 白名单含 ' + op);
   ok(bg.indexOf(op) >= 0, 'background.js（PLAYBOOK）含 ' + op);
 }
@@ -176,6 +176,34 @@ ok(/clickOptionByText 仅用于已展开的下拉选项/.test(bg), 'PLAYBOOK 区
 ok(/若目标是点击某段可见文字，用 clickByText/.test(bg), '护栏 nudge 含 clickByText 指引');
 ok(/多层列表同文须加 within/.test(bg), '护栏 nudge 提示多层列表须 within');
 ok(/nestedCollapsed>0/.test(bg), 'PLAYBOOK 说明 inspect 按层折叠嵌套列表');
+ok(/function harvestScriptEndpoints/.test(bridge), '可从页面脚本抽取 API 字符串线索');
+ok(/禁止把脚本全文/.test(bg) && /禁止 eval/.test(bg), 'PLAYBOOK 禁止把页面 JS 全文交给模型或 eval');
+ok(/openFileMenu\(文件名\)/.test(bg), 'PLAYBOOK 以文件卡片「…」菜单为主路径');
+ok(/authNoise/.test(bg), 'PLAYBOOK 把 check/token 标为鉴权噪声');
+ok(/download_box/.test(bg) && /within:文件名或当前菜单/.test(bg),
+  'PLAYBOOK 禁止全页点「下载」误中 download_box');
+ok(/同源 iframe 会自动读 body/.test(bg), 'PLAYBOOK 说明预览 iframe 自动读正文');
+ok(/menuLikely=false/.test(bg) && /不是失败/.test(bg),
+  'PLAYBOOK 说明 openFileMenu 找不到「…」不是失败');
+ok(/不要发明「FTP下载」/.test(bg) && /handoff=desktop/.test(bg),
+  'PLAYBOOK 禁止优先走页级 FTP/客户端下载');
+ok(/function shouldBlockDesktopHandoff/.test(bg) && /doneIsHandoffNotContent/.test(bg),
+  '引擎可拦住 FTP 优先路径与仅 FileZilla 的 done');
+ok(/function desktopHandoffOf/.test(bridge) && /entry\.handoff/.test(bridge),
+  '快照把 FTP/客户端下载标为 handoff=desktop');
+ok(/download_box/.test(bg) && /within:文件名或当前菜单/.test(bg),
+  'PLAYBOOK 禁止全页点「下载」误中 download_box');
+ok(/同源 iframe 会自动读 body/.test(bg), 'PLAYBOOK 说明预览 iframe 自动读正文');
+ok(/menuLikely=false/.test(bg) && /不是失败/.test(bg),
+  'PLAYBOOK 说明 openFileMenu 找不到「…」不是失败');
+ok(/function enterSameOriginFrame/.test(bridge) && /function readableTextOf/.test(bridge),
+  'getText/inspect 可进入同源 iframe');
+ok(/function preferFileActionHits/.test(bridge) && /function isPageChromeDownload/.test(bridge),
+  'clickByText 下载/预览优先菜单');
+ok(/function findMoreNearCard/.test(bridge) && /function findCornerControls/.test(bridge),
+  'openFileMenu 会搜卡片右上角附近的「…」');
+ok(/iframe\.src/.test(bridge) && /location\.assign/.test(bridge),
+  'watchTraffic 记录 iframe.src 与 location.assign');
 
 ok(bridge.indexOf('function isListContainer') >= 0, 'pagebridge 有 isListContainer（折叠 ul/ol/tree）');
 ok(bridge.indexOf('function innermostIndependent') >= 0, 'pagebridge 有 innermostIndependent（同文包装 vs 分枝）');
@@ -956,6 +984,21 @@ const checkedInfo = analyzeSandbox.analyzeRunResult(checkedAlready);
 ok(checkedInfo.mutation && checkedInfo.verified && !checkedInfo.failed,
   'setChecked 已是目标状态视为 verified mutation');
 
+const openMenuMiss = JSON.stringify({
+  kind: 'batch',
+  results: [{
+    op: 'openFileMenu',
+    value: {
+      ok: false, kind: 'query', menuLikely: false, reason: 'noMoreButton', continueBatch: true
+    }
+  }]
+});
+ok(!analyzeSandbox.analyzeRunResult(openMenuMiss).failed,
+  'openFileMenu 找不到「…」且 continueBatch 时不报 VERIFY FAILED');
+ok(analyzeSandbox.analyzeRunResult(JSON.stringify({
+  kind: 'query', ok: false, reason: 'notFound', options: []
+})).failed, 'selectOption 未命中且无 continueBatch 仍判 failed');
+
 const changeStart = bg.indexOf('function changeSummary');
 const changeEnd = bg.indexOf('\nfunction checkRepeat');
 const changeSandbox = {};
@@ -969,8 +1012,10 @@ ok(String(changeSandbox.changeSummary({ anyChange: false }, { mutation: true, ve
   'verified 且无外观变化时摘要为已确认生效');
 ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
   '无 helper 证实时仍报页面无变化');
+ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
+  '变化摘要含新增建议卡');
 
-ok(manifestVer === '4.0.0', '锁步版本为 4.0.0');
+ok(manifestVer === '4.1.0', '锁步版本为 4.1.0');
 ok(/【本步序号】/.test(bg), 'PLAYBOOK 含【本步序号】');
 ok(/禁止跨轮复用/.test(bg), 'PLAYBOOK 禁止跨轮复用 idx');
 ok(/page\.click\(12\)/.test(bg) && /page\.setVal\(12/.test(bg), 'PLAYBOOK 示例用数字 idx click/setVal');
@@ -1026,6 +1071,10 @@ if (outlineBox.formatOutlineLine) {
   }, false, false);
   ok(/required/.test(reqLine) && /minLength=100/.test(reqLine) && /hint=/.test(reqLine),
     'outline 输出 required/minLength/hint');
+  const ftpLine = outlineBox.formatOutlineLine({
+    idx: 9, tag: 'DIV', text: 'FTP下载', handoff: 'desktop'
+  }, false, false);
+  ok(/handoff=desktop/.test(ftpLine), 'outline 输出 handoff=desktop');
 }
 
 const resolveBox = {};
@@ -1095,6 +1144,15 @@ if (stringifyBox.stringifySnapshot) {
     textActions: [], images: []
   }, 80000);
   ok(withStar.indexOf('"starFields"') < withStar.indexOf('"elements"'), 'starFields 排在 elements 之前');
+  const withView = stringifyBox.stringifySnapshot({
+    outline: 'SHORT',
+    starFields: [{ idx: 1, label: '单位', empty: false }],
+    viewItems: [{ idx: 9, kind: 'card', text: '候选A', html: '<div>候选A</div>', structure: [{ t: 'DIV', x: '候选A' }] }],
+    elements: [{ idx: 1, tag: 'INPUT', text: 'x' }],
+    textActions: [], images: []
+  }, 80000);
+  ok(withView.indexOf('"viewItems"') < withView.indexOf('"elements"'), 'viewItems 排在 elements 之前');
+  ok(withView.indexOf('候选A') >= 0, '未超限时保留建议卡全文');
   const withSel = stringifyBox.stringifySnapshot({
     outline: 'SHORT',
     elements: [{ idx: 1, tag: 'A', selector: '.keep-if-room', cls: 'c', text: 'x' }],
@@ -1182,8 +1240,14 @@ ok(/hasPending \|\| wasPaused/.test(bg) && /continueAsk: true/.test(bg),
   'pausedOrigins 时主输入框也 continueAsk');
 ok(/function isStarRequired/.test(bridge) && /starFields: starFields/.test(bridge),
   '快照产出 starFields 星号必填清单');
+ok(/function collectViewPrint\(/.test(bridge) && /viewItems: viewItems/.test(bridge),
+  '快照产出 viewItems 建议卡');
+ok(/<VIEW kind=/.test(bridge), 'outline 收录 VIEW 建议卡');
+ok(/VIEW_PANEL_RE = \/suggest/.test(bridge) && /search-item/.test(bridge),
+  '建议面板/卡片用通用 class token 识别');
 ok(/function collectSubmitFailureContext/.test(bridge), '提交失败可收集字段说明');
 ok(/cmd === 'submitFailureContext'/.test(srcs['content.js']), 'content 转发 submitFailureContext');
+ok(/cmd === 'viewPrint'/.test(srcs['content.js']), 'content 转发 viewPrint');
 ok(/必填\|填写完整\|请先\|校验失败\|不通过/.test(bg), 'statusFailure 识别必填弹窗');
 ok(/请先将必填项填写完整/.test('请先将必填项填写完整') &&
   /必填|填写完整|请先/.test('请先将必填项填写完整'), '必填弹窗正则可命中');
@@ -1197,6 +1261,64 @@ ok(/tag === 'IMG'/.test(extractFn(bridge, 'retargetFileSelectClick')),
   '文件行 img 改点 checkmark');
 ok(/snapshotPiiMask/.test(bg) && /快照脱敏/.test(panelSrc), '设置含快照脱敏开关');
 ok(/cfg\.snapshotPiiMask === true/.test(bg), '快照脱敏默认关（仅显式 true 才开）');
+ok(/llmCallGapMs: 500/.test(bg), '调用间隔默认 500ms');
+ok(/busyMaskEnabled: true/.test(bg), '操作遮罩默认开');
+ok(/llmTimeoutRetry: 1/.test(bg) && /llmErrorRetry: 2/.test(bg), '重试次数默认 1/2');
+ok(/pageQuietMs: 4000/.test(bg) && /suggestWaitMs: 1400/.test(bg), '页面等待默认 4s / 1.4s');
+ok(/function clampInt\(/.test(bg) && /function applyRuntimeKnobs\(/.test(bg), '运行参数有 clamp 与合并');
+ok(/function waitLlmCallGap\(/.test(bg) && /lastTextLlmAt/.test(bg), '文本模型调用有间隔');
+ok(/sleepCancellable/.test(bg) && /signal\.aborted/.test(bg), '调用间隔可被取消打断');
+ok(/showBusyMaskTab\(tabId, config\.busyMaskEnabled !== false\)/.test(bg), '遮罩受设置开关控制');
+ok(/enabled === false/.test(bg), '遮罩关闭时不盖层');
+ok(/config\.llmTimeoutRetry/.test(bg) && /config\.llmErrorRetry/.test(bg), '重试次数读配置');
+ok(/cfg\.pageQuietMs/.test(bg) && /cfg\.suggestWaitMs/.test(bg), '两类等待读配置 deadline');
+ok(/运行参数/.test(panelSrc) && /模型调用间隔（秒）/.test(panelSrc), '设置页有运行参数分组');
+ok(/操作时显示半透明遮罩/.test(panelSrc), '设置页可关操作遮罩');
+ok(/超时重试次数/.test(panelSrc) && /瞬时错误重试次数/.test(panelSrc), '设置页可配重试');
+ok(/页面稳定等待上限/.test(panelSrc) && /填写后等待建议层/.test(panelSrc), '设置页可配页面等待');
+ok(/llmCallGapMs/.test(bg) && /function exportPayload\(/.test(bg), '导出含调用间隔');
+ok(/secInputToMs/.test(panelSrc) && /msToSecValue/.test(panelSrc), '设置页秒与毫秒互转');
+ok(/白名单字段/.test(bg) && /白名单字段/.test(panelSrc), '导入导出不再写死 7 键');
+
+const clampBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(bg, 'clampInt') + '\nthis.clampInt = clampInt;',
+    clampBox
+  );
+  ok(typeof clampBox.clampInt === 'function', 'clampInt 可加载');
+} catch (e) {
+  ok(false, '加载 clampInt 失败: ' + (e && e.message));
+}
+if (clampBox.clampInt) {
+  ok(clampBox.clampInt(500, 0, 10000, 500) === 500, 'clampInt 保留范围内的值');
+  ok(clampBox.clampInt(-1, 0, 10000, 500) === 0, 'clampInt 下限截断');
+  ok(clampBox.clampInt(99999, 0, 10000, 500) === 10000, 'clampInt 上限截断');
+  ok(clampBox.clampInt('nope', 0, 10000, 500) === 500, 'clampInt 非法值回退');
+  ok(clampBox.clampInt(0, 0, 3, 1) === 0, 'clampInt 允许 0（关闭重试）');
+  ok(clampBox.clampInt(1.4, 0, 5000, 1400) === 1, 'clampInt 四舍五入');
+}
+
+const knobBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(bg, 'clampInt') + '\n' +
+      'const DEFAULT_CONFIG = { llmCallGapMs: 500, busyMaskEnabled: true, llmTimeoutRetry: 1, llmErrorRetry: 2, pageQuietMs: 4000, suggestWaitMs: 1400 };\n' +
+      extractFn(bg, 'applyRuntimeKnobs') +
+      '\nthis.applyRuntimeKnobs = applyRuntimeKnobs;',
+    knobBox
+  );
+  ok(typeof knobBox.applyRuntimeKnobs === 'function', 'applyRuntimeKnobs 可加载');
+} catch (e) {
+  ok(false, '加载 applyRuntimeKnobs 失败: ' + (e && e.message));
+}
+if (knobBox.applyRuntimeKnobs) {
+  const def = knobBox.applyRuntimeKnobs({});
+  ok(def.llmCallGapMs === 500 && def.busyMaskEnabled === true, '缺省配置走默认间隔与遮罩开');
+  ok(knobBox.applyRuntimeKnobs({ busyMaskEnabled: false }).busyMaskEnabled === false, '可显式关闭遮罩');
+  ok(knobBox.applyRuntimeKnobs({ llmCallGapMs: 20000 }).llmCallGapMs === 10000, '间隔超出上限被截断');
+  ok(knobBox.applyRuntimeKnobs({ pageQuietMs: 100 }).pageQuietMs === 1000, '页面等待下限 1 秒');
+}
 ok(/function compactVerifiedResult/.test(bg), 'verified 结果写入历史时截短');
 ok(/function maskPiiText/.test(bg), '有快照脱敏函数');
 
@@ -1265,6 +1387,35 @@ ok(/function askExitPermit\(/.test(bg) && /征求用户是否结束/.test(bg), '
 ok(/return await askExitPermit\('达到最大步数'\)/.test(bg), '步数用尽改为退出许可询问');
 ok(/cmd: 'snapshot', full: wantFull/.test(bg), '兜底轮向页面请求完整快照');
 ok(/调用大模型失败/.test(bg) && /return 'error'/.test(bg), '模型调用失败仍直接结束、不再额外请求模型');
+ok(/【视图变化】/.test(bg), 'PLAYBOOK 含视图变化');
+ok(/function diffViewPrint\(/.test(bg) && /function waitForSuggestSettle\(/.test(bg),
+  '填写后等待建议层并做视图 diff');
+ok(/!viewHasAdded/.test(bg), '新建议卡出现时不单步自动收束');
+
+const viewDiffBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(bg, 'slimViewItem') + '\n' + extractFn(bg, 'viewItemPayload') + '\n' +
+      extractFn(bg, 'diffViewPrint') + '\nthis.diffViewPrint = diffViewPrint;',
+    viewDiffBox
+  );
+} catch (e) {
+  ok(false, '加载 diffViewPrint 失败: ' + (e && e.message));
+}
+if (viewDiffBox.diffViewPrint) {
+  const vd = viewDiffBox.diffViewPrint(
+    [{ key: 'a', kind: 'suggest', text: '旧' }],
+    [
+      { key: 'b', kind: 'card', near: '单位', text: '候选机构', html: '<div class="item"><p>候选机构</p><span>代码01</span></div>', structure: [{ t: 'DIV', x: '候选机构' }] },
+      { key: 'a', kind: 'suggest', text: '新' }
+    ]
+  );
+  ok(vd.added.length === 1 && vd.added[0].text === '候选机构', '视图 diff 检出新增建议卡');
+  ok(vd.added[0].html && vd.added[0].structure && vd.added[0].structure[0].t === 'DIV',
+    '新增建议卡带结构与 html');
+  ok(vd.changed.length === 1 && vd.changed[0].from === '旧', '视图 diff 检出文案变化');
+  ok(vd.removed.length === 0, '仍在的项不记入 removed');
+}
 
 const compactBox = { truncate: function (s, n) { return String(s).slice(0, n); } };
 try {
@@ -1282,6 +1433,103 @@ if (compactBox.compactVerifiedResult) {
   });
   const compact = compactBox.compactVerifiedResult(fat);
   ok(compact.indexOf('verified') >= 0 && compact.length < fat.length, 'verified 结果被截短');
+}
+
+const menuPreferBox = {};
+try {
+  vm.runInNewContext(
+    'function normText(s){return String(s||"").replace(/\\s+/g,"").toLowerCase();}\n' +
+      'function isOverlayEl(){return false;}\n' +
+      extractFn(bridge, 'isFileActionMenuEl') + '\n' +
+      extractFn(bridge, 'isPageChromeDownload') + '\n' +
+      extractFn(bridge, 'preferFileActionHits') + '\n' +
+      'this.preferFileActionHits = preferFileActionHits;',
+    menuPreferBox
+  );
+  ok(typeof menuPreferBox.preferFileActionHits === 'function', 'preferFileActionHits 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 preferFileActionHits 失败: ' + (e && e.message));
+}
+if (menuPreferBox.preferFileActionHits) {
+  function fakeHit(text, opts) {
+    opts = opts || {};
+    const el = {
+      tagName: 'SPAN',
+      className: opts.className || '',
+      parentElement: null,
+      getAttribute: function (n) { return n === 'role' ? (opts.role || '') : ''; },
+      closest: function (sel) {
+        if (opts.menu && /role="menu"|dropdown-menu|context/.test(sel)) return el;
+        if (opts.chrome && /download_box/.test(sel)) return el;
+        return null;
+      }
+    };
+    return { el: el, text: text };
+  }
+  const menuHit = fakeHit('下载', { menu: true, className: 'menu-item' });
+  const chromeHit = fakeHit('下载', { chrome: true, className: 'download_box' });
+  const picked = menuPreferBox.preferFileActionHits([chromeHit, menuHit], '下载');
+  ok(picked.length === 1 && picked[0] === menuHit, '下载优先点菜单而非 download_box');
+  ok(menuPreferBox.preferFileActionHits([chromeHit], '下载').length === 0,
+    '只有页头下载时不点 download_box');
+  ok(menuPreferBox.preferFileActionHits([chromeHit], '确定')[0] === chromeHit,
+    '非下载/预览文案不走菜单优先');
+}
+
+const ftpGuardStart = bg.indexOf('const DESKTOP_HANDOFF_RE');
+const ftpGuardEnd = bg.indexOf('\nfunction isEngineUserMessage');
+const ftpGuardBox = {};
+try {
+  vm.runInNewContext(
+    bg.slice(ftpGuardStart, ftpGuardEnd) +
+      '\nthis.shouldBlockDesktopHandoff = shouldBlockDesktopHandoff;' +
+      '\nthis.doneIsHandoffNotContent = doneIsHandoffNotContent;' +
+      '\nthis.taskWantsFileObtain = taskWantsFileObtain;',
+    ftpGuardBox
+  );
+  ok(typeof ftpGuardBox.shouldBlockDesktopHandoff === 'function', 'FTP 护栏函数可在测试中加载');
+} catch (e) {
+  ok(false, '加载 FTP 护栏失败: ' + (e && e.message));
+}
+if (ftpGuardBox.shouldBlockDesktopHandoff) {
+  const obtainTask = '弄清如何得到「AMD_opt_vasp_result.txt」的下载方式或文件内容。';
+  ok(ftpGuardBox.taskWantsFileObtain(obtainTask), '取文件任务可识别');
+  ok(ftpGuardBox.shouldBlockDesktopHandoff(obtainTask, {
+    summary: '点击FTP下载按钮查看下载方式',
+    operations: [{ op: 'clickByText', args: ['FTP下载'] }]
+  }), '取文件时拦住 clickByText FTP下载');
+  ok(!ftpGuardBox.shouldBlockDesktopHandoff(obtainTask, {
+    summary: '预览目标文件',
+    operations: [{ op: 'contextClick', args: ['AMD_opt_vasp_result.txt'] }]
+  }), '对文件卡片 contextClick 不拦');
+  ok(!ftpGuardBox.shouldBlockDesktopHandoff('请用 FTP 客户端连接并列出目录', {
+    summary: '点击FTP下载',
+    operations: [{ op: 'clickByText', args: ['FTP下载'] }]
+  }), '用户明确要求 FTP 时不拦');
+  ok(ftpGuardBox.doneIsHandoffNotContent(
+    '可通过点击「FTP下载」获取方式。对话框给出 FileZilla 客户端下载地址。',
+    obtainTask
+  ), '仅 FileZilla 说明不能 done');
+  ok(!ftpGuardBox.doneIsHandoffNotContent(
+    '已从预览 iframe 读到正文（含 lscpu 与 VASP 日志）。',
+    obtainTask
+  ), '读到正文可以 done');
+}
+
+const handoffBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(bridge, 'desktopHandoffOf') + '\nthis.desktopHandoffOf = desktopHandoffOf;',
+    handoffBox
+  );
+  ok(typeof handoffBox.desktopHandoffOf === 'function', 'desktopHandoffOf 可加载');
+} catch (e) {
+  ok(false, '加载 desktopHandoffOf 失败: ' + (e && e.message));
+}
+if (handoffBox.desktopHandoffOf) {
+  ok(handoffBox.desktopHandoffOf({ text: 'FTP下载' }) === 'desktop', 'FTP下载标 desktop');
+  ok(handoffBox.desktopHandoffOf({ title: '客户端下载' }) === 'desktop', '客户端下载标 desktop');
+  ok(handoffBox.desktopHandoffOf({ text: '预览' }) === '', '普通预览不标 desktop');
 }
 
 if (failures) {
