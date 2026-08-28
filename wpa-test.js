@@ -35,7 +35,41 @@ for (const f of files) {
 const bg = srcs['background.js'];
 const bridge = srcs['pagebridge.js'];
 const panelSrc = srcs['panel.js'] || '';
+const usageBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(bg, 'parseLlmUsage') + '\n' + extractFn(bg, 'addLlmUsage') +
+      '\nthis.parseLlmUsage = parseLlmUsage;\nthis.addLlmUsage = addLlmUsage;',
+    usageBox
+  );
+  ok(typeof usageBox.parseLlmUsage === 'function', 'parseLlmUsage 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 parseLlmUsage 失败: ' + (e && e.message));
+}
+if (usageBox.parseLlmUsage) {
+  const u = usageBox.parseLlmUsage({
+    prompt_tokens: 1200,
+    completion_tokens: 80,
+    total_tokens: 1280,
+    prompt_tokens_details: { cached_tokens: 1024 },
+    completion_tokens_details: { reasoning_tokens: 40 }
+  });
+  ok(u && u.prompt === 1200 && u.completion === 80 && u.total === 1280, 'usage 收入/出/合计 token');
+  ok(u && u.cached === 1024 && u.reasoning === 40, 'usage 收 cached/reasoning');
+  const derived = usageBox.parseLlmUsage({ prompt_tokens: 10, completion_tokens: 5 });
+  ok(derived && derived.total === 15, '缺 total_tokens 时按入+出推算');
+  ok(usageBox.parseLlmUsage(null) === null, '无 usage 返回 null');
+  ok(usageBox.parseLlmUsage({}) === null, '空 usage 返回 null');
+  ok(usageBox.parseLlmUsage({ prompt_tokens: 'x' }) === null, '非数字 usage 不收');
+  const sum = usageBox.addLlmUsage({ prompt: 10, total: 15 }, { prompt: 4, completion: 2, total: 6 });
+  ok(sum.prompt === 14 && sum.total === 21 && sum.completion === 2, '累计用量按字段相加');
+  ok(usageBox.addLlmUsage({ prompt: 3 }, null).prompt === 3, '本次无 usage 时累计不变');
+}
+
 ok(/function upsertLlmCallCard/.test(panelSrc), '面板有模型调用可收拢卡片');
+ok(/opts\.onUsage/.test(bg) && /parseLlmUsage\(data && data\.usage\)/.test(bg),
+  'chat/completions 通过 onUsage 上报用量，不改返回值');
+ok(/usage: rec\.usage/.test(bg), '下载详情包含本次用量');
 ok(/downloadLlmCall/.test(panelSrc), '面板可请求下载调用详情');
 ok(/llm-call-badge/.test(panelSrc), '调用卡片有解析状态徽标');
 ok(/textContent: '存为SKILL'/.test(panelSrc), '标题栏按钮文案为存为SKILL');
@@ -91,6 +125,7 @@ const llmHelpers = [
   extractFn(panelSrc, 'looksLikeLlmStatusLine'),
   extractFn(panelSrc, 'parseStoredLlmStatusLine'),
   extractFn(panelSrc, 'llmCallStatusLine'),
+  extractFn(panelSrc, 'llmUsageText'),
   extractFn(panelSrc, 'llmCallNoteText'),
   extractFn(panelSrc, 'formatModelOutput')
 ].join('\n');
@@ -121,6 +156,21 @@ if (llmUi) {
     phase: 'parsed', parseOk: true, label: '文本模型', model: 'glm-5.2',
     chars: 10000, outputChars: 170, elapsedMs: 7300
   }) === '文本模型 · glm-5.2 · 发10000字·收170字 · 7.3s', '完成后同时展示发/收字数与耗时');
+  const withUsage = llmUi.llmCallStatusLine({
+    phase: 'received', label: '文本模型', model: 'glm-5.2',
+    chars: 10000, outputChars: 170, elapsedMs: 7300,
+    usage: { prompt: 9000, completion: 120, total: 9120, cached: 8192 },
+    usageTotal: { prompt: 18000, completion: 240, total: 18240 }
+  });
+  ok(withUsage.indexOf('入9000·出120 token') >= 0, '有 usage 时标题展示入/出 token');
+  ok(withUsage.indexOf('缓存8192') >= 0, '有 cached 时附带缓存 token');
+  ok(withUsage.indexOf('本任务累计 18240 token') >= 0, '标题展示本任务累计 token');
+  ok(withUsage.indexOf('发10000字·收170字') >= 0, 'token 段不取代原有字数统计');
+  ok(llmUi.llmCallStatusLine({
+    phase: 'received', label: '文本模型', model: 'glm-5.2', outputChars: 170
+  }).indexOf('token') < 0, '无 usage 时不显示 token 段');
+  ok(llmUi.parseStoredLlmStatusLine('文本模型 · glm-5.2 · 入9·出2 token · 已收到').model === 'glm-5.2',
+    '旧文案里的 token 段不会被当成模型名');
   ok(!/\d+字/.test(note), '备注不再重复字数');
   ok(note === ocrReceived.output, '41 字 OCR 原文进备注，不写状态套话');
   ok(llmUi.llmCallNoteText({ phase: 'received', output: '4cYs', outputChars: 4 }) === '4cYs', '短验证码原文直接展示');
@@ -189,6 +239,10 @@ ok(/不要发明「FTP下载」/.test(bg) && /handoff=desktop/.test(bg),
   'PLAYBOOK 禁止优先走页级 FTP/客户端下载');
 ok(/function shouldBlockDesktopHandoff/.test(bg) && /doneIsHandoffNotContent/.test(bg),
   '引擎可拦住 FTP 优先路径与仅 FileZilla 的 done');
+ok(/function runResultHasDesktopHandoff/.test(bg) && /reason === 'desktop-handoff'/.test(bg),
+  '引擎识别桥接返回的 desktop-handoff 并改 nudge');
+ok(/function desktopHandoffRefuse/.test(bridge) && /blockHandoff/.test(bridge),
+  'page.click/clickByText 可按 blockHandoff 拒绝 desktop 节点');
 ok(/function desktopHandoffOf/.test(bridge) && /entry\.handoff/.test(bridge),
   '快照把 FTP/客户端下载标为 handoff=desktop');
 ok(/download_box/.test(bg) && /within:文件名或当前菜单/.test(bg),
@@ -200,6 +254,25 @@ ok(/function enterSameOriginFrame/.test(bridge) && /function readableTextOf/.tes
   'getText/inspect 可进入同源 iframe');
 ok(/function preferFileActionHits/.test(bridge) && /function isPageChromeDownload/.test(bridge),
   'clickByText 下载/预览优先菜单');
+ok(/function waitElementStable/.test(bridge) && /ELEMENT_STABLE_MAX_MS = 400/.test(bridge),
+  '点击前有元素稳定等待，上限 400ms');
+ok((bridge.match(/await waitElementStable\(/g) || []).length >= 3,
+  'click/clickByText/setVal 等入口都等元素稳定');
+{
+  const hitFn = (bridge.match(/function hitTestDescendant\([\s\S]*?\n    \}/) || [''])[0];
+  ok(/elementFromPoint/.test(hitFn), '命中测试用 elementFromPoint');
+  ok(/pointerEvents = 'none'/.test(hitFn) && /finally/.test(hitFn) && /prevPointerEvents/.test(hitFn),
+    '命中测试临时穿透遮罩并在 finally 恢复');
+  ok(/el\.contains\(hit\)/.test(hitFn) && /isIgnored\(hit\)/.test(hitFn),
+    '只接受目标子孙且排除助手自身节点');
+  const clickFn = (bridge.match(/function dispatchClick\([\s\S]*?\n    \}/) || [''])[0];
+  ok(/init\.clientX = cx/.test(clickFn) && /init\.clientY = cy/.test(clickFn),
+    '点击事件带中心坐标');
+  ok(/targetWin\.PointerEvent/.test(clickFn) && /pointerType = 'mouse'/.test(clickFn),
+    'pointer 事件优先用 PointerEvent');
+  ok(/hitTestDescendant\(el, cx, cy\)/.test(clickFn), 'dispatchClick 走命中测试');
+  ok(/el\.click\(\)/.test(clickFn), '激活行为仍由原节点触发');
+}
 ok(/function findMoreNearCard/.test(bridge) && /function findCornerControls/.test(bridge),
   'openFileMenu 会搜卡片右上角附近的「…」');
 ok(/iframe\.src/.test(bridge) && /location\.assign/.test(bridge),
@@ -583,7 +656,8 @@ const extractSandbox = {};
 try {
   vm.runInNewContext(
     bg.slice(extractStart, extractEnd) +
-      '\nthis.extractJson = extractJson;\nthis.isAgentAction = isAgentAction;',
+      '\nthis.extractJson = extractJson;\nthis.isAgentAction = isAgentAction;' +
+      '\nthis.parseJsonLenient = parseJsonLenient;\nthis.coerceAgentAction = coerceAgentAction;',
     extractSandbox
   );
   ok(typeof extractSandbox.extractJson === 'function', 'extractJson 可在测试中加载');
@@ -631,6 +705,22 @@ const kimiParsed = extractSandbox.extractJson(kimiBroken);
 ok(kimiParsed && kimiParsed.action === 'execute' && kimiParsed.operations[0].op === 'selectOption' &&
   kimiParsed.operations[0].args[2].filter === '物理',
   'selectOption 末尾写成 }]]}（漏了操作对象的 }）时可修好');
+// 引擎首次解析走 parseJsonLenient + coerceAgentAction，双重编码在这一层修好
+const doubleEncoded = JSON.stringify('{"action":"execute","summary":"点","expect":"变","operations":[{"op":"click","args":["#a"]}]}');
+const doubleParsed = extractSandbox.coerceAgentAction &&
+  extractSandbox.coerceAgentAction(extractSandbox.parseJsonLenient(doubleEncoded));
+ok(doubleParsed && doubleParsed.action === 'execute' && doubleParsed.operations[0].op === 'click',
+  '整段被多包一层引号的 JSON 可解析');
+ok(extractSandbox.parseJsonLenient('"已完成登录"') === '已完成登录',
+  '普通字符串不被当成内层 JSON 再解一次');
+ok(extractSandbox.parseJsonLenient('{"a":1}').a === 1, '普通对象解析不受影响');
+const scalarIdxArgs = extractSandbox.extractJson('{"action":"click","args":12}');
+ok(scalarIdxArgs && scalarIdxArgs.action === 'execute' && scalarIdxArgs.operations[0].args[0] === 12,
+  '标量数字 args 包成数组');
+const scalarTextArgs = extractSandbox.extractJson('{"action":"clickByText","args":"下一步"}');
+ok(scalarTextArgs && scalarTextArgs.operations[0].args[0] === '下一步',
+  '标量字符串 args 包成数组');
+ok(extractSandbox.extractJson('{"summary":"只有说明"}') == null, '缺 action 仍无法解析（交给 JSON nudge）');
 ok(/function pickPageCaptchaImage/.test(bridge), 'pagebridge 有 captcha 魔术值现场解析');
 ok(/function captchaShaped/.test(bridge), 'pagebridge 有验证码几何特征');
 ok(/function adjacentCaptchaHint/.test(bridge), 'pagebridge 用邻接短文案判定验证码，不用整表 innerText');
@@ -877,6 +967,23 @@ const keptWithin = doneSandbox.attachTaskHintToOps(
   '任务说明'
 );
 ok(keptWithin[0].args[1].within.indexOf('nth-of-type(6)') >= 0 && keptWithin[0].args[1].hint, '已有 within 时仍附加 hint 且不覆盖 within');
+const blockedClick = doneSandbox.attachTaskHintToOps(
+  [{ op: 'click', args: [12] }, { op: 'clickByText', args: ['FTP下载'] }],
+  '下载这个文件',
+  { blockHandoff: true }
+);
+ok(blockedClick[0].args[1] && blockedClick[0].args[1].blockHandoff === true,
+  'click 注入 blockHandoff');
+ok(blockedClick[1].args[1] && blockedClick[1].args[1].blockHandoff === true &&
+  /下载这个文件/.test(blockedClick[1].args[1].hint),
+  'clickByText 同时带 hint 与 blockHandoff');
+const noBlockClick = doneSandbox.attachTaskHintToOps(
+  [{ op: 'click', args: [12] }],
+  '请用 FTP 客户端连接',
+  { blockHandoff: false }
+);
+ok(!noBlockClick[0].args[1] || !noBlockClick[0].args[1].blockHandoff,
+  '未要求拦截时 click 不带 blockHandoff');
 
 ok(/禁止 click 上传按钮/.test(bg), 'PLAYBOOK 禁止 click 上传按钮弹系统框');
 ok(/verified 以赋值是否成功为准/.test(bg), 'PLAYBOOK 说明组件清空 input 仍算上传成功');
@@ -1015,7 +1122,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '4.1.0', '锁步版本为 4.1.0');
+ok(manifestVer === '4.3.0', '锁步版本为中间号升级');
 ok(/【本步序号】/.test(bg), 'PLAYBOOK 含【本步序号】');
 ok(/禁止跨轮复用/.test(bg), 'PLAYBOOK 禁止跨轮复用 idx');
 ok(/page\.click\(12\)/.test(bg) && /page\.setVal\(12/.test(bg), 'PLAYBOOK 示例用数字 idx click/setVal');
@@ -1484,7 +1591,9 @@ try {
     bg.slice(ftpGuardStart, ftpGuardEnd) +
       '\nthis.shouldBlockDesktopHandoff = shouldBlockDesktopHandoff;' +
       '\nthis.doneIsHandoffNotContent = doneIsHandoffNotContent;' +
-      '\nthis.taskWantsFileObtain = taskWantsFileObtain;',
+      '\nthis.taskWantsFileObtain = taskWantsFileObtain;' +
+      '\nthis.taskExplicitDesktopHandoff = taskExplicitDesktopHandoff;' +
+      '\nthis.runResultHasDesktopHandoff = runResultHasDesktopHandoff;',
     ftpGuardBox
   );
   ok(typeof ftpGuardBox.shouldBlockDesktopHandoff === 'function', 'FTP 护栏函数可在测试中加载');
@@ -1493,11 +1602,43 @@ try {
 }
 if (ftpGuardBox.shouldBlockDesktopHandoff) {
   const obtainTask = '弄清如何得到「AMD_opt_vasp_result.txt」的下载方式或文件内容。';
+  const ftpSnap = {
+    elements: [
+      { idx: 12, text: 'FTP下载', handoff: 'desktop' },
+      { idx: 3, text: '预览' }
+    ],
+    outline: '[12]<BUTTON text=FTP下载 handoff=desktop>\n[3]<BUTTON text=预览>'
+  };
   ok(ftpGuardBox.taskWantsFileObtain(obtainTask), '取文件任务可识别');
+  ok(ftpGuardBox.taskWantsFileObtain('请下载这个文件'), '下载这个文件算取文件任务');
+  ok(ftpGuardBox.taskWantsFileObtain('保存该文件'), '保存该文件算取文件任务');
+  ok(ftpGuardBox.taskWantsFileObtain('获取文件正文'), '获取文件算取文件任务');
+  ok(!ftpGuardBox.taskWantsFileObtain('请下载模板并提交'), '单独「下载」不算取文件任务');
   ok(ftpGuardBox.shouldBlockDesktopHandoff(obtainTask, {
     summary: '点击FTP下载按钮查看下载方式',
     operations: [{ op: 'clickByText', args: ['FTP下载'] }]
   }), '取文件时拦住 clickByText FTP下载');
+  ok(ftpGuardBox.shouldBlockDesktopHandoff(obtainTask, {
+    summary: '点击该按钮',
+    operations: [{ op: 'click', args: [12] }]
+  }, ftpSnap), '取文件时拦住 click(handoff idx)');
+  ok(ftpGuardBox.shouldBlockDesktopHandoff(obtainTask, {
+    summary: '点击该按钮',
+    operations: [{ op: 'click', args: ['12'] }]
+  }, ftpSnap), '字符串数字 idx 也拦');
+  ok(!ftpGuardBox.shouldBlockDesktopHandoff(obtainTask, {
+    summary: '预览',
+    operations: [{ op: 'click', args: [3] }]
+  }, ftpSnap), '非 handoff idx 不拦');
+  ok(ftpGuardBox.shouldBlockDesktopHandoff(obtainTask, {
+    summary: '点击区域',
+    operations: [{ op: 'click', args: [12] }]
+  }, { outline: '[12]<DIV text=FTP下载 handoff=desktop>', elements: [] }),
+    'outline 上的 handoff idx 也拦');
+  ok(!ftpGuardBox.shouldBlockDesktopHandoff(obtainTask, {
+    summary: '点击区域',
+    operations: [{ op: 'click', args: ['div.download:nth-of-type(2)'] }]
+  }, ftpSnap), 'CSS 选择器不在引擎里当 idx');
   ok(!ftpGuardBox.shouldBlockDesktopHandoff(obtainTask, {
     summary: '预览目标文件',
     operations: [{ op: 'contextClick', args: ['AMD_opt_vasp_result.txt'] }]
@@ -1506,14 +1647,37 @@ if (ftpGuardBox.shouldBlockDesktopHandoff) {
     summary: '点击FTP下载',
     operations: [{ op: 'clickByText', args: ['FTP下载'] }]
   }), '用户明确要求 FTP 时不拦');
+  ok(ftpGuardBox.taskExplicitDesktopHandoff &&
+    !ftpGuardBox.taskExplicitDesktopHandoff('弄清下载方式，不要用FTP'),
+    '否定句不是明确要求 FTP');
+  ok(ftpGuardBox.shouldBlockDesktopHandoff('弄清下载方式，不要用FTP', {
+    summary: '点击FTP下载',
+    operations: [{ op: 'clickByText', args: ['FTP下载'] }]
+  }), '不要用FTP 时仍拦住');
+  ok(ftpGuardBox.shouldBlockDesktopHandoff('请下载这个文件', {
+    summary: '点FTP',
+    operations: [{ op: 'clickByText', args: ['FTP下载'] }]
+  }), '下载这个文件时拦住 FTP');
   ok(ftpGuardBox.doneIsHandoffNotContent(
     '可通过点击「FTP下载」获取方式。对话框给出 FileZilla 客户端下载地址。',
     obtainTask
   ), '仅 FileZilla 说明不能 done');
+  ok(ftpGuardBox.doneIsHandoffNotContent(
+    '可通过 FileZilla 客户端下载，日志含 VASP。',
+    obtainTask
+  ), '仅 VASP 字样不能当成已取到正文');
   ok(!ftpGuardBox.doneIsHandoffNotContent(
     '已从预览 iframe 读到正文（含 lscpu 与 VASP 日志）。',
     obtainTask
   ), '读到正文可以 done');
+  ok(ftpGuardBox.runResultHasDesktopHandoff(JSON.stringify({
+    kind: 'batch',
+    results: [{ op: 'click', value: { ok: false, continueBatch: true, reason: 'desktop-handoff' } }]
+  })), '批次结果能识别 desktop-handoff');
+  ok(!ftpGuardBox.runResultHasDesktopHandoff(JSON.stringify({
+    kind: 'batch',
+    results: [{ op: 'click', value: { ok: true, kind: 'action' } }]
+  })), '普通点击不是 desktop-handoff');
 }
 
 const handoffBox = {};

@@ -646,6 +646,40 @@ function chatCompletionsPayload(model, messages, opts, temperature) {
   return payload;
 }
 
+// OpenAI 兼容网关的 usage 字段名不统一，且不少网关根本不返回。
+// 只收认得出的数字项；一项都没有就返回 null，调用方据此保持原有字数统计。
+function parseLlmUsage(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  function pick(key, value) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n >= 0) out[key] = Math.round(n);
+  }
+  pick('prompt', raw.prompt_tokens != null ? raw.prompt_tokens : raw.input_tokens);
+  pick('completion', raw.completion_tokens != null ? raw.completion_tokens : raw.output_tokens);
+  pick('total', raw.total_tokens);
+  const pd = raw.prompt_tokens_details || raw.input_tokens_details;
+  if (pd && typeof pd === 'object') pick('cached', pd.cached_tokens);
+  const cd = raw.completion_tokens_details || raw.output_tokens_details;
+  if (cd && typeof cd === 'object') pick('reasoning', cd.reasoning_tokens);
+  if (out.total == null && out.prompt != null && out.completion != null) {
+    out.total = out.prompt + out.completion;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function addLlmUsage(base, add) {
+  if (!add) return base;
+  const out = Object.assign({}, base || {});
+  const keys = ['prompt', 'completion', 'total', 'cached', 'reasoning'];
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    if (add[k] == null) continue;
+    out[k] = (out[k] == null ? 0 : out[k]) + add[k];
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 // OpenAI chat/completions 通用调用。
 // 默认不传 temperature（与 Moonshot 官方 curl 一致）；部分 Kimi 模型只允许 1。
 // 若 400 明确要求某个 temperature，自动用该值重试一次。
@@ -725,6 +759,12 @@ async function callChatCompletions(baseURL, apiKey, model, messages, options) {
   }
 
   const data = await res.json();
+  if (typeof opts.onUsage === 'function') {
+    const usage = parseLlmUsage(data && data.usage);
+    if (usage) {
+      try { opts.onUsage(usage); } catch (e) {}
+    }
+  }
   let content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
   if (typeof content !== 'string') {
     if (Array.isArray(content)) {
@@ -841,6 +881,7 @@ function traceJson(rec) {
     t0: rec.t0,
     t1: rec.t1,
     error: rec.error || '',
+    usage: rec.usage || null,
     parseOk: rec.parseOk,
     parseNote: rec.parseNote || '',
     parsedAction: rec.parsedAction || '',
@@ -854,6 +895,8 @@ function traceJson(rec) {
 // 每次调用大模型（含 OCR）在对话里出可收拢卡片：请求中 → 已收到/失败 → 解析结果。完整输入输出走下载。
 function makeApiReporter(postMsg) {
   let currentId = '';
+  // reporter 按任务创建，累计量即「本任务累计」；网关不返回 usage 时始终为 null。
+  let usageTotal = null;
   return {
     currentId: function () { return currentId; },
     request: function (label, meta) {
@@ -887,11 +930,14 @@ function makeApiReporter(postMsg) {
         fileName: rec.fileName
       });
     },
-    response: function (label, text) {
+    response: function (label, text, usage) {
       const id = currentId;
       const output = text == null ? '' : String(text);
-      const rec = rememberLlmTrace(id, { output: output, t1: Date.now() });
+      const patch = { output: output, t1: Date.now() };
+      if (usage) patch.usage = usage;
+      const rec = rememberLlmTrace(id, patch);
       const elapsedMs = rec && rec.t0 ? (rec.t1 - rec.t0) : undefined;
+      if (usage) usageTotal = addLlmUsage(usageTotal, usage);
       postMsg({
         type: 'llmCall',
         id: id,
@@ -899,7 +945,9 @@ function makeApiReporter(postMsg) {
         label: label || '模型',
         output: output,
         outputChars: output.length,
-        elapsedMs: elapsedMs
+        elapsedMs: elapsedMs,
+        usage: usage || undefined,
+        usageTotal: usage ? usageTotal : undefined
       });
     },
     failure: function (label, url, err) {
@@ -1059,11 +1107,16 @@ async function callLLM(messages, kind, reporter, signal) {
       input: sanitizeLlmMessages(messages)
     });
   }
+  let usageSeen = null;
   try {
-    const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, { timeoutMs: timeoutMs, signal: signal });
+    const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, {
+      timeoutMs: timeoutMs,
+      signal: signal,
+      onUsage: function (u) { usageSeen = u; }
+    });
     if (signal && signal.aborted) throw cancelledError();
     if ((kind || 'text') === 'text') lastTextLlmAt = Date.now();
-    if (reporter) reporter.response(label, text);
+    if (reporter) reporter.response(label, text, usageSeen);
     return text;
   } catch (e) {
     if ((kind || 'text') === 'text') lastTextLlmAt = Date.now();
@@ -1119,10 +1172,16 @@ async function callOcrOpenAiVision({ fileName, uploadName, pngDataUrl, approxByt
       input: sanitizeLlmMessages(messages)
     });
   }
+  let ocrUsage = null;
   try {
-    const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, { maxTokens: 4096, timeoutMs: 120000, signal: signal });
+    const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, {
+      maxTokens: 4096,
+      timeoutMs: 120000,
+      signal: signal,
+      onUsage: function (u) { ocrUsage = u; }
+    });
     if (signal && signal.aborted) throw cancelledError();
-    if (reporter) reporter.response('OCR', text);
+    if (reporter) reporter.response('OCR', text, ocrUsage);
     return text;
   } catch (e) {
     if (isUserCancelled(e) || (signal && signal.aborted)) throw cancelledError();
@@ -1907,6 +1966,10 @@ function operationsFromLoose(obj) {
   const name = String(obj.action || obj.op || '');
   if (!HELPER_OPS[name]) return null;
   if (Array.isArray(obj.args)) return [{ op: name, args: obj.args }];
+  // 单参数 helper 常被写成标量：{"action":"click","args":12}
+  if (typeof obj.args === 'number' || typeof obj.args === 'string') {
+    return [{ op: name, args: [obj.args] }];
+  }
   if (obj.selector != null && String(obj.selector) !== '') {
     const args = [obj.selector];
     if (obj.value != null) args.push(obj.value);
@@ -2019,7 +2082,15 @@ function parseJsonLenient(text) {
   let cur = String(text == null ? '' : text).trim();
   for (let n = 0; n < 8; n++) {
     try {
-      return JSON.parse(cur);
+      const parsed = JSON.parse(cur);
+      // 整段被多包一层引号（"{\"action\":...}"）时再解一次，否则 coerce 只会看到字符串
+      if (typeof parsed === 'string') {
+        const inner = parsed.trim();
+        if (inner && (inner[0] === '{' || inner[0] === '[')) {
+          try { return JSON.parse(inner); } catch (e2) { return parsed; }
+        }
+      }
+      return parsed;
     } catch (e) {
       const msg = String(e && e.message || '');
       const m = msg.match(/position\s+(\d+)/i);
@@ -2142,13 +2213,17 @@ function looksLikeDoneProse(text) {
   return /(已(经)?(完成|登录|进入|打开|提交|选中|勾选|上传|发布|处理)|任务(已)?(完成|结束)|全部完成|successfully|completed|already (logged|entered|opened|done))/i.test(s);
 }
 
-function attachTaskHintToOps(operations, task) {
+function attachTaskHintToOps(operations, task, extra) {
   const hint = String(task || '').replace(/\s+/g, ' ').trim().slice(0, 1500);
-  if (!hint || !Array.isArray(operations)) return operations;
+  const blockHandoff = !!(extra && extra.blockHandoff);
+  if ((!hint && !blockHandoff) || !Array.isArray(operations)) return operations;
   const out = [];
   for (let i = 0; i < operations.length; i++) {
     const item = operations[i];
-    if (!item || item.op !== 'clickByText') {
+    const op = item && item.op;
+    const injectHint = op === 'clickByText' || op === 'clickOptionByText';
+    const injectClick = op === 'click' || injectHint;
+    if (!item || !injectClick) {
       out.push(item);
       continue;
     }
@@ -2156,16 +2231,20 @@ function attachTaskHintToOps(operations, task) {
     let opts = args[1];
     if (typeof opts === 'string') opts = { within: opts };
     if (!opts || typeof opts !== 'object' || Array.isArray(opts)) opts = {};
-    if (!opts.hint && !opts.task) opts = Object.assign({}, opts, { hint: hint });
-    args[1] = opts;
+    if (injectHint && hint && !opts.hint && !opts.task) opts = Object.assign({}, opts, { hint: hint });
+    if (blockHandoff && !opts.blockHandoff) opts = Object.assign({}, opts, { blockHandoff: true });
+    if ((injectHint && opts.hint) || opts.blockHandoff || (opts.within != null && opts.within !== '')) {
+      args[1] = opts;
+    }
     out.push(Object.assign({}, item, { args: args }));
   }
   return out;
 }
 
 const DESKTOP_HANDOFF_RE = /FTP|SFTP|FTPS|FileZilla|WinSCP|客户端下载|空间挂载|网盘挂载/i;
-const FILE_OBTAIN_TASK_RE = /下载方式|文件内容|取(得)?文件|得到.{0,40}\.(txt|csv|dat|log|json)|预览.{0,20}文件|读取.{0,20}文件|弄清如何得到/i;
+const FILE_OBTAIN_TASK_RE = /下载方式|文件内容|取(得)?文件|得到.{0,40}\.(txt|csv|dat|log|json)|预览.{0,20}文件|读取.{0,20}文件|弄清如何得到|下载(这个|该|此)?文件|保存.{0,30}文件|获取文件/i;
 const FILE_OBTAIN_EXPLICIT_FTP_RE = /(用|通过|走)\s*(FTP|SFTP)|FileZilla|本机\s*FTP|FTP\s*(下载|连接|客户端)/i;
+const FILE_OBTAIN_DENY_FTP_RE = /(不要|别|禁止|勿).{0,12}(FTP|SFTP|FTPS|FileZilla|WinSCP|客户端下载|空间挂载|网盘挂载)/i;
 const FILE_OBTAIN_HANDOFF_NUDGE =
   '【引擎约束】取文件内容时禁止优先点 FTP/SFTP/客户端下载/FileZilla（那是本机程序入口；本助手无法用浏览器 FTP 协议取字节）。请按本轮快照对目标文件卡片依次尝试：1) contextClick 或 openFileMenu 后 clickByText("预览",{within:文件名})，getText 预览区；2) 同一菜单 clickByText("下载",{within:文件名}) 并 watchTraffic；3) urlHints/scriptHints。某步失败就换下一步，不要继续点页级 FTP。';
 
@@ -2174,31 +2253,79 @@ function taskWantsFileObtain(task) {
 }
 
 function taskExplicitDesktopHandoff(task) {
-  return FILE_OBTAIN_EXPLICIT_FTP_RE.test(String(task || ''));
+  const s = String(task || '');
+  if (FILE_OBTAIN_DENY_FTP_RE.test(s)) return false;
+  return FILE_OBTAIN_EXPLICIT_FTP_RE.test(s);
 }
 
-function parsedTargetsDesktopHandoff(parsed) {
+function clickArgAsIdx(arg) {
+  if (typeof arg === 'number' && Number.isFinite(arg) && arg > 0) return Math.floor(arg);
+  if (typeof arg === 'string' && /^\d+$/.test(arg.trim())) return parseInt(arg.trim(), 10);
+  return 0;
+}
+
+function snapshotDesktopHandoffIdxSet(snapshot) {
+  const set = {};
+  function add(n) {
+    const i = Number(n);
+    if (Number.isFinite(i) && i > 0) set[i] = true;
+  }
+  const els = snapshot && Array.isArray(snapshot.elements) ? snapshot.elements : [];
+  for (let i = 0; i < els.length; i++) {
+    const e = els[i];
+    if (e && e.handoff === 'desktop' && e.idx != null) add(e.idx);
+  }
+  const outline = String((snapshot && snapshot.outline) || '');
+  const re = /\[(\d+)\]<[^>\n]*\bhandoff=desktop\b/g;
+  let m;
+  while ((m = re.exec(outline))) add(m[1]);
+  return set;
+}
+
+function parsedTargetsDesktopHandoff(parsed, snapshot) {
   if (!parsed || typeof parsed !== 'object') return false;
   if (DESKTOP_HANDOFF_RE.test(String(parsed.summary || ''))) return true;
+  const handoffIdx = snapshotDesktopHandoffIdxSet(snapshot);
   const ops = Array.isArray(parsed.operations) ? parsed.operations : [];
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
     if (!op) continue;
+    const arg0 = op.args && op.args[0] != null ? op.args[0] : '';
     if (op.op === 'clickByText' || op.op === 'clickOptionByText') {
-      if (DESKTOP_HANDOFF_RE.test(String(op.args && op.args[0] != null ? op.args[0] : ''))) return true;
+      if (DESKTOP_HANDOFF_RE.test(String(arg0))) return true;
+    }
+    if (op.op === 'click') {
+      const idx = clickArgAsIdx(arg0);
+      if (idx && handoffIdx[idx]) return true;
     }
   }
   return false;
 }
 
-function shouldBlockDesktopHandoff(task, parsed) {
-  return taskWantsFileObtain(task) && !taskExplicitDesktopHandoff(task) && parsedTargetsDesktopHandoff(parsed);
+function shouldBlockDesktopHandoff(task, parsed, snapshot) {
+  return taskWantsFileObtain(task) && !taskExplicitDesktopHandoff(task) && parsedTargetsDesktopHandoff(parsed, snapshot);
+}
+
+function runResultHasDesktopHandoff(raw) {
+  let value = raw;
+  if (typeof raw === 'string') {
+    try { value = JSON.parse(raw); } catch (e) { return false; }
+  }
+  if (!value || typeof value !== 'object') return false;
+  if (value.reason === 'desktop-handoff') return true;
+  const results = value.kind === 'batch' && Array.isArray(value.results) ? value.results : null;
+  if (!results) return false;
+  for (let i = 0; i < results.length; i++) {
+    const v = results[i] && results[i].value;
+    if (v && typeof v === 'object' && v.reason === 'desktop-handoff') return true;
+  }
+  return false;
 }
 
 function doneIsHandoffNotContent(summary, task) {
   if (!taskWantsFileObtain(task) || taskExplicitDesktopHandoff(task)) return false;
   const s = String(summary || '');
-  const hasBytes = /正文|文件内容|已读到|预览成功|lscpu|VASP/.test(s);
+  const hasBytes = /正文|文件内容|已读到|预览成功/.test(s);
   const handoff = /FileZilla|FTP\s*客户端|ftp:\/\//i.test(s) ||
     (/FTP下载/.test(s) && /客户端/.test(s));
   return handoff && !hasBytes;
@@ -4456,7 +4583,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
         keepSlotForRetry();
         continue;
       }
-      if (shouldBlockDesktopHandoff((resumeMeta && resumeMeta.originalTask) || task, parsed)) {
+      if (shouldBlockDesktopHandoff((resumeMeta && resumeMeta.originalTask) || task, parsed, snapResp)) {
         messages.push({ role: 'user', content: FILE_OBTAIN_HANDOFF_NUDGE + JSON_ONLY_HINT });
         postMsg({ type: 'status', text: '已拦住 FTP/客户端下载优先路径，要求先对文件卡片预览或下载' });
         keepSlotForRetry();
@@ -4498,7 +4625,9 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
 
       // 导航安全执行：结构化操作不依赖 eval/CSP；两种路径均不自动重试，避免重复副作用
       const hintTask = (resumeMeta && resumeMeta.originalTask) || task;
-      const execution = await runOperationsSafe(tabId, attachTaskHintToOps(parsed.operations, hintTask), { postMsg, cancelRef, origin });
+      const execution = await runOperationsSafe(tabId, attachTaskHintToOps(parsed.operations, hintTask, {
+        blockHandoff: taskWantsFileObtain(hintTask) && !taskExplicitDesktopHandoff(hintTask)
+      }), { postMsg, cancelRef, origin });
       const { resp: runResp, navigated } = execution;
       if (cancelRef.cancelled || execution.cancelled) {
         return await notifyCancelled(postMsg, cancelRef, origin, messages);
@@ -4581,6 +4710,12 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
       } else if (runResp && runResp.ok) {
         const resStr = String(runResp.result);
         resultRaw = resStr;
+        if (runResultHasDesktopHandoff(resStr)) {
+          messages.push({ role: 'user', content: FILE_OBTAIN_HANDOFF_NUDGE + JSON_ONLY_HINT });
+          postMsg({ type: 'status', text: '已拦住 FTP/客户端下载优先路径，要求先对文件卡片预览或下载' });
+          keepSlotForRetry();
+          continue;
+        }
         const waitTimeout = findWaitTimeout(resStr);
         resultInfo = analyzeRunResult(resStr);
         cSummary = changeSummary(report, resultInfo);

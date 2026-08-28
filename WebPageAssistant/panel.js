@@ -1815,6 +1815,8 @@
     for (let i = 1; i < bits.length; i++) {
       const b = bits[i];
       if (badgeRe.test(b)) continue;
+      // token 段由 state.usage 重建，旧文案解析时跳过，避免被当成模型名
+      if (/token/.test(b)) continue;
       let m = /^发(\d+)字·收(\d+)字$/.exec(b);
       if (m) {
         out.chars = parseInt(m[1], 10);
@@ -1840,7 +1842,7 @@
 
   function llmCallPersistFields(state) {
     const o = {};
-    const keys = ['label', 'model', 'fileName', 'parseOk', 'outputChars', 'chars', 'elapsedMs'];
+    const keys = ['label', 'model', 'fileName', 'parseOk', 'outputChars', 'chars', 'elapsedMs', 'usage', 'usageTotal'];
     for (let i = 0; i < keys.length; i++) {
       const k = keys[i];
       if (state[k] != null && state[k] !== '') o[k] = state[k];
@@ -1862,11 +1864,33 @@
     } else if (state.chars != null) {
       bits.push('上下文 ' + state.chars + ' 字');
     }
+    const tokenBit = llmUsageText(state.usage);
+    if (tokenBit) bits.push(tokenBit);
+    if (state.usageTotal && state.usageTotal.total != null) {
+      bits.push('本任务累计 ' + state.usageTotal.total + ' token');
+    }
     if (state.elapsedMs != null) {
       const elapsed = formatElapsed(state.elapsedMs);
       if (elapsed) bits.push(elapsed);
     }
     return bits.join(' · ');
+  }
+
+  // 网关不返回 usage 时保持原有字数统计，不显示 token 段
+  function llmUsageText(usage) {
+    if (!usage || typeof usage !== 'object') return '';
+    const main = [];
+    if (usage.prompt != null) main.push('入' + usage.prompt);
+    if (usage.completion != null) main.push('出' + usage.completion);
+    if (!main.length) {
+      return usage.total != null ? ('共' + usage.total + ' token') : '';
+    }
+    let text = main.join('·') + ' token';
+    const extra = [];
+    if (usage.cached != null) extra.push('缓存' + usage.cached);
+    if (usage.reasoning != null) extra.push('推理' + usage.reasoning);
+    if (extra.length) text += '（' + extra.join('·') + '）';
+    return text;
   }
 
   function llmCallNoteText(state) {

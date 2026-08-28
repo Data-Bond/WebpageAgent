@@ -7,7 +7,7 @@
   var INSTALLED = '__assistantPage';
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
   // 已打开页面靠此号决定是否重注入 MAIN world；面板角标读 manifest。
-  var BRIDGE_VERSION = '4.1.0';
+  var BRIDGE_VERSION = '4.3.0';
 
   function install() {
     var scriptAborted = false;
@@ -2445,6 +2445,31 @@
       return '';
     }
 
+    function desktopHandoffEntryFromEl(el) {
+      var text = '';
+      try { text = String((el && (el.innerText || el.textContent)) || '').trim().slice(0, 80); } catch (e0) {}
+      var entry = { text: text, label: '', title: '', ariaLabel: '', name: '' };
+      try { entry.label = fieldLabelOf(el) || ''; } catch (e1) {}
+      try {
+        if (el && el.getAttribute) {
+          entry.title = el.getAttribute('title') || '';
+          entry.ariaLabel = el.getAttribute('aria-label') || '';
+          entry.name = el.getAttribute('name') || '';
+        }
+      } catch (e2) {}
+      return entry;
+    }
+
+    function desktopHandoffRefuse(el) {
+      if (!el || desktopHandoffOf(desktopHandoffEntryFromEl(el)) !== 'desktop') return null;
+      return {
+        ok: false,
+        continueBatch: true,
+        reason: 'desktop-handoff',
+        hint: '目标是页级 FTP/SFTP/客户端下载入口（handoff=desktop），本助手无法用浏览器取字节。请对该文件卡片 contextClick 或 openFileMenu 后预览/下载。'
+      };
+    }
+
     function probeSignals() {
       markSample();
       return JSON.parse(JSON.stringify({
@@ -3161,16 +3186,92 @@
       });
     }
 
+    var ELEMENT_STABLE_MAX_MS = 400;
+
+    // 操作期间 #wpa-busy-mask 铺满视口，会截获 elementFromPoint。
+    // 只接受落在目标内部的命中点（图标、涟漪层等），不接受无关弹层。
+    function hitTestDescendant(el, x, y) {
+      var doc = (el && el.ownerDocument) || document;
+      var mask = null;
+      var prevPointerEvents = '';
+      try { mask = doc.getElementById('wpa-busy-mask'); } catch (e0) { mask = null; }
+      try {
+        if (mask) {
+          prevPointerEvents = mask.style.pointerEvents;
+          mask.style.pointerEvents = 'none';
+        }
+        var hit = null;
+        try { hit = doc.elementFromPoint(x, y); } catch (e1) { hit = null; }
+        if (!hit || hit === el || isIgnored(hit)) return null;
+        try { if (!el.contains(hit)) return null; } catch (e2) { return null; }
+        return hit;
+      } finally {
+        try { if (mask) mask.style.pointerEvents = prevPointerEvents; } catch (e3) {}
+      }
+    }
+
+    // 动画/重排途中的元素点了会落空。比较两次 rect，稳定或超时都继续，不抛错。
+    async function waitElementStable(el, maxMs) {
+      var limit = maxMs == null ? ELEMENT_STABLE_MAX_MS : Math.max(0, Number(maxMs) || 0);
+      if (!el || !limit) return true;
+      var prev = null;
+      try { prev = el.getBoundingClientRect(); } catch (e) { return true; }
+      var deadline = Date.now() + limit;
+      while (Date.now() < deadline) {
+        await sleepMs(50);
+        var cur = null;
+        try { cur = el.getBoundingClientRect(); } catch (e1) { return true; }
+        if (!cur) return true;
+        if (prev &&
+          Math.abs(prev.left - cur.left) < 2 && Math.abs(prev.top - cur.top) < 2 &&
+          Math.abs(prev.width - cur.width) < 2 && Math.abs(prev.height - cur.height) < 2) {
+          return true;
+        }
+        prev = cur;
+      }
+      return false;
+    }
+
     // 对元素节点派发完整鼠标事件序列（含祖先 hover），供 page.click / clickByText / clickOptionByText / selectOption 共用
     function dispatchClick(el) {
+      var win = (el && el.ownerDocument && el.ownerDocument.defaultView) || window;
+      var cx = 0;
+      var cy = 0;
+      var hasPoint = false;
+      try {
+        var rect = el.getBoundingClientRect();
+        if (rect && (rect.width > 0 || rect.height > 0)) {
+          cx = rect.left + Math.max(rect.width / 2, 1);
+          cy = rect.top + Math.max(rect.height / 2, 1);
+          hasPoint = true;
+        }
+      } catch (e0) {}
+
       function fireMouse(type, target, extra) {
         try {
-          var targetWin = target.ownerDocument && target.ownerDocument.defaultView || window;
+          var targetWin = target.ownerDocument && target.ownerDocument.defaultView || win;
           var init = { bubbles: true, cancelable: true, composed: true, view: targetWin, buttons: 1 };
+          if (hasPoint) { init.clientX = cx; init.clientY = cy; }
           if (extra) { for (var k in extra) init[k] = extra[k]; }
-          target.dispatchEvent(new targetWin.MouseEvent(type, init));
+          var Ctor = null;
+          if (type.indexOf('pointer') === 0 && typeof targetWin.PointerEvent === 'function') {
+            Ctor = targetWin.PointerEvent;
+            init.pointerId = 1;
+            init.pointerType = 'mouse';
+            init.isPrimary = true;
+          }
+          if (!Ctor) Ctor = targetWin.MouseEvent;
+          target.dispatchEvent(new Ctor(type, init));
         } catch (e) {}
       }
+
+      // 事件派给命中点，激活行为（导航/提交）仍留给原节点，保持既有语义。
+      var target = el;
+      if (hasPoint) {
+        var hit = hitTestDescendant(el, cx, cy);
+        if (hit) target = hit;
+      }
+
       try {
         var node = el;
         for (var depth = 0; node && depth < 4; depth++) {
@@ -3179,15 +3280,15 @@
           node = node.parentElement;
         }
       } catch (e) {}
-      fireMouse('pointerover', el, { buttons: 0 });
-      fireMouse('mouseover', el, { buttons: 0 });
-      fireMouse('pointerdown', el);
-      fireMouse('mousedown', el);
+      fireMouse('pointerover', target, { buttons: 0 });
+      fireMouse('mouseover', target, { buttons: 0 });
+      fireMouse('pointerdown', target);
+      fireMouse('mousedown', target);
       try { if (typeof el.focus === 'function') el.focus(); } catch (e) {}
-      fireMouse('pointerup', el);
-      fireMouse('mouseup', el);
+      fireMouse('pointerup', target);
+      fireMouse('mouseup', target);
       if (typeof el.click === 'function') { try { el.click(); } catch (e) {} }
-      else { fireMouse('click', el); }
+      else { fireMouse('click', target); }
     }
 
     function fireMouseAt(el, type, extra) {
@@ -5047,6 +5148,7 @@
             var isContentEditable = el.isContentEditable ||
               (el.getAttribute && (el.getAttribute('contenteditable') === 'true' || (el.getAttribute('role') === 'textbox' && el.isContentEditable)));
             if (el.readOnly && !isContentEditable) throw new Error('元素只读，不能直接填写: ' + sel);
+            await waitElementStable(el);
             var win = el.ownerDocument && el.ownerDocument.defaultView || window;
             function fireValueEvents(target, text) {
               try {
@@ -5147,7 +5249,13 @@
               };
             }
             var target = retargetFileSelectClick(el);
+            var clickOpts = arguments.length > 1 ? arguments[1] : null;
+            if (clickOpts && typeof clickOpts === 'object' && !Array.isArray(clickOpts) && clickOpts.blockHandoff) {
+              var clickRefused = desktopHandoffRefuse(target) || desktopHandoffRefuse(el);
+              if (clickRefused) return clickRefused;
+            }
             try { if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+            await waitElementStable(target);
             dispatchClick(target);
             var us;
             try { us = uniqueSelector(target); } catch (e2) { us = null; }
@@ -5239,7 +5347,7 @@
             return found.slice(0, cap);
           },
           // 按可见自身文本点击最短匹配节点。within 限定子树（用户给的容器 CSS 放这里）。
-          clickByText: function (text, opts) {
+          clickByText: async function (text, opts) {
             var raw = String(text == null ? '' : text).trim();
             if (!raw) throw new Error('clickByText: 文本为空');
             if (typeof opts === 'string') opts = { within: opts };
@@ -5298,7 +5406,12 @@
               );
             }
             el = retargetFileSelectClick(el);
+            if (opts.blockHandoff) {
+              var textRefused = desktopHandoffRefuse(el);
+              if (textRefused) return textRefused;
+            }
             try { el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+            await waitElementStable(el);
             dispatchClick(el);
             var us;
             try { us = uniqueSelector(el); } catch (e) { us = null; }
@@ -5542,6 +5655,10 @@
                     '级联菜单选项禁止直接 clickOptionByText。请使用 page.selectOption(级联触发器选择器, 完整目标选项文本[, {filter:"简短过滤词"}])。'
                   );
                 }
+                if (o.blockHandoff) {
+                  var optRefused = desktopHandoffRefuse(r.winner.el);
+                  if (optRefused) return optRefused;
+                }
                 try { r.winner.el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
                 dispatchClick(r.winner.el);
                 return { ok: true, kind: 'action', text: r.winner.text, value: r.winner.value, selector: r.winner.selector, verified: null };
@@ -5759,6 +5876,7 @@
               return { ok: true, kind: 'mutation', changed: false, checked: cur, verified: true,
                 note: '已是目标状态，未点击', label: boxLabelText(el) };
             }
+            await waitElementStable(el);
             dispatchClick(boxClickTarget(el));
             // 等框架把模型状态回写到 input.checked/类名（iView/element 等异步同步）
             try {
