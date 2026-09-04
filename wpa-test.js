@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { execFileSync } = require('child_process');
 
 const ROOT = path.join(__dirname, 'WebPageAssistant');
 let failures = 0;
@@ -19,7 +20,7 @@ function ok(cond, name) {
   }
 }
 
-const files = ['background.js', 'pagebridge.js', 'content.js', 'panel.js'];
+const files = ['background.js', 'pagebridge.js', 'content.js', 'panel.js', 'office.js', 'settings.js'];
 const srcs = {};
 for (const f of files) {
   const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
@@ -35,6 +36,8 @@ for (const f of files) {
 const bg = srcs['background.js'];
 const bridge = srcs['pagebridge.js'];
 const panelSrc = srcs['panel.js'] || '';
+const settingsSrc = srcs['settings.js'] || '';
+const settingsHtml = fs.readFileSync(path.join(ROOT, 'settings.html'), 'utf8');
 const usageBox = {};
 try {
   vm.runInNewContext(
@@ -77,8 +80,11 @@ ok(/textContent: '清空\/存档对话'/.test(panelSrc), '标题栏按钮为清�
 ok(!/textContent: '清空对话', title: '清空对话与附件'/.test(panelSrc), '标题栏不再直接清空对话');
 ok(/清空对话（仅对话历史、保留附件）/.test(panelSrc), '可清空对话并保留附件');
 ok(/清空对话（包括对话历史与附件）/.test(panelSrc), '可清空对话与附件');
-ok(/保存对话（所有用户输入与系统响应的内容与时间线）/.test(panelSrc), '可保存完整对话时间线');
+ok(/保存对话（用户 prompt、API 请求结构与系统响应）/.test(panelSrc), '可保存完整对话时间线（含请求结构）');
 ok(/保存对话（仅用户输入）/.test(panelSrc), '可仅保存用户输入');
+ok(/### 输入 prompt/.test(panelSrc) && /### API 请求结构/.test(panelSrc), '完整存档写入 prompt 与 API 请求结构');
+ok(/不含网页快照/.test(panelSrc), '存档声明不含快照正文');
+ok(/requestShape/.test(panelSrc) && /function describeChatCompletionsRequestShape/.test(bg), '调用卡片持久化请求结构');
 ok(/keepFiles/.test(panelSrc) && /keepFiles/.test(bg), '清空历史可选择保留附件');
 ok(/function saveConversation/.test(panelSrc) && /function archiveItems/.test(panelSrc), '保存对话从 transcript 导出');
 ok(/function openArchiveModal/.test(panelSrc), '点击标题栏打开清空/存档页');
@@ -88,8 +94,9 @@ ok(!/WEB-SKILL 库/.test(panelSrc), '不再使用「WEB-SKILL 库」');
 ok(/header-action/.test(panelSrc), '标题栏文本按钮样式统一');
 ok(!/｜ 已注入/.test(panelSrc), '不再展示页面 URL｜已注入 条');
 ok(/textContent: 'Webpage Agent'/.test(panelSrc), '标题为 Webpage Agent');
-ok(/headerLeft\.appendChild\(title\)[\s\S]*headerBrand\.appendChild\(buildBadge\)[\s\S]*headerBrand\.appendChild\(connLampWrap\)/.test(panelSrc), '版本号写在 Webpage Agent 下面，已连接跟版本同行');
-ok(/flex-direction: column/.test((panelSrc.match(/\.header-left \{[\s\S]*?\n    \}/) || [''])[0]), '标题栏左侧纵向叠放名称与版本');
+ok(/headerRight\.appendChild\(settingsBtn\)[\s\S]*headerRight\.appendChild\(zoomBtn\)[\s\S]*headerRight\.appendChild\(closeBtn\)/.test(panelSrc), '缩放按钮在配置按钮右边、关闭按钮左边');
+ok(/headerMain\.appendChild\(title\)[\s\S]*headerBrand\.appendChild\(buildBadge\)[\s\S]*headerBrand\.appendChild\(connLampWrap\)[\s\S]*headerMain\.appendChild\(headerBrand\)[\s\S]*headerLeft\.appendChild\(headerMain\)/.test(panelSrc), '版本号写在 Webpage Agent 下面，已连接跟版本同行');
+ok(/flex-direction: column/.test((panelSrc.match(/\.header-main \{[\s\S]*?\n    \}/) || [''])[0]), '品牌区纵向叠放名称与版本');
 ok(!/展开可看全文/.test(panelSrc), '收到态不重复「展开可看全文」');
 ok(!/已收到返回（/.test(panelSrc), '收到态不重复标题中的字数');
 ok(!/刷新后面板只保留摘要/.test(panelSrc), '恢复态不重复下载提示');
@@ -97,6 +104,10 @@ ok(!/下载 JSON 含本次请求的完整输入/.test(panelSrc), '展开区不�
 ok(!/textContent: '展开'/.test(panelSrc), '模型调用卡片不再提供展开按钮');
 ok(/textContent: '下载详情'/.test(panelSrc), '模型调用卡片保留下载详情');
 ok(/assistant-detail-btn/.test(panelSrc), '助手回复提供详情按钮');
+ok(/bubble\.appendChild\(toggle\)/.test(extractFn(panelSrc, 'renderAssistantBubble')), '详情按钮放在助手消息卡内部');
+ok(/right: 8px/.test((panelSrc.match(/\.assistant-detail-btn \{[\s\S]*?\n    \}/) || [''])[0]) &&
+  /bottom: 5px/.test((panelSrc.match(/\.assistant-detail-btn \{[\s\S]*?\n    \}/) || [''])[0]),
+  '详情是消息卡右下角的透明文字');
 ok(/assistant-output-copy/.test(panelSrc), '详情文本框右上角有复制按钮');
 ok(/function formatModelOutput/.test(panelSrc), '助手详情展示完整 output JSON');
 ok(/llm-call-note:empty/.test(panelSrc), '空备注不占行');
@@ -180,7 +191,7 @@ if (llmUi) {
     chars: 8000,
     bytes: 2900,
     timeoutMs: 120000,
-    extra: 'Standard-IMG openai-vision',
+    extra: 'OpenAI-chat-completions-image_url openai-vision',
     url: 'https://api.example/v1/chat/completions'
   }).indexOf('上下文') < 0, '请求中备注不重复标题里的上下文字数');
   const restored = llmUi.parseStoredLlmStatusLine('OCR · kimi-k2.6 · page:captcha · 41字 · 已收到');
@@ -191,6 +202,54 @@ if (llmUi) {
     '发/收字数标题行也能还原');
   ok(/"result": "hello"/.test(llmUi.formatModelOutput('{"action":"done","summary":"s","result":"hello"}')),
     '详情展开会带上 output 里的 result');
+}
+
+const archiveHelpers = [
+  extractFn(panelSrc, 'pad2'),
+  extractFn(panelSrc, 'formatLocalDateTime'),
+  extractFn(panelSrc, 'formatMessageTime'),
+  extractFn(panelSrc, 'archiveRoleLabel'),
+  extractFn(panelSrc, 'formatModelOutput'),
+  extractFn(panelSrc, 'nearestArchiveUserPrompt'),
+  extractFn(panelSrc, 'formatArchiveRequestShape'),
+  extractFn(panelSrc, 'buildArchiveMarkdown')
+].join('\n');
+const archiveBox = { location: { href: 'https://docs.qq.com/sheet/demo' } };
+try {
+  vm.runInNewContext(archiveHelpers + '\nthis.buildArchiveMarkdown = buildArchiveMarkdown;', archiveBox);
+  ok(typeof archiveBox.buildArchiveMarkdown === 'function', '存档 Markdown 函数可在测试中加载');
+} catch (e) {
+  ok(false, '加载存档 Markdown 函数失败: ' + (e && e.message));
+}
+if (archiveBox.buildArchiveMarkdown) {
+  const snapLeak = 'SECRET_SNAPSHOT_IN_ARCHIVE';
+  const md = archiveBox.buildArchiveMarkdown([
+    { role: 'user', text: '你能看到本页是什么吗？', at: '2026-09-01T06:11:27.000Z' },
+    {
+      role: 'llm-call',
+      text: '文本模型 · Kimi-K2.7-Code · 发87677字·收180字',
+      at: '2026-09-01T06:11:27.000Z',
+      llm: {
+        prompt: '你能看到本页是什么吗？',
+        requestShape: {
+          method: 'POST',
+          url: '<API端点>/v1/chat/completions',
+          body: {
+            model: '<模型ID>',
+            messages: [
+              { role: 'system', content: '<系统提示词+运行时手册（约2500字）>' },
+              { role: 'user', content: '<当前用户指令（约80字）>' },
+              { role: 'user', content: '<页面快照（约87000字）>' }
+            ]
+          }
+        }
+      }
+    }
+  ], false);
+  ok(md.indexOf('### 输入 prompt') >= 0 && md.indexOf('你能看到本页是什么吗？') >= 0, '存档含用户 prompt');
+  ok(md.indexOf('### API 请求结构') >= 0 && md.indexOf('<页面快照（约87000字）>') >= 0, '存档含 API 请求结构解释词');
+  ok(md.indexOf(snapLeak) < 0, '存档不写入快照正文');
+  ok(md.indexOf('不含网页快照') >= 0, '存档页头说明不含快照正文');
 }
 
 ok(/function coerceAgentAction/.test(bg), '可把 action=click 改写为 execute');
@@ -204,7 +263,7 @@ const codeOps = m
   ? Array.from(allowedBody.matchAll(/(\w+)\s*:/g)).map((x) => x[1]).sort()
   : [];
 
-for (const op of ['clickByText', 'inspect', 'scriptHints', 'openFileMenu', 'watchTraffic']) {
+for (const op of ['clickByText', 'inspect', 'scriptHints', 'openFileMenu', 'watchTraffic', 'officeRead', 'officeFill']) {
   ok(new RegExp('\\b' + op + '\\s*:').test(allowedBody), 'pagebridge 白名单含 ' + op);
   ok(bg.indexOf(op) >= 0, 'background.js（PLAYBOOK）含 ' + op);
 }
@@ -515,6 +574,11 @@ const inspectOnly = origMsgs.concat([
   { role: 'user', content: '【执行结果】\nOK result={"kind":"batch","results":[{"op":"inspect","value":{"ok":true}}]}' }
 ]);
 ok(demoteSandbox.summarizeVerifiedProgress(inspectOnly).length === 1, 'inspect 查询不记入完成进度');
+const officeReadOnly = origMsgs.concat([
+  { role: 'assistant', content: '{"action":"execute","summary":"读表","operations":[{"op":"officeRead","args":[]}]}' },
+  { role: 'user', content: '【执行结果】\nOK result={"kind":"batch","results":[{"op":"officeRead","value":{"ok":true}}]}' }
+]);
+ok(demoteSandbox.summarizeVerifiedProgress(officeReadOnly).length === 1, 'officeRead 查询不记入完成进度');
 
 ok(/【中断恢复】/.test(bg), 'PLAYBOOK 含中断恢复');
 ok(/已从中断处恢复原任务/.test(bg), '恢复时有明确状态文案');
@@ -540,6 +604,12 @@ try {
       '\nthis.hasExtractIntent = hasExtractIntent;' +
       '\nthis.isUploadOnlyTask = isUploadOnlyTask;' +
       '\nthis.opsIncludeNeedAttach = opsIncludeNeedAttach;' +
+      '\nthis.needAttachNames = needAttachNames;' +
+      '\nthis.matchFilesByMention = matchFilesByMention;' +
+      '\nthis.fileIdentity = fileIdentity;' +
+      '\nthis.mentionTargets = mentionTargets;' +
+      '\nthis.toPinnedSet = toPinnedSet;' +
+      '\nthis.unpinnedFiles = unpinnedFiles;' +
       '\nthis.historySuggestsFillFromAttach = historySuggestsFillFromAttach;',
     boundSandbox
   );
@@ -568,7 +638,7 @@ function attachMode(task, extra) {
     task: task,
     files: x.files === undefined ? attachFiles : x.files,
     lastOps: x.lastOps || [],
-    alreadyPinned: !!x.alreadyPinned,
+    alreadyPinned: x.alreadyPinned == null ? false : x.alreadyPinned,
     continueAsk: !!x.continueAsk,
     messages: x.messages || [],
     modelAskedNeedAttach: !!x.modelAskedNeedAttach,
@@ -608,11 +678,43 @@ ok(attachMode('随便点一下', { modelAskedNeedAttach: true }) === 'pin', '模
 ok(boundSandbox.historySuggestsFillFromAttach([
   { role: 'assistant', content: '{"action":"execute","operations":[{"op":"setVal","args":["#a","1"]}]}' }
 ]), '历史含 setVal 视为正在填表');
+ok(boundSandbox.historySuggestsFillFromAttach([
+  { role: 'assistant', content: '{"action":"execute","operations":[{"op":"officeFill","args":["C11","1200"]}]}' }
+]), '历史含 officeFill 视为正在填表');
 ok(!boundSandbox.historySuggestsFillFromAttach([
   { role: 'assistant', content: '{"action":"execute","operations":[{"op":"click","args":["#ok"]}]}' }
 ]), '仅点击的历史不视为填表');
 ok(boundSandbox.opsIncludeNeedAttach([{ op: 'needAttach' }]), '可识别 needAttach op');
 ok(!boundSandbox.opsIncludeNeedAttach([{ op: 'setVal', args: ['#a', '1'] }]), '普通填值不算 needAttach');
+ok(boundSandbox.needAttachNames([{ op: 'needAttach', args: ['绩效报告.pdf'] }]).join() === '绩效报告.pdf',
+  'needAttach args 抽出文件名');
+ok(boundSandbox.needAttachNames([{ op: 'needAttach' }]).length === 0, 'needAttach 无 args 则为空');
+
+const mentionFiles = [
+  { name: '绩效报告.pdf', key: 'f1', contentHash: 'h1', aliases: ['renamed.pdf'] },
+  { name: '扫描件.pdf', key: 'f2', contentHash: 'h2' }
+];
+ok(boundSandbox.matchFilesByMention('根据「绩效报告.pdf」填写', mentionFiles).map(function (f) { return f.key; }).join() === 'f1',
+  '引号完整文件名命中');
+ok(boundSandbox.matchFilesByMention('请对照《绩效报告》填表', mentionFiles).map(function (f) { return f.key; }).join() === 'f1',
+  '书名号 stem 命中');
+ok(boundSandbox.matchFilesByMention('renamed.pdf 里的单位是？', mentionFiles).map(function (f) { return f.key; }).join() === 'f1',
+  '别名完整文件名命中');
+ok(boundSandbox.matchFilesByMention('根据绩效报告填写姓名', mentionFiles).map(function (f) { return f.key; }).join() === 'f1',
+  '唯一 stem 命中');
+ok(boundSandbox.matchFilesByMention('把这两个文件发布出去', mentionFiles).length === 0, '泛词「文件」不误中');
+ok(boundSandbox.matchFilesByMention('见附件', mentionFiles).length === 0, '泛词「附件」不误中');
+ok(boundSandbox.matchFilesByMention('这是一份 pdf', mentionFiles).length === 0, '泛词 pdf 不误中');
+ok(attachMode('看看「绩效报告.pdf」', { files: mentionFiles }) === 'pin', '点名文件即使无抽取意图也钉正文');
+ok(attachMode('根据附件填写', { files: mentionFiles }) === 'pin', '无点名抽取仍钉全部');
+ok(attachMode('根据附件填写', {
+  files: mentionFiles,
+  alreadyPinned: new Set(['h1', 'h2'])
+}) === 'none', '已钉集合含全部 hash 则为 none');
+ok(attachMode('再看扫描件.pdf', {
+  files: mentionFiles,
+  alreadyPinned: new Set(['h1'])
+}) === 'pin', '已钉集合可追加另一份');
 ok(/【附件边界】/.test(bg), 'PLAYBOOK 含附件边界');
 ok(/【字段限制】/.test(bg), 'PLAYBOOK 要求按当前快照读字段限制');
 ok(/换一个网站就按新快照来/.test(bg), 'PLAYBOOK 禁止把某一站的栏目或字数写成通用规则');
@@ -624,8 +726,142 @@ ok(/var FIELD_TAGS = \{ INPUT: 1, SELECT: 1, TEXTAREA: 1 \}/.test(bridge), 'insp
 ok(/output: rec\.output == null \? '' : rec\.output/.test(bg), '下载详情里的 output 是模型原文');
 ok(/没有该块时禁止编造文件内容/.test(bg), 'PLAYBOOK 无附件数据块时禁止编造');
 ok(/op":"needAttach"/.test(bg), 'PLAYBOOK 声明 needAttach');
+ok(/args":\["绩效报告\.pdf"\]/.test(bg), 'PLAYBOOK needAttach 可带文件名');
 ok(/opsIncludeNeedAttach\(parsed\.operations\)/.test(bg), 'execute 路径拦截 needAttach');
-ok(/pinAttachBodyIfNeeded\(\{ force: true \}\)/.test(bg), 'needAttach 强制钉入正文');
+ok(/pinAttachBodyIfNeeded\(\{ force: true/.test(bg), 'needAttach 强制钉入正文');
+ok(/new Set\(\)/.test(bg) && /attachPinned\.add/.test(bg), '已钉 hash 集合可追加');
+ok(/未调用文本模型/.test(bg), '附件正文提取失败时中止且不调用文本模型');
+ok(/PDF 解析失败/.test(bg) && /isLocalPdfProcessError/.test(bg), '本地 PDF 超时不标成 OCR 失败');
+ok(/function pickLargestVisibleCanvas/.test(bridge), 'page.ocr 对 0 尺寸 canvas 改选最大可见画布');
+ok(/canvas 显示尺寸为 0/.test(bridge), '无可用画布时明确报错而不是空图');
+
+const attachFailBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(bg, 'isLocalPdfProcessError') + '\n' +
+      extractFn(bg, 'attachBlockText') + '\n' +
+      extractFn(bg, 'attachBlockIsUsable') + '\n' +
+      extractFn(bg, 'attachPreprocessHasUsableBody') +
+      '\nthis.isLocalPdfProcessError = isLocalPdfProcessError;' +
+      '\nthis.attachBlockText = attachBlockText;' +
+      '\nthis.attachBlockIsUsable = attachBlockIsUsable;' +
+      '\nthis.attachPreprocessHasUsableBody = attachPreprocessHasUsableBody;',
+    attachFailBox
+  );
+  ok(typeof attachFailBox.isLocalPdfProcessError === 'function', '附件失败判定函数可加载');
+} catch (e) {
+  ok(false, '加载附件失败判定函数失败: ' + (e && e.message));
+}
+if (attachFailBox.isLocalPdfProcessError) {
+  ok(attachFailBox.isLocalPdfProcessError(new Error('PDF 处理超时')), 'PDF 处理超时视为本地解析错误');
+  ok(attachFailBox.isLocalPdfProcessError('offscreen 端口已断开'), 'offscreen 断开视为本地解析错误');
+  ok(!attachFailBox.isLocalPdfProcessError(new Error('LLM 请求失败 HTTP 401')), '模型 HTTP 错误不是本地 PDF 错误');
+  ok(!attachFailBox.attachBlockIsUsable('【附件识别失败 a.pdf】PDF 处理超时'), '识别失败块不算可用正文');
+  ok(attachFailBox.attachBlockIsUsable('【OCR识别结果 a.pdf】\n正文'), '识别成功块算可用正文');
+  ok(!attachFailBox.attachPreprocessHasUsableBody({
+    textBlocks: [],
+    ocrBlocks: ['【附件识别失败 a.pdf】PDF 处理超时']
+  }), '仅失败块则没有可用正文');
+  ok(attachFailBox.attachPreprocessHasUsableBody({
+    textBlocks: ['【文本附件 a.txt】hello'],
+    ocrBlocks: ['【附件识别失败 b.pdf】x']
+  }), '另有成功文本附件则仍有可用正文');
+}
+ok(/cmd === 'prepareAttach'/.test(bg), '上传后可后台预解析附件');
+ok(/attachParseJobs/.test(bg) && /return await job/.test(extractFn(bg, 'ensureAttachText')),
+  '发送时等待进行中的解析而非重开');
+ok(/function awaitOrCancel/.test(bg), '停止任务只取消等待，不杀后台解析');
+ok(!/PDF_FAIL_TTL/.test(bg) && !/rememberPdfProcessFailure/.test(bg) && !/未再次等待/.test(bg),
+  '不再用失败缓存让同文件直接失败');
+ok(/function fileContentHash/.test(bg) && /function fileContentHash/.test(panelSrc),
+  '前后台均按内容 hash 标识附件');
+ok(/queuePrepareAttach/.test(panelSrc) && /内容相同/.test(panelSrc),
+  '面板按内容去重并在上传后触发后台解析');
+ok(/contentHash/.test(panelSrc) && /content:v4:/.test(bg), '附件身份含 contentHash（v4，不含文件名）');
+
+const hashBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(bg, 'fileContentHash') + '\nthis.fileContentHash = fileContentHash;',
+    hashBox
+  );
+  ok(typeof hashBox.fileContentHash === 'function', 'fileContentHash 可加载');
+} catch (e) {
+  ok(false, '加载 fileContentHash 失败: ' + (e && e.message));
+}
+if (hashBox.fileContentHash) {
+  const sameBytes = 'data:application/pdf;base64,JVBERi0xAAA0123456789abcdef';
+  const a = { name: '绩效报告.pdf', size: 4096, dataUrl: sameBytes };
+  const b = { name: 'renamed.pdf', size: 4096, dataUrl: sameBytes };
+  const c = { name: '绩效报告.pdf', size: 4096, dataUrl: sameBytes + 'x' };
+  ok(hashBox.fileContentHash(a) === hashBox.fileContentHash(b), '同字节改名 hash 相同');
+  ok(hashBox.fileContentHash(a) !== hashBox.fileContentHash(c), '内容不同 hash 不同');
+  ok(hashBox.fileContentHash(a).indexOf('绩效') < 0 && hashBox.fileContentHash(a).indexOf('.pdf') < 0,
+    'hash 不含文件名');
+  const panelHash = extractFn(panelSrc, 'fileContentHash');
+  const panelBox = {};
+  try {
+    vm.runInNewContext(panelHash + '\nthis.fileContentHash = fileContentHash;', panelBox);
+    ok(panelBox.fileContentHash(a) === hashBox.fileContentHash(a), '面板与后台 content hash 一致');
+  } catch (e) {
+    ok(false, '面板 fileContentHash 与后台不一致: ' + (e && e.message));
+  }
+}
+
+const aliasFn = extractFn(panelSrc, 'mergeFileAliases');
+ok(!!aliasFn, '面板有 mergeFileAliases');
+const aliasBox = {};
+try {
+  vm.runInNewContext(aliasFn + '\nthis.mergeFileAliases = mergeFileAliases;', aliasBox);
+  const merged = aliasBox.mergeFileAliases({ name: '绩效报告.pdf', aliases: [] }, 'renamed.pdf');
+  ok(merged.name === 'renamed.pdf' && merged.aliases.indexOf('绩效报告.pdf') >= 0, '同 hash 改名合并别名');
+  const again = aliasBox.mergeFileAliases(merged, 'renamed.pdf');
+  ok(again.aliases.indexOf('renamed.pdf') < 0, '当前名不写入 aliases');
+} catch (e) {
+  ok(false, '加载 mergeFileAliases 失败: ' + (e && e.message));
+}
+
+const tagBox = {};
+try {
+  vm.runInNewContext(
+    'const ATTACHMENT_CONTEXT_MAX_CHARS = 150000;\n' +
+      extractFn(bg, 'mergeAttachNames') + '\n' +
+      extractFn(bg, 'normalizeOcrCacheEntry') + '\n' +
+      extractFn(bg, 'formatAttachBodyTag') + '\n' +
+      extractFn(bg, 'limitAttachmentContext') +
+      '\nthis.mergeAttachNames = mergeAttachNames;' +
+      '\nthis.normalizeOcrCacheEntry = normalizeOcrCacheEntry;' +
+      '\nthis.formatAttachBodyTag = formatAttachBodyTag;' +
+      '\nthis.limitAttachmentContext = limitAttachmentContext;',
+    tagBox
+  );
+  ok(typeof tagBox.formatAttachBodyTag === 'function', '标签函数可加载');
+} catch (e) {
+  ok(false, '加载附件标签/缓存函数失败: ' + (e && e.message));
+}
+if (tagBox.formatAttachBodyTag) {
+  const tag = tagBox.formatAttachBodyTag({ name: '绩效报告.pdf', key: 'f1', aliases: ['renamed.pdf'] });
+  ok(/附件正文 name="绩效报告\.pdf"/.test(tag) && /key="f1"/.test(tag) && /aliases="renamed\.pdf"/.test(tag),
+    '标签带 name/key/aliases');
+  const oldCache = tagBox.normalizeOcrCacheEntry('纯文本正文');
+  ok(oldCache.text === '纯文本正文' && Array.isArray(oldCache.names) && oldCache.names.length === 0,
+    '缓存旧字符串兼容');
+  const newCache = tagBox.normalizeOcrCacheEntry({ text: 'x', names: ['a.pdf'] });
+  ok(newCache.text === 'x' && newCache.names[0] === 'a.pdf', '缓存侧车 names');
+  const names = tagBox.mergeAttachNames(['绩效报告.pdf'], 'renamed.pdf');
+  ok(names.indexOf('绩效报告.pdf') >= 0 && names.indexOf('renamed.pdf') >= 0, '缓存 names 去重合并');
+  const limited = tagBox.limitAttachmentContext([
+    { text: 'AAA被点名的长正文' + new Array(80).join('甲'), preferred: true },
+    { text: 'BBB其它文件' + new Array(80).join('乙'), preferred: false }
+  ], 90);
+  ok(limited.truncated && limited.text.indexOf('AAA') >= 0 && limited.text.indexOf('BBB') < 0,
+    '点名块优先占满预算，不把点名文件砍掉');
+}
+
+ok(typeof demoteSandbox.buildUserPrompt === 'function', 'buildUserPrompt 已在降级沙箱');
+ok(demoteSandbox.buildUserPrompt('填表', [{ name: '绩效报告.pdf', key: 'f1', type: 'application/pdf', aliases: ['renamed.pdf'] }]).indexOf('别名 renamed.pdf') >= 0,
+  '目录同步带别名');
+
 ok(/kind: 'attach-data'/.test(bg), '附件正文以 attach-data 钉入对话');
 ok(/function toApiChatMessages/.test(bg), '发给模型前剥离内部 kind');
 ok(/messages: toApiChatMessages\(messages\)/.test(bg), 'chat payload 使用纯 role/content');
@@ -647,6 +883,83 @@ try {
   ok(apiMsgs[0].role === 'system' && apiMsgs[1].content === 'u', 'API 消息保留 role/content');
 } catch (e) {
   ok(false, '加载 toApiChatMessages 失败: ' + (e && e.message));
+}
+
+const shapeStart = bg.indexOf('\nfunction toApiChatMessages');
+const shapeEnd = bg.indexOf('\nfunction parseLlmUsage');
+ok(shapeStart >= 0 && shapeEnd > shapeStart, '可截取 API 请求结构描述函数');
+const shapeSandbox = {};
+try {
+  vm.runInNewContext(
+    bg.slice(shapeStart, shapeEnd) +
+      '\nthis.toApiChatMessages = toApiChatMessages;' +
+      '\nthis.chatCompletionsPayload = chatCompletionsPayload;' +
+      '\nthis.describeChatCompletionsRequestShape = describeChatCompletionsRequestShape;' +
+      '\nthis.describeMultipartRequestShape = describeMultipartRequestShape;' +
+      '\nthis.extractUserPromptForArchive = extractUserPromptForArchive;' +
+      '\nthis.shapeRequestUrl = shapeRequestUrl;',
+    shapeSandbox
+  );
+  ok(typeof shapeSandbox.describeChatCompletionsRequestShape === 'function', '请求结构函数可在测试中加载');
+} catch (e) {
+  ok(false, '加载请求结构函数失败: ' + (e && e.message));
+}
+if (shapeSandbox.describeChatCompletionsRequestShape) {
+  const snapSecret = 'SECRET_SNAPSHOT_CELL_XYZ';
+  const sysSecret = 'SECRET_SYSTEM_PROMPT_XYZ';
+  const userTask = '你能看到本页是什么吗？';
+  const messages = [
+    { role: 'system', kind: 'sys', content: sysSecret + '【运行时手册·开始】规则' },
+    {
+      role: 'user',
+      kind: 'task',
+      content: '【当前指令】只执行下面这一条。\n用户任务：' + userTask + '\n已附加文件（上传用 key；正文仅在需要抽字段时另发）：\n- a.pdf'
+    },
+    { role: 'user', content: '【页面快照】只执行最新【当前指令】\n{"elements":[{"text":"' + snapSecret + '"}]}' }
+  ];
+  const payload = shapeSandbox.chatCompletionsPayload('Kimi-K2.7-Code', messages, { maxTokens: 4096 }, 1);
+  const shape = shapeSandbox.describeChatCompletionsRequestShape(
+    'https://api.example.com/v1/chat/completions?key=SECRET',
+    payload,
+    messages
+  );
+  const dumped = JSON.stringify(shape);
+  ok(dumped.indexOf(snapSecret) < 0, '请求结构不含网页快照正文');
+  ok(dumped.indexOf(sysSecret) < 0, '请求结构不含系统提示词正文');
+  ok(dumped.indexOf('SECRET') < 0, '请求结构不含 URL 查询串或密钥');
+  ok(dumped.indexOf('"kind"') < 0, '请求结构不含内部 kind 字段');
+  ok(shape.method === 'POST' && /<API端点>\/v1\/chat\/completions/.test(shape.url), '结构含方法与路径');
+  ok(shape.body.model === '<模型ID>' && shape.body.max_tokens === '<max_tokens整数>', '可选字段以解释词占位且保留键名');
+  ok(shape.body.temperature === '<temperature数值>', '已传 temperature 出现在结构中');
+  ok(shape.body.messages.length === 3 && shape.body.messages[0].role === 'system', 'messages 角色序列保留');
+  ok(/系统提示词/.test(shape.body.messages[0].content) && /约/.test(shape.body.messages[0].content), 'system 内容为解释词+字数');
+  ok(/当前用户指令/.test(shape.body.messages[1].content), '用户指令消息用解释词');
+  ok(/页面快照/.test(shape.body.messages[2].content), '快照消息用解释词');
+  ok(shape.headers.Authorization === '<Bearer API密钥>', 'Authorization 不输出真实密钥');
+  ok(shapeSandbox.extractUserPromptForArchive(messages) === userTask, '从请求中抽出用户 prompt');
+  const visionMsgs = [{
+    role: 'user',
+    content: [
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAASECRET' } },
+      { type: 'text', text: '请识别这张图' }
+    ]
+  }];
+  const visionPayload = shapeSandbox.chatCompletionsPayload('qwen-vl', visionMsgs, {}, undefined);
+  const visionShape = shapeSandbox.describeChatCompletionsRequestShape(
+    'https://api.example.com/v1/chat/completions',
+    visionPayload,
+    visionMsgs
+  );
+  const visionDump = JSON.stringify(visionShape);
+  ok(visionDump.indexOf('AAAASECRET') < 0, '视觉请求结构不含图像 dataURL');
+  ok(visionShape.body.messages[0].content[0].type === 'image_url', '视觉结构保留 image_url 部件类型');
+  ok(visionShape.body.messages[0].content[0].image_url.url === '<图像dataURL>', 'image_url.url 为解释词');
+  ok(!('max_tokens' in visionShape.body), '未传 max_tokens 时结构中不出现该键');
+  const mp = shapeSandbox.describeMultipartRequestShape('https://ocr.example.com/file_parse', {
+    files: '<PDF或图像文件二进制>',
+    lang_list: '<识别语言>'
+  });
+  ok(mp.body.files === '<PDF或图像文件二进制>' && mp.body.lang_list === '<识别语言>', 'multipart 只保留字段名与解释词');
 }
 
 const extractStart = bg.indexOf('const AGENT_ACTIONS');
@@ -1122,7 +1435,182 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '4.3.0', '锁步版本为中间号升级');
+ok(manifestVer === '4.7.0', '锁步版本为中间号升级');
+const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
+const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
+const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
+try {
+  execFileSync(process.execPath, ['--check', path.join(ROOT, 'offscreen.js')], { stdio: 'pipe' });
+  ok(true, 'offscreen.js node --check 通过');
+} catch (e) {
+  ok(false, 'offscreen.js node --check 失败: ' + String((e && e.stderr && e.stderr.toString()) || e && e.message || e));
+}
+ok(/const OFFSCREEN_VERSION = '4\.7\.0'/.test(offscreenSrc), 'offscreen 版本锁步 4.7.0');
+ok(/type="module"/.test(offscreenHtml) && /offscreen\.js/.test(offscreenHtml), 'offscreen.html 以 module 加载');
+ok(!/pdf\.min\.js/.test(offscreenHtml) && !/pdfjsLib\.getDocument/.test(offscreenSrc), '已去掉 PDF.js getDocument');
+ok(/wasm-unsafe-eval/.test(JSON.stringify(JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')))),
+  'manifest 含 wasm-unsafe-eval');
+ok(/document\.destroy/.test(offscreenSrc), 'offscreen job 显式 document.destroy');
+ok(/1240/.test(offscreenSrc) && /16384/.test(offscreenSrc) && /1754/.test(offscreenSrc),
+  '渲染钳制 1240/1754，硬顶 16384');
+ok(/jobId/.test(bg) && /indexedDB\.open/.test(bg) && /indexedDB\.open/.test(offscreenSrc),
+  'PDF 字节走 IndexedDB job');
+ok(/cmd: 'processPdf'/.test(bg) && /cmd === 'processPdf'/.test(offscreenSrc) && /cmd === 'cancelPdf'/.test(offscreenSrc),
+  'processPdf 契约仍在');
+ok(/PDFiumLibrary\.init/.test(offscreenSrc) && /vendor\/pdfium\/pdfium\.wasm/.test(offscreenSrc),
+  'offscreen 初始化 vendored PDFium WASM');
+ok(!/pdfiumLibrary\.destroy\(/.test(offscreenSrc) && /不调用 library\.destroy/.test(offscreenSrc),
+  '按 job 不 destroy PDFium library');
+ok(/@hyzyla\/pdfium/.test(vendorReadme) && /2\.1\.13/.test(vendorReadme), 'vendor README 记录 PDFium 版本');
+ok(fs.existsSync(path.join(ROOT, 'vendor/pdfium/pdfium.wasm')) &&
+  fs.existsSync(path.join(ROOT, 'vendor/pdfium/index.esm.browser.js')),
+  '已 vendor pdfium.wasm 与 JS glue');
+ok(!fs.existsSync(path.join(ROOT, 'vendor/pdf.min.js')) && !fs.existsSync(path.join(ROOT, 'vendor/pdf.worker.min.js')),
+  '已删除 pdf.js vendor');
+ok(/id: 'OpenAI-chat-completions'/.test(bg) && /id: 'OpenAI-chat-completions-image_url'/.test(bg),
+  'provider 枚举使用 OpenAI-chat-completions / image_url');
+ok(/id: 'OpenAI-chat-completions'/.test(settingsSrc) && /id: 'OpenAI-chat-completions-image_url'/.test(settingsSrc),
+  '全局配置页枚举与后台一致');
+ok(!/id: 'Standard-TXT'/.test(bg) && !/id: 'Standard-IMG'/.test(bg),
+  '后台枚举不再使用 Standard-TXT/IMG 作为 id');
+ok(!/id: 'Standard-TXT'/.test(settingsSrc) && !/id: 'Standard-IMG'/.test(settingsSrc),
+  '全局配置页枚举不再使用 Standard-TXT/IMG 作为 id');
+ok(/'Standard-TXT': 'OpenAI-chat-completions'/.test(bg) && /'Standard-IMG': 'OpenAI-chat-completions-image_url'/.test(bg),
+  '旧 Standard-TXT/IMG 别名仍可规范化');
+ok(/'LiteLLM': 'OpenAI-chat-completions'|LiteLLM: 'OpenAI-chat-completions'/.test(bg),
+  'LiteLLM 别名指向 OpenAI-chat-completions');
+ok(!/MAX_RENDER_PAGES/.test(offscreenSrc) && !/MAX_TEXT_PAGES/.test(offscreenSrc),
+  'offscreen 不再硬编码 8/30 页上限');
+ok(/pageSpec/.test(offscreenSrc) && /function resolvePdfPageList\(/.test(offscreenSrc),
+  'offscreen 按 pageSpec 选页');
+ok(/pageSpec: spec/.test(bg) && /pdfPageSpecFromConfig/.test(bg),
+  'processPdf 把配置页码传给 offscreen');
+ok(/pdf:' \+ pdfPageSpecKey\(cfg\)/.test(bg), '附件缓存 key 含 PDF 页范围');
+ok(/按配置仅解析第 /.test(bg), '选页模式覆盖说明按配置页码');
+ok(/pdfParseMode/.test(bg) && /pdfParsePages/.test(bg), '配置含 pdfParseMode/pdfParsePages');
+ok(/解析全部 PDF 页/.test(settingsHtml) && /按页码标号来解析/.test(settingsHtml),
+  '设置页可选手解析全部或按页码');
+ok(/placeholder="例如 1,2,-1"/.test(settingsHtml), '页码填空处给出示例');
+ok(/倒数第一页/.test(settingsHtml) && /「-1」表示最后一页/.test(settingsHtml),
+  '提示 -1 表示最后一页（倒数第一页）');
+ok(/'pdfParseMode' in obj/.test(bg) && /'pdfParsePages' in obj/.test(bg), '导入校验识别 PDF 解析字段');
+
+const importBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(bg, 'clampInt') + '\n' +
+      'const DEFAULT_CONFIG = { maxSteps: 15, snapshotPiiMask: false, llmCallGapMs: 500, busyMaskEnabled: true, llmTimeoutRetry: 1, llmErrorRetry: 2, pageQuietMs: 4000, suggestWaitMs: 1400, pdfParseMode: "all", pdfParsePages: "1,2,-1", uiOpacity: 100, panelScaleX: 70, panelScaleY: 70, systemPromptText: "t", systemPromptOcr: "o" };\n' +
+      'const TEXT_PROVIDER_TYPES = [{ id: "OpenAI-chat-completions" }];\n' +
+      'const OCR_PROVIDER_TYPES = [{ id: "OpenAI-chat-completions-image_url" }, { id: "OCR-SCnet" }, { id: "MinerU" }];\n' +
+      'const PROVIDER_TYPE_ALIASES = { LiteLLM: "OpenAI-chat-completions" };\n' +
+      extractFn(bg, 'applyRuntimeKnobs') + '\n' +
+      extractFn(bg, 'applyUiKnobs') + '\n' +
+      extractFn(bg, 'parsePdfPageRefs') + '\n' +
+      extractFn(bg, 'normalizePdfParseConfig') + '\n' +
+      extractFn(bg, 'looksLikeMinerUModel') + '\n' +
+      extractFn(bg, 'mineruHintFrom') + '\n' +
+      extractFn(bg, 'providerTypeList') + '\n' +
+      extractFn(bg, 'canonicalizeProviderType') + '\n' +
+      extractFn(bg, 'normalizeProvider') + '\n' +
+      extractFn(bg, 'loosenProviderShape') + '\n' +
+      extractFn(bg, 'coerceImportedProviders') + '\n' +
+      extractFn(bg, 'firstImportedProviderList') + '\n' +
+      extractFn(bg, 'validateImportConfig') +
+      '\nthis.validateImportConfig = validateImportConfig;',
+    importBox
+  );
+  ok(typeof importBox.validateImportConfig === 'function', 'validateImportConfig 可加载');
+} catch (e) {
+  ok(false, '加载 validateImportConfig 失败: ' + (e && e.message));
+}
+if (importBox.validateImportConfig) {
+  const v = importBox.validateImportConfig;
+  const cur = {
+    textProviders: [{ name: '旧', providerType: 'OpenAI-chat-completions', baseURL: 'https://old', apiKey: 'keep-me', models: 'old-model' }],
+    ocrProviders: [],
+    maxSteps: 15,
+    systemPromptText: 't',
+    systemPromptOcr: 'o'
+  };
+  ok(v(null).error && v([]).error, '非对象 JSON 才拒绝导入');
+  const mixed = v({
+    textProviders: [null, 'x', { name: 'Kimi', base_url: 'https://api.moonshot.cn', api_key: 'sk-1', model: 'kimi' }],
+    maxSteps: 'nope',
+    unknownThing: { foo: 1 },
+    pdfParsePages: { not: 'valid' }
+  }, cur);
+  ok(mixed.ok && mixed.config.textProviders.length === 1 && mixed.config.textProviders[0].name === 'Kimi',
+    '有效 provider 导入，无效条目丢弃');
+  ok(mixed.config.textProviders[0].baseURL.indexOf('moonshot') >= 0 && mixed.config.textProviders[0].apiKey === 'sk-1',
+    '兼容 base_url / api_key 别名');
+  ok(mixed.ok && mixed.config.maxSteps === 15, '非法 maxSteps 丢弃并保留现有值');
+  const junkType = v({ textProviders: 'not-array', llmCallGapMs: 'xx' }, cur);
+  ok(junkType.ok && junkType.config.textProviders[0].name === '旧' && junkType.config.llmCallGapMs === 500,
+    'providers 类型不匹配时丢弃该字段');
+  const legacy = v({ apiBase: 'https://legacy', apiKey: 'k', model: 'm1' }, cur);
+  ok(legacy.ok && legacy.config.textProviders[0].baseURL === 'https://legacy' && legacy.config.textProviders[0].models === 'm1',
+    '旧 apiBase/model 仍可导入');
+  const empty = v({ totally: 'unknown' }, cur);
+  ok(empty.ok && empty.config.textProviders[0].apiKey === 'keep-me', '无识别字段时当作空合并，不失败');
+}
+
+const pdfPageBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(bg, 'parsePdfPageRefs') + '\n' +
+      extractFn(bg, 'resolvePdfPageList') + '\n' +
+      'const DEFAULT_CONFIG = { pdfParseMode: "all", pdfParsePages: "1,2,-1" };\n' +
+      extractFn(bg, 'normalizePdfParseConfig') + '\n' +
+      extractFn(bg, 'pdfPageSpecFromConfig') + '\n' +
+      extractFn(bg, 'pdfPageSpecKey') + '\n' +
+      extractFn(bg, 'pdfCoverageNotes') +
+      '\nthis.parsePdfPageRefs = parsePdfPageRefs;' +
+      '\nthis.resolvePdfPageList = resolvePdfPageList;' +
+      '\nthis.pdfPageSpecFromConfig = pdfPageSpecFromConfig;' +
+      '\nthis.pdfPageSpecKey = pdfPageSpecKey;' +
+      '\nthis.pdfCoverageNotes = pdfCoverageNotes;',
+    pdfPageBox
+  );
+  ok(typeof pdfPageBox.parsePdfPageRefs === 'function', 'parsePdfPageRefs 可加载');
+} catch (e) {
+  ok(false, '加载 PDF 页码解析失败: ' + (e && e.message));
+}
+if (pdfPageBox.parsePdfPageRefs) {
+  const refs = pdfPageBox.parsePdfPageRefs('1,2,-1');
+  ok(refs.length === 3 && refs[0] === 1 && refs[1] === 2 && refs[2] === -1, '解析 1,2,-1');
+  ok(pdfPageBox.parsePdfPageRefs('1，2、-1').join(',') === '1,2,-1', '中文逗号/顿号分隔');
+  ok(pdfPageBox.parsePdfPageRefs('1-3').join(',') === '1,2,3', '正数范围 1-3');
+  ok(pdfPageBox.parsePdfPageRefs('0,foo,1').join(',') === '1', '跳过 0 与非数字');
+  ok(pdfPageBox.parsePdfPageRefs('').length === 0, '空串无页码');
+  const all5 = pdfPageBox.resolvePdfPageList(5, { mode: 'all' });
+  ok(all5.join(',') === '1,2,3,4,5', 'all 模式展开全部页');
+  ok(pdfPageBox.resolvePdfPageList(10, { mode: 'pages', refs: [1, -1] }).join(',') === '1,10',
+    '-1 解析为最后一页');
+  ok(pdfPageBox.resolvePdfPageList(10, { mode: 'pages', refs: [-2] }).join(',') === '9',
+    '-2 解析为倒数第二页');
+  ok(pdfPageBox.resolvePdfPageList(5, { mode: 'pages', refs: [0, 99, 2] }).join(',') === '2',
+    '越界页码丢弃');
+  ok(pdfPageBox.resolvePdfPageList(10, { mode: 'pages', refs: [1, 1, -10] }).join(',') === '1',
+    '去重（含负数落到同一页）');
+  ok(pdfPageBox.resolvePdfPageList(3, { mode: 'pages', refs: [99] }).length === 0,
+    '全部越界则无页');
+  const specPages = pdfPageBox.pdfPageSpecFromConfig({ pdfParseMode: 'pages', pdfParsePages: '1,2,-1' });
+  ok(specPages.mode === 'pages' && specPages.refs.join(',') === '1,2,-1', '配置转 pageSpec');
+  ok(pdfPageBox.pdfPageSpecFromConfig({ pdfParseMode: 'pages', pdfParsePages: 'nope' }).mode === 'all',
+    '无效页码回退为全部页');
+  ok(pdfPageBox.pdfPageSpecFromConfig({ pdfParseMode: 'all', pdfParsePages: '1,2,-1' }).mode === 'all',
+    'all 模式忽略页码串');
+  ok(pdfPageBox.pdfPageSpecKey({ pdfParseMode: 'pages', pdfParsePages: '1,2,-1' }) === 'pages:1,2,-1',
+    '缓存 key 含页码');
+  ok(pdfPageBox.pdfPageSpecKey({ pdfParseMode: 'all' }) === 'all', 'all 模式缓存 key');
+  const notes = pdfPageBox.pdfCoverageNotes(
+    { numPages: 12, scannedPages: 2, pageList: [1, 12], missingPageCount: 1 },
+    { mode: 'pages', refs: [1, -1] },
+    1
+  );
+  ok(notes.join('').indexOf('按配置仅解析第 1、12 页') >= 0, '覆盖说明列出所选页');
+  ok(notes.join('').indexOf('仅 OCR') < 0, '选页模式不再写仅 OCR 前 N 个');
+}
 ok(/【本步序号】/.test(bg), 'PLAYBOOK 含【本步序号】');
 ok(/禁止跨轮复用/.test(bg), 'PLAYBOOK 禁止跨轮复用 idx');
 ok(/page\.click\(12\)/.test(bg) && /page\.setVal\(12/.test(bg), 'PLAYBOOK 示例用数字 idx click/setVal');
@@ -1285,6 +1773,45 @@ if (stringifyBox.stringifySnapshot) {
   ok(at160k.length >= at80k.length, '兜底快照上限更大时保留不少于常规快照');
   ok(JSON.parse(at160k).starFields && JSON.parse(at160k).starFields[0].label === '必填',
     '更大上限时仍保留 starFields');
+  const withOffice = stringifyBox.stringifySnapshot({
+    outline: 'SHORT',
+    starFields: [{ idx: 1, label: '单位', empty: false }],
+    officeContext: {
+      kind: 'sheet', host: 'tencent', ready: true, current: 'C11',
+      currentContext: { addr: 'C11', colLabel: '金额', section: '二、经费', rowKey: '差旅费' },
+      empties: [{ addr: 'C11', colLabel: '金额', section: '二、经费', rowKey: '差旅费' }]
+    },
+    elements: [{ idx: 1, tag: 'INPUT', text: 'x' }],
+    textActions: [], images: []
+  }, 80000);
+  ok(withOffice.indexOf('"officeContext"') < withOffice.indexOf('"elements"'), 'officeContext 排在 elements 之前');
+  ok(withOffice.indexOf('金额') >= 0, '未超限时保留 officeContext 解释源');
+  const fatEmpties = [];
+  for (let ei = 0; ei < 80; ei++) {
+    fatEmpties.push({
+      addr: 'C' + (ei + 3),
+      colLabel: '很长的列标签用来撑爆快照预算ABCDEFGHIJ' + ei,
+      section: '分区说明'.repeat(20),
+      rowKey: '行键'.repeat(10)
+    });
+  }
+  const officeBulky = {
+    outline: 'O'.repeat(200),
+    starFields: [{ idx: 1, label: '必填', empty: true, hint: '*' }],
+    officeContext: {
+      kind: 'sheet', host: 'tencent', ready: true, current: 'C11',
+      currentContext: { addr: 'C11', colLabel: '金额', section: '二、经费', rowKey: '差旅费' },
+      headers: [{ row: 2, cells: { A: '序号', B: '姓名' } }],
+      empties: fatEmpties
+    },
+    elements: manyEl,
+    textActions: [{ text: 'act' }],
+    images: []
+  };
+  const officeTiny = JSON.parse(stringifyBox.stringifySnapshot(officeBulky, 900));
+  ok(officeTiny.officeContext && officeTiny.officeContext.currentContext &&
+    officeTiny.officeContext.currentContext.colLabel === '金额',
+    '紧急 fallback 仍有 officeContext.currentContext');
 }
 
 ok(/function isIgnored/.test(bridge), 'pagebridge 有 isIgnored');
@@ -1324,6 +1851,7 @@ if (idleBox.opsAreIdleOnly) {
   ok(idleBox.opsAreIdleOnly([{ op: 'getText', args: [1] }]) === false, 'getText 不算空转');
   ok(idleBox.opsAreIdleOnly([{ op: 'findControls', args: ['x'] }]) === false, 'findControls 不算空转');
   ok(idleBox.opsAreIdleOnly([{ op: 'listOptions', args: [1] }]) === false, 'listOptions 不算空转');
+  ok(idleBox.opsAreIdleOnly([{ op: 'officeRead', args: [] }]) === false, 'officeRead 不算空转');
 }
 if (idleBox.buildPrevStepJudgment) {
   const judged = idleBox.buildPrevStepJudgment(
@@ -1366,26 +1894,33 @@ ok(/reason: 'disabled'/.test(bridge) && /continueBatch/.test(bridge),
   '禁用点击不抛整批失败');
 ok(/tag === 'IMG'/.test(extractFn(bridge, 'retargetFileSelectClick')),
   '文件行 img 改点 checkmark');
-ok(/snapshotPiiMask/.test(bg) && /快照脱敏/.test(panelSrc), '设置含快照脱敏开关');
+ok(/snapshotPiiMask/.test(bg) && /快照脱敏/.test(settingsHtml), '设置含快照脱敏开关');
 ok(/cfg\.snapshotPiiMask === true/.test(bg), '快照脱敏默认关（仅显式 true 才开）');
 ok(/llmCallGapMs: 500/.test(bg), '调用间隔默认 500ms');
-ok(/busyMaskEnabled: true/.test(bg), '操作遮罩默认开');
-ok(/llmTimeoutRetry: 1/.test(bg) && /llmErrorRetry: 2/.test(bg), '重试次数默认 1/2');
-ok(/pageQuietMs: 4000/.test(bg) && /suggestWaitMs: 1400/.test(bg), '页面等待默认 4s / 1.4s');
+ok(/busyMaskEnabled: false/.test(bg), '操作遮罩默认关');
+ok(/llmTimeoutRetry: 2/.test(bg) && /llmErrorRetry: 2/.test(bg), '重试次数默认 2/2');
+ok(/pageQuietMs: 3000/.test(bg) && /suggestWaitMs: 1000/.test(bg), '页面等待默认 3s / 1.0s');
+ok(/maxSteps: 60/.test(bg) && /value="60"/.test(settingsHtml), '最大步数默认 60');
 ok(/function clampInt\(/.test(bg) && /function applyRuntimeKnobs\(/.test(bg), '运行参数有 clamp 与合并');
 ok(/function waitLlmCallGap\(/.test(bg) && /lastTextLlmAt/.test(bg), '文本模型调用有间隔');
 ok(/sleepCancellable/.test(bg) && /signal\.aborted/.test(bg), '调用间隔可被取消打断');
-ok(/showBusyMaskTab\(tabId, config\.busyMaskEnabled !== false\)/.test(bg), '遮罩受设置开关控制');
+ok(/showBusyMaskTab\(tabId, config\.busyMaskEnabled === true\)/.test(bg), '遮罩受设置开关控制');
 ok(/enabled === false/.test(bg), '遮罩关闭时不盖层');
 ok(/config\.llmTimeoutRetry/.test(bg) && /config\.llmErrorRetry/.test(bg), '重试次数读配置');
 ok(/cfg\.pageQuietMs/.test(bg) && /cfg\.suggestWaitMs/.test(bg), '两类等待读配置 deadline');
-ok(/运行参数/.test(panelSrc) && /模型调用间隔（秒）/.test(panelSrc), '设置页有运行参数分组');
-ok(/操作时显示半透明遮罩/.test(panelSrc), '设置页可关操作遮罩');
-ok(/超时重试次数/.test(panelSrc) && /瞬时错误重试次数/.test(panelSrc), '设置页可配重试');
-ok(/页面稳定等待上限/.test(panelSrc) && /填写后等待建议层/.test(panelSrc), '设置页可配页面等待');
+ok(/测试当前模型的连接/.test(settingsHtml), '全局配置测试按钮标明测当前模型');
+ok(/当前文本模型 /.test(bg) && /textTag\.name/.test(bg) && /textTag\.model/.test(bg), '测试结果含当前 provider 与模型名');
+ok(/text-align: center/.test((panelSrc.match(/\.page-config-tab-head \{[\s\S]*?\n    \}/) || [''])[0]), '本页配置标题居中');
+ok(/运行参数（全局）/.test(settingsHtml) && /模型调用间隔（秒）/.test(settingsHtml), '设置页有全局运行参数分组');
+ok(settingsHtml.indexOf('运行参数（全局）') < settingsHtml.indexOf('存档脱敏指令') &&
+  settingsHtml.indexOf('存档脱敏指令') < settingsHtml.indexOf('文本模型 Providers'),
+  '运行参数与脱敏指令排在文本模型配置之前');
+ok(/操作时显示半透明遮罩/.test(settingsHtml), '设置页可关操作遮罩');
+ok(/超时重试次数/.test(settingsHtml) && /瞬时错误重试次数/.test(settingsHtml), '设置页可配重试');
+ok(/页面稳定等待上限/.test(settingsHtml) && /填写后等待建议层/.test(settingsHtml), '设置页可配页面等待');
 ok(/llmCallGapMs/.test(bg) && /function exportPayload\(/.test(bg), '导出含调用间隔');
-ok(/secInputToMs/.test(panelSrc) && /msToSecValue/.test(panelSrc), '设置页秒与毫秒互转');
-ok(/白名单字段/.test(bg) && /白名单字段/.test(panelSrc), '导入导出不再写死 7 键');
+ok(/secInputToMs/.test(settingsSrc) && /msToSecValue/.test(settingsSrc), '设置页秒与毫秒互转');
+ok(/白名单字段/.test(bg) && /白名单字段/.test(panelSrc) && /白名单字段/.test(settingsHtml), '导入导出不再写死 7 键');
 
 const clampBox = {};
 try {
@@ -1410,7 +1945,7 @@ const knobBox = {};
 try {
   vm.runInNewContext(
     extractFn(bg, 'clampInt') + '\n' +
-      'const DEFAULT_CONFIG = { llmCallGapMs: 500, busyMaskEnabled: true, llmTimeoutRetry: 1, llmErrorRetry: 2, pageQuietMs: 4000, suggestWaitMs: 1400 };\n' +
+      'const DEFAULT_CONFIG = { llmCallGapMs: 500, busyMaskEnabled: false, llmTimeoutRetry: 2, llmErrorRetry: 2, pageQuietMs: 3000, suggestWaitMs: 1000 };\n' +
       extractFn(bg, 'applyRuntimeKnobs') +
       '\nthis.applyRuntimeKnobs = applyRuntimeKnobs;',
     knobBox
@@ -1421,8 +1956,8 @@ try {
 }
 if (knobBox.applyRuntimeKnobs) {
   const def = knobBox.applyRuntimeKnobs({});
-  ok(def.llmCallGapMs === 500 && def.busyMaskEnabled === true, '缺省配置走默认间隔与遮罩开');
-  ok(knobBox.applyRuntimeKnobs({ busyMaskEnabled: false }).busyMaskEnabled === false, '可显式关闭遮罩');
+  ok(def.llmCallGapMs === 500 && def.busyMaskEnabled === false, '缺省配置走默认间隔与遮罩关');
+  ok(knobBox.applyRuntimeKnobs({ busyMaskEnabled: true }).busyMaskEnabled === true, '可显式打开遮罩');
   ok(knobBox.applyRuntimeKnobs({ llmCallGapMs: 20000 }).llmCallGapMs === 10000, '间隔超出上限被截断');
   ok(knobBox.applyRuntimeKnobs({ pageQuietMs: 100 }).pageQuietMs === 1000, '页面等待下限 1 秒');
 }
@@ -1694,6 +2229,301 @@ if (handoffBox.desktopHandoffOf) {
   ok(handoffBox.desktopHandoffOf({ text: 'FTP下载' }) === 'desktop', 'FTP下载标 desktop');
   ok(handoffBox.desktopHandoffOf({ title: '客户端下载' }) === 'desktop', '客户端下载标 desktop');
   ok(handoffBox.desktopHandoffOf({ text: '预览' }) === '', '普通预览不标 desktop');
+}
+
+ok(/office\.js/.test(bg) && /office\.js/.test(JSON.stringify(JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')))),
+  'inject 与 web_accessible_resources 含 office.js');
+ok(/officeContext/.test(bg) && /officeFill/.test(bg) && /禁止用 page\.ocr 当读表/.test(bg),
+  'PLAYBOOK 含 officeContext / officeFill，禁止 ocr 当读表');
+ok(/officeFill: 1/.test(bg) && /FILL_FROM_ATTACH_OPS/.test(bg),
+  'officeFill 计入 FILL_FROM_ATTACH_OPS');
+ok(/officeRead: 1/.test(bridge) && /officeFill: 1/.test(bridge),
+  'pagebridge 白名单含 officeRead/officeFill');
+ok(/officeContext:/.test(bridge) && /snapshotDigest/.test(bridge),
+  '快照产出 officeContext');
+
+const officeSrc = srcs['office.js'] || '';
+const officeFns = [
+  'colLettersToIndex', 'indexToColLetters', 'parseA1', 'toA1',
+  'isNumericLike', 'isDateLike', 'isSerialLike', 'isExplanationText',
+  'resolveMergeOrigin', 'gridRaw', 'gridText', 'rowHasWideMerge',
+  'isMergeOriginCell', 'looksLikeLabelLeft', 'classifySheetRows',
+  'inferSheetLayout', 'nearestColMeta', 'nearestRowKey', 'cellContextFromGrid',
+  'makeGrid'
+];
+const officeBox = {};
+try {
+  vm.runInNewContext(
+    officeFns.map(function (n) { return extractFn(officeSrc, n); }).join('\n') +
+      '\nthis.parseA1 = parseA1;\nthis.toA1 = toA1;\nthis.makeGrid = makeGrid;' +
+      '\nthis.classifySheetRows = classifySheetRows;\nthis.inferSheetLayout = inferSheetLayout;' +
+      '\nthis.cellContextFromGrid = cellContextFromGrid;\nthis.isNumericLike = isNumericLike;' +
+      '\nthis.isExplanationText = isExplanationText;',
+    officeBox
+  );
+  ok(typeof officeBox.cellContextFromGrid === 'function', 'office 解释源函数可在测试中加载');
+} catch (e) {
+  ok(false, '加载 office 纯函数失败: ' + (e && e.message));
+}
+if (officeBox.makeGrid && officeBox.cellContextFromGrid) {
+  ok(officeBox.parseA1('C11').row === 10 && officeBox.parseA1('C11').col === 2, 'parseA1 C11 → row10 col2');
+  ok(officeBox.toA1(10, 2) === 'C11', 'toA1(10,2) → C11');
+  ok(officeBox.isNumericLike('1,200.5'), '带逗号数字算数值');
+  ok(officeBox.isExplanationText('金额') && !officeBox.isNumericLike('金额'), '列标签是说明不是数值');
+
+  const cells = {
+    '0,0': 'XXXX 申报表',
+    '1,0': '序号', '1,1': '姓名', '1,2': '完成情况', '1,3': '备注',
+    '2,0': '1', '2,1': '张三', '2,2': '已完成',
+    '8,0': '二、经费',
+    '9,0': '科目', '9,1': '金额', '9,2': '说明',
+    '10,0': '差旅费'
+  };
+  const grid = officeBox.makeGrid(cells, 11, 4, [
+    { sr: 0, sc: 0, er: 0, ec: 3 },
+    { sr: 8, sc: 0, er: 8, ec: 3 }
+  ]);
+  const roles = officeBox.classifySheetRows(grid);
+  ok(roles[0] === 'title', '第1行合并大标题 → title');
+  ok(roles[1] === 'header', '第2行列标签 → header');
+  ok(roles[8] === 'section', '分区行 → section');
+  ok(roles[9] === 'header', '分区后新表头 → header');
+  const ctx = officeBox.cellContextFromGrid(grid, 10, 1, roles);
+  ok(ctx.colLabel === '金额', '分区表空格 colLabel 取最近表头带而不是第1行');
+  ok(ctx.section === '二、经费', '分区表保留最近 section');
+  ok(ctx.rowKey === '差旅费', '同行左侧为 rowKey');
+  ok(officeBox.inferSheetLayout(roles) === 'sectioned-record', '版式为 sectioned-record');
+
+  const formCells = { '0,0': '姓名', '1,0': '单位' };
+  const formGrid = officeBox.makeGrid(formCells, 2, 2, []);
+  const formRoles = officeBox.classifySheetRows(formGrid);
+  ok(formRoles[0] === 'label-left' && formRoles[1] === 'label-left', '表单行 → label-left');
+  const formCtx = officeBox.cellContextFromGrid(formGrid, 0, 1, formRoles);
+  ok(formCtx.colLabel === '姓名' && formCtx.rowKey === '姓名', '表单式解释源是左邻不是第1行表头');
+  ok(officeBox.inferSheetLayout(formRoles) === 'form', '版式为 form');
+}
+
+ok(attachMode('选一下单位', { lastOps: [{ op: 'officeFill', args: ['C11', '1200'] }] }) === 'pin',
+  '上一步 officeFill 视为填表则补钉正文');
+
+ok(/options_ui/.test(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')), 'manifest 登记全局配置页');
+ok(/textContent: '全局配置'/.test(panelSrc), '弹出框第一行有全局配置按钮');
+ok(/port\.name !== 'panel' && port\.name !== 'settings'/.test(bg), '后台接受 settings 端口');
+ok(/cmd === 'openGlobalSettings'/.test(bg) && /settings\.html/.test(bg), '可打开全局配置标签页');
+ok(/uiOpacity: 100/.test(bg) && /panelScaleX: 70/.test(bg) && /panelScaleY: 70/.test(bg),
+  '界面透明度默认 100、放大比例默认 70×70');
+ok(/function applyUiKnobs\(/.test(bg) && /uiOpacity/.test(settingsHtml), '全局配置含插件界面透明度');
+ok(/:host\.expanded/.test(panelSrc) && /--wpa-scale-x/.test(panelSrc), '放大面板用宽高比例而非 transform');
+ok(/host\.style\.width = w \+ 'px'/.test(extractFn(panelSrc, 'applyPanelSize')), '放大时用像素宽高，避免 :host all:initial 吃掉 CSS');
+ok(/anchorRight/.test(extractFn(panelSrc, 'applyPanelSize')) && /anchorTop/.test(extractFn(panelSrc, 'applyPanelSize')),
+  '缩放以右上角为不动点');
+ok(/els\.zoomBtn\.contains\(e\.target\)/.test(extractFn(panelSrc, 'initDrag')), '标题栏拖拽用 contains 排除缩放按钮（含文字节点）');
+ok(/zoomBtn\.addEventListener\('pointerdown'/.test(panelSrc), '缩放按钮 pointerdown 阻止冒泡到标题拖拽');
+ok(/height: 36px/.test(panelSrc) && /\.attach-btn \{[\s\S]*?height: 36px/.test(panelSrc),
+  '附件按钮固定高度不随面板缩放');
+ok(/background: #ffecb3/.test((panelSrc.match(/\.attach-btn \{[\s\S]*?\n    \}/) || [''])[0]),
+  '附件按钮淡黄色背景');
+ok(/\.send-btn \{[\s\S]*?height: 36px/.test(panelSrc), '发送按钮固定高度不随面板缩放');
+ok(/composerActions\.appendChild\(attachBtn\)[\s\S]*composerActions\.appendChild\(sendBtn\)/.test(panelSrc),
+  '附件按钮叠在发送按钮上方且同宽');
+ok(/INPUT_H_DEFAULT = 79/.test(panelSrc) && /height: 79px/.test(panelSrc),
+  '初始输入框高度为两按钮高度加 10%');
+ok(/prompt-reload-btn/.test(panelSrc) && /function insertTextAtCursor/.test(panelSrc),
+  '历史用户气泡右下角可把 prompt 插入输入框光标处');
+const insertBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(panelSrc, 'insertTextAtCursor') + '\nthis.insertTextAtCursor = insertTextAtCursor;',
+    insertBox
+  );
+  ok(typeof insertBox.insertTextAtCursor === 'function', 'insertTextAtCursor 可加载');
+} catch (e) {
+  ok(false, '加载 insertTextAtCursor 失败: ' + (e && e.message));
+}
+if (insertBox.insertTextAtCursor) {
+  const ta = {
+    value: 'ab',
+    selectionStart: 1,
+    selectionEnd: 1,
+    focus: function () { this.focused = true; },
+    setSelectionRange: function (a, b) { this.selectionStart = a; this.selectionEnd = b; }
+  };
+  insertBox.insertTextAtCursor(ta, 'XY');
+  ok(ta.value === 'aXYb' && ta.selectionStart === 3 && ta.focused, '在光标处插入历史 prompt');
+  const sel = {
+    value: 'hello',
+    selectionStart: 1,
+    selectionEnd: 4,
+    focus: function () {},
+    setSelectionRange: function (a, b) { this.selectionStart = a; this.selectionEnd = b; }
+  };
+  insertBox.insertTextAtCursor(sel, 'I');
+  ok(sel.value === 'hIo', '有选区时替换选区再插入');
+}
+ok(/userInput\.addEventListener\('paste'/.test(panelSrc) && /fromPaste: true/.test(panelSrc),
+  '输入框支持粘贴剪贴板图片为附件');
+ok(/clipboardTextIsContent\(clipboardPlainText\(dt\)\)/.test(extractFn(panelSrc, 'onInputPaste')) &&
+  !/insertTextAtCursor\(els\.userInput/.test(extractFn(panelSrc, 'onInputPaste')),
+  '粘贴文字走输入框默认行为，不进附件、不 OCR');
+ok(/needsName: fromPaste/.test(panelSrc) && /function namePastedAttachFromOcr/.test(bg),
+  '无文件名的粘贴图片 OCR 后由文本模型命名');
+ok(/'new'\.repeat|join\('new'\)/.test(extractFn(panelSrc, 'uniqueAttachFileName')),
+  '附件名冲突时追加 new 后缀最多 5 次');
+
+const pasteNameBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(panelSrc, 'uniqueAttachFileName') + '\n' +
+      extractFn(panelSrc, 'imageExtFromMime') + '\n' +
+      extractFn(bg, 'hasUsefulOcrText') + '\n' +
+      extractFn(bg, 'sanitizeAttachTitle') +
+      '\nthis.uniqueAttachFileName = uniqueAttachFileName;' +
+      '\nthis.imageExtFromMime = imageExtFromMime;' +
+      '\nthis.hasUsefulOcrText = hasUsefulOcrText;' +
+      '\nthis.sanitizeAttachTitle = sanitizeAttachTitle;',
+    pasteNameBox
+  );
+  ok(typeof pasteNameBox.uniqueAttachFileName === 'function', '粘贴命名辅助函数可加载');
+} catch (e) {
+  ok(false, '加载粘贴命名辅助函数失败: ' + (e && e.message));
+}
+if (pasteNameBox.uniqueAttachFileName) {
+  const u0 = pasteNameBox.uniqueAttachFileName('发票', 'png', []);
+  ok(u0.ok && u0.name === '发票.png', '无冲突时用总结名加扩展名');
+  const u1 = pasteNameBox.uniqueAttachFileName('发票', 'png', ['发票.png']);
+  ok(u1.ok && u1.name === '发票new.png', '重名时追加 new');
+  const u2 = pasteNameBox.uniqueAttachFileName('发票', 'png', ['发票.png', '发票new.png']);
+  ok(u2.ok && u2.name === '发票newnew.png', '再次重名再追加 new');
+  const taken = ['发票.png', '发票new.png', '发票newnew.png', '发票newnewnew.png', '发票newnewnewnew.png', '发票newnewnewnewnew.png'];
+  const uFail = pasteNameBox.uniqueAttachFileName('发票', 'png', taken);
+  ok(!uFail.ok, '追加 5 次 new 仍重复则失败');
+  ok(pasteNameBox.imageExtFromMime('image/jpeg', '') === 'jpg', '按 MIME 推断粘贴图片扩展名');
+  ok(pasteNameBox.hasUsefulOcrText('请假申请表') && !pasteNameBox.hasUsefulOcrText('  ') && !pasteNameBox.hasUsefulOcrText('……'),
+    'OCR 需有有效文字才命名');
+  ok(pasteNameBox.sanitizeAttachTitle('"年度考核.png"\n解释') === '年度考核', '模型输出去掉扩展名与引号');
+  const long = pasteNameBox.sanitizeAttachTitle('这是一段超过二十个汉字的附件名称应当被截断XYZ');
+  ok(Array.from(long).length === 20, '附件名不超过 20 字');
+}
+const clipBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(panelSrc, 'clipboardTextIsContent') + '\n' +
+      extractFn(panelSrc, 'collectClipboardImages') +
+      '\nthis.clipboardTextIsContent = clipboardTextIsContent;' +
+      '\nthis.collectClipboardImages = collectClipboardImages;',
+    clipBox
+  );
+  ok(typeof clipBox.clipboardTextIsContent === 'function', '粘贴文本判定可加载');
+} catch (e) {
+  ok(false, '加载粘贴文本判定失败: ' + (e && e.message));
+}
+if (clipBox.clipboardTextIsContent) {
+  ok(clipBox.clipboardTextIsContent('填写本页姓名') === true, '粘贴正文视为输入框文本');
+  ok(clipBox.clipboardTextIsContent('请打开 https://example.com/a.png') === true, '含图片链接的句子仍是正文');
+  ok(clipBox.clipboardTextIsContent('') === false && clipBox.clipboardTextIsContent('  \n') === false,
+    '空剪贴板文字不拦截图片粘贴');
+  ok(clipBox.clipboardTextIsContent('https://cdn.example.com/a.png') === false, '单独图片 URL 不当成正文');
+  ok(clipBox.clipboardTextIsContent('data:image/png;base64,xxx') === false, 'data URL 不当成正文');
+  ok(clipBox.clipboardTextIsContent('截图.png') === false, '单独图片文件名不当成正文');
+  ok(clipBox.clipboardTextIsContent('C:\\Users\\a\\shot.jpg') === false, '单独图片路径不当成正文');
+}
+if (clipBox.collectClipboardImages) {
+  const mixed = clipBox.collectClipboardImages({
+    items: [
+      { kind: 'string', type: 'text/plain', getAsFile: function () { return { type: 'text/plain', name: 't.txt' }; } },
+      { kind: 'file', type: 'image/png', getAsFile: function () { return { type: 'image/png', name: 'a.png' }; } }
+    ],
+    files: [{ type: 'text/plain', name: 'notes.txt' }]
+  });
+  ok(mixed.length === 1 && mixed[0].type === 'image/png', '剪贴板只收图片文件，不收文本文件');
+  const textOnly = clipBox.collectClipboardImages({
+    items: [{ kind: 'file', type: 'text/plain', getAsFile: function () { return { type: 'text/plain', name: 'a.txt' }; } }],
+    files: [{ type: 'text/plain', name: 'a.txt' }]
+  });
+  ok(textOnly.length === 0, '纯文本文件粘贴不进附件');
+}
+ok(/\.tag-select \{[\s\S]*?height: 22px/.test(panelSrc), '模型选择框高度压缩到刚好显示字体');
+ok(/input-resize-handle/.test(panelSrc) && /ns-resize/.test(panelSrc), '输入框上边可拖动调高');
+ok(/position: absolute/.test((panelSrc.match(/\.settings-panel \{[\s\S]*?\n    \}/) || [''])[0]),
+  '配置弹出层绝对定位，不挤占发送框');
+const settingsPanelCss = (panelSrc.match(/\.settings-panel \{[\s\S]*?\n    \}/) || [''])[0];
+ok(/z-index: 25/.test(settingsPanelCss) && /bottom: 0/.test(settingsPanelCss) &&
+  /left: 0/.test(settingsPanelCss) && /right: 0/.test(settingsPanelCss),
+  '配置页铺满标题栏以下并盖住输入框附件发送与模型选择');
+ok(/function syncOverlayTop\(/.test(panelSrc) && /--wpa-header-h/.test(panelSrc),
+  '配置页顶边跟随标题栏高度，避免露出输入区');
+ok(!/附件命中缓存/.test(bg), '命中附件缓存不再向对话发状态');
+ok(/isSilentAttachStatus/.test(panelSrc), '面板忽略附件缓存命中状态');
+ok(/chrome\.runtime\.connect\(\{ name: 'settings' \}\)/.test(settingsSrc), '全局配置页用 settings 端口');
+
+ok(/panelExpanded = false/.test(extractFn(panelSrc, 'loadPageUi')), '加载本页 UI 不恢复放大状态');
+ok(!/expanded: panelExpanded/.test(panelSrc), '放大状态不写入按网站存储');
+ok(/togglePanelZoom[\s\S]*applyPanelSize\(\);\n  \}/.test(panelSrc), '切换放大只改当前窗口，不 persist');
+ok(/archive-redact-input/.test(panelSrc) && /传送给大模型的用户脱敏指令/.test(panelSrc), '保存对话二级页提供脱敏指令输入框');
+ok(/cmd === 'redactArchive'/.test(bg) && /function redactArchiveMarkdown\(/.test(bg), '后台可按提示词脱敏存档');
+ok(/cmd === 'saveTextAs'/.test(bg) && /saveAs: true/.test(bg), '保存对话可弹出另存为');
+ok(/"downloads"/.test(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')), 'manifest 含 downloads 以便另存为');
+ok(/if \(!hint\)/.test(extractFn(panelSrc, 'redactArchiveDocument')), '脱敏指令为空时不调用大模型');
+ok(/采用大模型脱敏本文档/.test(panelSrc) && /保存本文档/.test(panelSrc), '二级页可脱敏或保存本文档');
+ok(/本页配置/.test(panelSrc) && /page-config-tab/.test(panelSrc), '插件配置页有本页配置选项卡');
+ok(/overflow-y: auto/.test((panelSrc.match(/\.page-config-tab-body \{[\s\S]*?\n    \}/) || [''])[0]),
+  '本页配置卡内容可滚动');
+ok(/仅对当前网页生效/.test(panelSrc) && /不会改写/.test(panelSrc) && /pageCfg:/.test(bg),
+  '本页配置声明仅当前网页生效、不改全局');
+const savePageBranch = (bg.match(/cmd === 'savePageConfig'[\s\S]*?cmd === 'selectTag'/) || [''])[0];
+ok(/pageConfigKey/.test(savePageBranch) && /storageSet\(writeObj\)/.test(savePageBranch) &&
+  !/assistantConfig/.test(savePageBranch),
+  '保存本页配置只写 pageCfg，不改全局 assistantConfig');
+ok(/textContent: '运行参数'/.test(panelSrc) && /保存本页运行参数/.test(panelSrc), '本页配置内有运行参数卡');
+ok(!/运行参数（本页局部）/.test(panelSrc), '本页运行参数不再带局部后缀');
+ok(/id="archiveRedactHint"/.test(settingsHtml) && /存档脱敏指令/.test(settingsHtml), '全局配置含可改的默认脱敏指令');
+ok(/archiveRedactHint/.test(bg) && /DEFAULT_ARCHIVE_REDACT_HINT/.test(bg), '配置合并含默认脱敏指令');
+ok(/function mergePageRuntimeConfig/.test(bg) && /pageCfg:/.test(bg), '本页运行参数可覆盖全局');
+ok(/cmd === 'savePageConfig'/.test(bg) && /cmd === 'getPageConfig'/.test(bg), '后台可读写本页运行参数');
+ok(/archiveModelSelect/.test(panelSrc) && /function redactArchiveDocument/.test(panelSrc), '脱敏二级页可选择文本模型并迭代脱敏');
+
+const redactBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(bg, 'extractRedactedDocument') + '\n' +
+      extractFn(bg, 'countArchiveH2') + '\n' +
+      extractFn(bg, 'splitArchiveSections') + '\n' +
+      extractFn(bg, 'archiveFenceLines') + '\n' +
+      extractFn(bg, 'packArchiveChunks') + '\n' +
+      'const ARCHIVE_REDACT_HINT_MAX = 2000;\n' +
+      'const ARCHIVE_REDACT_SYSTEM = "你是对话存档脱敏器。只替换敏感内容，不改变文档结构。";\n' +
+      extractFn(bg, 'buildArchiveRedactMessages') + '\n' +
+      extractFn(bg, 'mergeRedactedArchive') +
+      '\nthis.extractRedactedDocument = extractRedactedDocument;' +
+      '\nthis.countArchiveH2 = countArchiveH2;' +
+      '\nthis.splitArchiveSections = splitArchiveSections;' +
+      '\nthis.packArchiveChunks = packArchiveChunks;' +
+      '\nthis.buildArchiveRedactMessages = buildArchiveRedactMessages;' +
+      '\nthis.mergeRedactedArchive = mergeRedactedArchive;',
+    redactBox
+  );
+  ok(typeof redactBox.extractRedactedDocument === 'function', '脱敏抽取函数可加载');
+} catch (e) {
+  ok(false, '加载脱敏函数失败: ' + (e && e.message));
+}
+if (redactBox.extractRedactedDocument) {
+  ok(redactBox.extractRedactedDocument('<document>\n# 对话存档\n\n## A\n\n</document>') === '# 对话存档\n\n## A',
+    '从 <document> 标签抽出正文');
+  ok(redactBox.extractRedactedDocument('说明\n# 对话存档\n\n## A').indexOf('# 对话存档') === 0,
+    '无标签时从标题起取正文');
+  ok(redactBox.countArchiveH2('# 对话存档\n\n## 用户\n\nx\n\n## 助手\n\ny') === 2, '统计 ## 段落数');
+  const split = redactBox.splitArchiveSections('# 对话存档\n\n- 页面：x\n\n## 用户\n\n张三\n\n## 助手\n\n好的\n');
+  ok(split.preamble.indexOf('# 对话存档') === 0 && split.sections.length === 2, '按 ## 切开前言与消息段');
+  const packed = redactBox.packArchiveChunks(['## A\n\n' + 'x'.repeat(50), '## B\n\ny'], 40);
+  ok(packed.length === 2, '超长时按段分包且不拆开单条 ##');
+  const fenced = redactBox.packArchiveChunks(['## A\n\n```\ncode\n', '## B\n\nend\n```\n'], 10);
+  ok(fenced.length === 1, '未闭合代码围栏时把下一段并入同一包');
+  const msgs = redactBox.buildArchiveRedactMessages('把姓名换成占位', '# 对话存档\n\n## 用户\n\n张三\n', { part: 1, parts: 1, expectH2: 1 });
+  ok(msgs[0].role === 'system' && /不改变文档结构/.test(msgs[0].content), '脱敏系统提示要求保结构');
+  ok(/【脱敏要求】/.test(msgs[1].content) && /<document>/.test(msgs[1].content), '用户消息含要求与文档标签');
+  const merged = redactBox.mergeRedactedArchive('# 对话存档\n\n', ['# 对话存档\n\n## 用户\n\n[姓名]\n', '前言\n## 助手\n\n好的\n']);
+  ok(/^# 对话存档/.test(merged) && /## 用户/.test(merged) && /## 助手/.test(merged),
+    '多段脱敏结果按原顺序拼接且后段去掉重复前言');
 }
 
 if (failures) {

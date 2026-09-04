@@ -7,7 +7,7 @@
   var INSTALLED = '__assistantPage';
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
   // 已打开页面靠此号决定是否重注入 MAIN world；面板角标读 manifest。
-  var BRIDGE_VERSION = '4.3.0';
+  var BRIDGE_VERSION = '4.7.0';
 
   function install() {
     var scriptAborted = false;
@@ -812,6 +812,38 @@
       } catch (e) {
         throw new Error('canvas 无法导出（可能跨域污染）: ' + (e && e.message || e));
       }
+    }
+
+    // queryDeep('canvas') 常命中页面里 0×0 的隐藏画布（腾讯文档等）。OCR 应改用最大的可见 canvas。
+    function pickLargestVisibleCanvas(preferred) {
+      var nodes = [];
+      try { nodes = queryAllDeep('canvas'); } catch (e) { nodes = []; }
+      var best = null;
+      var bestArea = 0;
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        if (!n || isIgnored(n)) continue;
+        try { if (!isVisible(n)) continue; } catch (e2) { continue; }
+        var sz = { w: 0, h: 0 };
+        try {
+          var r = n.getBoundingClientRect();
+          sz.w = r.width || 0;
+          sz.h = r.height || 0;
+        } catch (e3) {}
+        if (sz.w < 8 || sz.h < 8) continue;
+        var area = sz.w * sz.h;
+        if (area > bestArea) {
+          best = n;
+          bestArea = area;
+        }
+      }
+      if (preferred && preferred !== best) {
+        try {
+          var pr = preferred.getBoundingClientRect();
+          if ((pr.width || 0) >= 8 && (pr.height || 0) >= 8) return preferred;
+        } catch (e4) {}
+      }
+      return best;
     }
 
     function imgToPixels(img) {
@@ -1698,9 +1730,21 @@
       }
       await waitMs(60);
       var tag = (target.tagName || '').toUpperCase();
+      if (tag === 'CANVAS') {
+        var csz = viewportRect(target);
+        if (csz.w < 8 || csz.h < 8) {
+          var bigger = pickLargestVisibleCanvas(target);
+          if (bigger) target = bigger;
+        }
+      }
+      tag = (target.tagName || '').toUpperCase();
       var pixels = { dataUrl: '', via: 'geom' };
       if (tag === 'IMG') pixels = imgToPixels(target);
       else if (tag === 'CANVAS') {
+        var live = viewportRect(target);
+        if (live.w < 8 || live.h < 8) {
+          throw new Error('canvas 显示尺寸为 0，无法 OCR。请对快照 images[] 中面积较大的画布调用 page.ocr');
+        }
         try { pixels = { dataUrl: canvasToDataUrl(target), via: 'canvas' }; }
         catch (e) { pixels = { dataUrl: '', via: 'canvas-tainted' }; }
       } else {
@@ -3059,6 +3103,14 @@
       return JSON.parse(JSON.stringify({
         outline: outlineLines.join('\n'),
         starFields: starFields,
+        officeContext: (function () {
+          try {
+            if (window.__assistantOffice && typeof window.__assistantOffice.snapshotDigest === 'function') {
+              return window.__assistantOffice.snapshotDigest();
+            }
+          } catch (eOc) {}
+          return { kind: 'none' };
+        })(),
         viewItems: viewItems,
         title: document.title || '',
         url: location.href || '',
@@ -6040,6 +6092,20 @@
             window.__assistantLogs.push(parts.join(' '));
             return parts.length;
           },
+          officeRead: function (opts) {
+            var api = window.__assistantOffice;
+            if (!api || typeof api.read !== 'function') {
+              return { ok: false, kind: 'query', reason: 'office-missing', officeContext: { kind: 'none' } };
+            }
+            return api.read(opts);
+          },
+          officeFill: async function (a, b) {
+            var api = window.__assistantOffice;
+            if (!api || typeof api.fill !== 'function') {
+              throw new Error('在线文档桥未注入。请刷新页面后重试。');
+            }
+            return await api.fill(a, b);
+          },
           getFile: function () { throw new Error('附件内容不可在页面 MAIN world 中读取'); },
           getFileName: function () { throw new Error('附件内容不可在页面 MAIN world 中读取'); }
         };
@@ -6054,7 +6120,8 @@
         optionTexts: 1, clickOptionByText: 1, findOption: 1, selectOption: 1,
         listOptions: 1, filterSelect: 1,
         setChecked: 1, sleep: 1, waitFor: 1, probe: 1, scroll: 1,
-        urlHints: 1, scriptHints: 1, hover: 1, openFileMenu: 1, contextClick: 1, watchTraffic: 1
+        urlHints: 1, scriptHints: 1, hover: 1, openFileMenu: 1, contextClick: 1, watchTraffic: 1,
+        officeRead: 1, officeFill: 1
       };
       var page = createPageApi();
       var list = Array.isArray(operations) ? operations : [];

@@ -34,6 +34,10 @@
   const CSS_STRING = `
     :host {
       all: initial;
+      --wpa-alpha: 1;
+      --wpa-scale-x: 0.7;
+      --wpa-scale-y: 0.7;
+      --wpa-header-h: 56px;
       position: fixed;
       top: 20px;
       right: 20px;
@@ -43,7 +47,7 @@
       max-height: calc(100vh - 40px);
       display: flex;
       flex-direction: column;
-      background: #f4f6fb;
+      background: rgba(244, 246, 251, var(--wpa-alpha));
       border-radius: 14px;
       box-shadow: 0 12px 40px rgba(20, 30, 70, 0.28);
       overflow: hidden;
@@ -51,6 +55,11 @@
       color: #23283a;
       font-size: 13px;
       line-height: 1.5;
+    }
+    :host.expanded {
+      width: min(calc(100vw * var(--wpa-scale-x)), calc(100vw - 16px));
+      height: min(calc(100vh * var(--wpa-scale-y)), calc(100vh - 16px));
+      max-height: calc(100vh - 16px);
     }
     :host([hidden]) {
       display: none !important;
@@ -65,7 +74,7 @@
       align-items: center;
       justify-content: space-between;
       padding: 12px 16px;
-      background: linear-gradient(135deg, #4f7cff 0%, #6a5cff 100%);
+      background: linear-gradient(135deg, rgba(79, 124, 255, var(--wpa-alpha)) 0%, rgba(106, 92, 255, var(--wpa-alpha)) 100%);
       color: #fff;
       box-shadow: 0 2px 10px rgba(79, 124, 255, 0.3);
       flex-shrink: 0;
@@ -73,6 +82,8 @@
       user-select: none;
       -webkit-user-select: none;
       touch-action: none;
+      position: relative;
+      z-index: 26;
     }
     .app-header.dragging {
       cursor: grabbing;
@@ -94,7 +105,37 @@
       white-space: nowrap;
       line-height: 1.4;
     }
+    .zoom-btn {
+      background: rgba(255, 255, 255, 0.2);
+      border: none;
+      color: #fff;
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      font-size: 15px;
+      cursor: pointer;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      padding: 0;
+      position: relative;
+      z-index: 2;
+      pointer-events: auto;
+    }
+    .zoom-btn:hover {
+      background: rgba(255, 255, 255, 0.35);
+    }
     .header-left {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 8px;
+      min-width: 0;
+    }
+    .header-main {
       display: flex;
       flex-direction: column;
       align-items: flex-start;
@@ -193,20 +234,31 @@
       background: rgba(255,255,255,0.2);
     }
     .settings-panel {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: var(--wpa-header-h, 56px);
+      bottom: 0;
+      z-index: 25;
       background: #ffffff;
-      border: 1px solid #e6e8f0;
-      border-radius: 12px;
-      margin: 8px 12px 0;
-      padding: 12px 12px 80px 12px;
-      box-shadow: 0 4px 16px rgba(35, 40, 58, 0.06);
+      border: none;
+      border-top: 1px solid #e6e8f0;
+      border-radius: 0;
+      margin: 0;
+      padding: 12px;
+      box-shadow: none;
       display: flex;
       flex-direction: column;
       gap: 8px;
-      flex-shrink: 0;
       min-height: 0;
-      max-height: calc(min(560px, 100vh - 40px) - 250px);
-      overflow-y: auto;
+      height: auto;
+      max-height: none;
+      overflow: hidden;
       overscroll-behavior: contain;
+    }
+    .settings-panel.skill-library {
+      max-height: none;
+      overflow-y: auto;
     }
     .settings-panel::-webkit-scrollbar {
       width: 6px;
@@ -232,10 +284,101 @@
       width: auto;
       margin: 0;
     }
+    .pdf-parse-label {
+      font-size: 12px;
+      color: #5a6072;
+      margin-top: 4px;
+    }
+    .pdf-parse-pages-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .pdf-parse-hint {
+      font-size: 11px;
+      color: #8a90a0;
+      line-height: 1.45;
+    }
     .run-settings {
       display: flex;
       flex-direction: column;
       gap: 8px;
+      border: 1px solid #e6e8f0;
+      border-radius: 8px;
+      padding: 8px;
+      background: #fafbff;
+    }
+    .page-config-tab {
+      border: 2px solid #4f7cff;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fff;
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+    .page-config-tab-head {
+      background: linear-gradient(135deg, #4f7cff 0%, #6a5cff 100%);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 7px 14px;
+      line-height: 1.4;
+      text-align: center;
+    }
+    .page-config-tab-body {
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 0;
+      flex: 1 1 auto;
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+    .page-config-tab-body::-webkit-scrollbar {
+      width: 6px;
+    }
+    .page-config-tab-body::-webkit-scrollbar-thumb {
+      background: #c9cedb;
+      border-radius: 3px;
+    }
+    .page-config-scope {
+      font-size: 11px;
+      color: #5a6072;
+      line-height: 1.45;
+      background: #f4f7ff;
+      border-radius: 6px;
+      padding: 6px 8px;
+    }
+    .settings-card-heading {
+      font-size: 12px;
+      font-weight: 650;
+      color: #2b2f3a;
+    }
+    .settings-row-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .settings-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .settings-status {
+      font-size: 12px;
+      color: #5a6072;
+      min-height: 16px;
+    }
+    .settings-status.err {
+      color: #b42318;
+    }
+    .settings-status.ok {
+      color: #1f7a4d;
     }
     .settings-panel input {
       border: 1px solid #d8dbe7;
@@ -522,18 +665,53 @@
       animation: pop 0.18s ease;
     }
     .bubble.user {
+      position: relative;
       align-self: flex-end;
       background: linear-gradient(135deg, #4f7cff 0%, #6a5cff 100%);
       color: #fff;
       border-bottom-right-radius: 4px;
+      padding-bottom: 28px;
+    }
+    .bubble.user .bubble-text {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .prompt-reload-btn {
+      position: absolute;
+      right: 6px;
+      bottom: 6px;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border: none;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.22);
+      color: #fff;
+      font-size: 13px;
+      line-height: 1;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .prompt-reload-btn:hover {
+      background: rgba(255, 255, 255, 0.38);
     }
     .bubble.assistant {
+      position: relative;
       align-self: flex-start;
       background: #ffffff;
       color: #2b2f3a;
       border: 1px solid #e6e8f0;
       border-bottom-left-radius: 4px;
       box-shadow: 0 2px 8px rgba(35, 40, 58, 0.05);
+    }
+    .bubble.assistant.has-detail {
+      padding-bottom: 26px;
+    }
+    .bubble.assistant .bubble-text {
+      white-space: pre-wrap;
+      word-break: break-word;
     }
     .bubble.system {
       align-self: center;
@@ -622,16 +800,23 @@
       align-self: stretch;
     }
     .assistant-detail-btn {
+      position: absolute;
+      right: 8px;
+      bottom: 5px;
       border: none;
       background: transparent;
-      color: #4f7cff;
-      font-size: 12px;
+      color: #8a90a0;
+      font-size: 11px;
       cursor: pointer;
-      padding: 0 2px;
+      padding: 1px 6px;
       font-family: inherit;
       line-height: 1.4;
+      border-radius: 4px;
     }
-    .assistant-detail-btn:hover { text-decoration: underline; }
+    .assistant-detail-btn:hover {
+      color: #4f7cff;
+      background: transparent;
+    }
     .assistant-output {
       display: none;
       position: relative;
@@ -672,22 +857,31 @@
     }
     .input-row {
       display: grid;
-      grid-template-columns: 44px minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr) auto;
       gap: 8px;
-      padding: 10px 12px;
-      background: #ffffff;
-      border-top: 1px solid #e6e8f0;
+      padding: 8px 12px 6px;
+      background: rgba(255, 255, 255, var(--wpa-alpha));
+      border-top: none;
       flex-shrink: 0;
-      align-items: stretch;
+      align-items: end;
+    }
+    .composer-actions {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-shrink: 0;
+      width: 60px;
     }
     .attach-btn {
-      width: 100%;
-      height: auto;
-      min-height: 0;
+      width: 60px;
+      height: 36px;
+      min-width: 60px;
+      min-height: 36px;
       margin: 0;
       padding: 0;
-      border: 1px solid #d8dbe7;
-      background: #fbfcfe;
+      border: 1px solid #e6c35c;
+      background: #ffecb3;
       border-radius: 10px;
       font-size: 18px;
       line-height: 1;
@@ -695,12 +889,12 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      align-self: stretch;
+      flex-shrink: 0;
       transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
     }
     .attach-btn:hover {
-      border-color: #4f7cff;
-      background: #f2f5ff;
+      border-color: #f0c14b;
+      background: #ffe082;
     }
     .attach-btn:disabled {
       opacity: 0.55;
@@ -708,9 +902,9 @@
     }
     .tag-row {
       display: flex;
-      gap: 8px;
-      padding: 6px 12px 10px;
-      background: #ffffff;
+      gap: 6px;
+      padding: 2px 12px 6px;
+      background: rgba(255, 255, 255, var(--wpa-alpha));
       border-top: 1px solid #eef0f6;
       flex-shrink: 0;
       flex-wrap: wrap;
@@ -733,9 +927,11 @@
       flex: 1;
       min-width: 0;
       border: 1px solid #d8dbe7;
-      border-radius: 8px;
-      padding: 6px 8px;
+      border-radius: 6px;
+      padding: 0 6px;
       font-size: 12px;
+      line-height: 1.2;
+      height: 22px;
       font-family: inherit;
       background: #fbfcfe;
       outline: none;
@@ -748,7 +944,8 @@
     #userInput {
       width: 100%;
       min-width: 0;
-      min-height: 0;
+      min-height: 36px;
+      height: 79px;
       resize: none;
       border: 1px solid #d8dbe7;
       border-radius: 10px;
@@ -765,14 +962,45 @@
       box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.15);
     }
     .send-btn {
-      align-self: stretch;
+      width: 60px;
       min-width: 60px;
-      height: auto;
+      height: 36px;
+      min-height: 36px;
       margin: 0;
       display: flex;
       align-items: center;
       justify-content: center;
       border-radius: 10px;
+      flex-shrink: 0;
+      padding: 0 8px;
+    }
+    .composer {
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      z-index: 21;
+      background: rgba(255, 255, 255, var(--wpa-alpha));
+      border-top: 1px solid #e6e8f0;
+    }
+    .input-resize-handle {
+      height: 6px;
+      cursor: ns-resize;
+      background: #eef0f6;
+      flex-shrink: 0;
+      touch-action: none;
+    }
+    .input-resize-handle:hover,
+    .input-resize-handle.dragging {
+      background: #4f7cff;
+    }
+    .global-settings-btn {
+      width: 100%;
+    }
+    .page-settings-hint {
+      font-size: 11px;
+      color: #8a90a0;
+      line-height: 1.45;
     }
     .hidden {
       display: none !important;
@@ -977,6 +1205,7 @@
       display: flex;
       gap: 8px;
       justify-content: flex-end;
+      flex-wrap: wrap;
       margin-top: 4px;
     }
     .modal-warn {
@@ -1020,6 +1249,37 @@
       font-family: inherit;
       transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
     }
+    .archive-action:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+    .archive-redact-hint {
+      font-size: 11px;
+      color: #8a90a0;
+      line-height: 1.45;
+    }
+    .archive-status {
+      font-size: 12px;
+      color: #5a6072;
+      min-height: 16px;
+      line-height: 1.4;
+    }
+    .archive-status.err {
+      color: #b42318;
+    }
+    .modal textarea.archive-redact-input {
+      min-height: 72px;
+    }
+    .modal textarea.archive-doc-input {
+      min-height: 120px;
+      flex: 1;
+    }
+    .archive-model-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
     .archive-action:hover {
       background: #f6f7fb;
       border-color: #4f7cff;
@@ -1058,11 +1318,20 @@
   let reconnectTimerId = null;
   let panelDisposed = false;
   let awaitingDomReady = false;
-  let currentConfig = null; // 最新配置（用于重建标签下拉）
+  let currentConfig = null; // 最新全局配置（用于重建标签下拉）
+  let currentPageConfig = {};
+  let panelExpanded = false;
+  const INPUT_H_MIN = 36;
+  const INPUT_H_MAX = 280;
+  const INPUT_H_DEFAULT = 79; // 两个 36px 按钮高度 + 10%
   let cachedSkills = [];
   const selectedSkillIds = {};
   let pendingTriggerSkill = null;
   let connHintEl = null;
+  let archiveBusy = false;
+  let archiveSaveMeta = null;
+  let archiveRedactWait = null;
+  let archiveSaveWait = null;
   const CONN_HINT_RECONNECT = '连接已断开，正在重连…';
   const CONN_HINT_CONNECTED = '已连接';
 
@@ -1107,6 +1376,128 @@
     if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tif', 'tiff'].indexOf(ext) >= 0 || mime.indexOf('image/') === 0) return 'image';
     return 'other';
   }
+  // 与 background.fileContentHash 相同：按内容取样，不含文件名。
+  function fileContentHash(file) {
+    const data = String((file && file.dataUrl) || '');
+    const meta = ['v4', Number(file && file.size) || 0, data.length].join('|');
+    let sample = meta;
+    if (data) {
+      const span = Math.min(2048, data.length);
+      sample += '|' + data.slice(0, span);
+      if (data.length > span * 2) sample += '|' + data.slice(Math.floor(data.length / 2), Math.floor(data.length / 2) + span);
+      if (data.length > span) sample += '|' + data.slice(-span);
+    }
+    let h1 = 2166136261;
+    let h2 = 2246822519;
+    for (let i = 0; i < sample.length; i++) {
+      const c = sample.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 16777619);
+      h2 = Math.imul(h2 ^ c, 3266489917);
+    }
+    return 'content:v4:' + (h1 >>> 0).toString(16) + (h2 >>> 0).toString(16) + ':' + data.length;
+  }
+  function mergeFileAliases(file, newName) {
+    if (!file) return file;
+    const next = String(newName || '').trim();
+    const prev = String(file.name || '').trim();
+    const aliases = [];
+    const seen = Object.create(null);
+    function add(n) {
+      const s = String(n || '').trim();
+      if (!s || seen[s] || (next && s === next)) return;
+      seen[s] = true;
+      aliases.push(s);
+    }
+    if (Array.isArray(file.aliases)) file.aliases.forEach(add);
+    if (prev && prev !== next) add(prev);
+    if (next) file.name = next;
+    file.aliases = aliases;
+    return file;
+  }
+  function imageExtFromMime(type, fallbackName) {
+    const t = String(type || '').toLowerCase();
+    if (t.indexOf('png') >= 0) return 'png';
+    if (t.indexOf('jpeg') >= 0 || t.indexOf('jpg') >= 0) return 'jpg';
+    if (t.indexOf('webp') >= 0) return 'webp';
+    if (t.indexOf('gif') >= 0) return 'gif';
+    if (t.indexOf('bmp') >= 0) return 'bmp';
+    if (t.indexOf('tif') >= 0) return 'tiff';
+    const n = String(fallbackName || '').toLowerCase();
+    const dot = n.lastIndexOf('.');
+    if (dot >= 0) {
+      const ext = n.slice(dot + 1);
+      if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tif', 'tiff'].indexOf(ext) >= 0) {
+        return ext === 'jpeg' ? 'jpg' : ext;
+      }
+    }
+    return 'png';
+  }
+  function uniqueAttachFileName(base, ext, existingNames) {
+    const seen = Object.create(null);
+    (existingNames || []).forEach(function (n) {
+      const s = String(n || '').trim().toLowerCase();
+      if (s) seen[s] = true;
+    });
+    const e = String(ext || '').replace(/^\./, '');
+    const suffix = e ? ('.' + e) : '';
+    const stem = String(base || '').trim() || '粘贴图片';
+    let candidate = stem + suffix;
+    if (!seen[candidate.toLowerCase()]) return { ok: true, name: candidate };
+    for (let i = 1; i <= 5; i++) {
+      candidate = stem + new Array(i + 1).join('new') + suffix;
+      if (!seen[candidate.toLowerCase()]) return { ok: true, name: candidate };
+    }
+    return { ok: false, name: candidate };
+  }
+  function attachDisplayNames(exceptKey) {
+    const out = [];
+    attachedFiles.forEach(function (f) {
+      if (!f || (exceptKey && f.key === exceptKey)) return;
+      if (f.name) out.push(f.name);
+      if (Array.isArray(f.aliases)) f.aliases.forEach(function (a) { if (a) out.push(a); });
+    });
+    return out;
+  }
+  function clipboardPlainText(dt) {
+    if (!dt || typeof dt.getData !== 'function') return '';
+    try {
+      return String(dt.getData('text/plain') || '');
+    } catch (e) {
+      return '';
+    }
+  }
+  // 有实质正文则走输入框默认粘贴；单独的图片 URL/文件名是复制图片时的附带数据，不当成要输入的文字。
+  function clipboardTextIsContent(text) {
+    const t = String(text || '').trim();
+    if (!t) return false;
+    if (/^data:image\//i.test(t)) return false;
+    if (/^(https?:|file:|blob:)\S+$/i.test(t)) return false;
+    if (/^[^\\/:*?"<>|\s]+\.(png|jpe?g|gif|webp|bmp|tif|tiff|svg)$/i.test(t)) return false;
+    if (/^[a-zA-Z]:[\\/][^\s]+\.(png|jpe?g|gif|webp|bmp|tif|tiff)$/i.test(t)) return false;
+    return true;
+  }
+  function collectClipboardImages(dt) {
+    const out = [];
+    if (!dt) return out;
+    function add(file) {
+      if (!file) return;
+      const mime = String(file.type || '').toLowerCase();
+      if (mime.indexOf('image/') !== 0) return;
+      out.push(file);
+    }
+    if (dt.items && dt.items.length) {
+      for (let i = 0; i < dt.items.length; i++) {
+        const it = dt.items[i];
+        if (it && it.kind === 'file' && it.type && String(it.type).indexOf('image/') === 0) {
+          add(it.getAsFile());
+        }
+      }
+    }
+    if (!out.length && dt.files && dt.files.length) {
+      for (let i = 0; i < dt.files.length; i++) add(dt.files[i]);
+    }
+    return out;
+  }
   function kindBadge(kind) {
     if (kind === 'text') return '文本';
     if (kind === 'pdf' || kind === 'image') return 'OCR';
@@ -1118,146 +1509,11 @@
     return 'upload';
   }
 
-  const TEXT_PROVIDER_TYPES = [
-    { id: 'Standard-TXT', label: 'Standard-TXT', modelsHint: '模型ID，逗号分隔', urlHint: 'OpenAI 兼容 Base URL，如 https://api.moonshot.cn/v1' }
-  ];
-  const OCR_PROVIDER_TYPES = [
-    { id: 'Standard-IMG', label: 'Standard-IMG', modelsHint: '视觉模型ID，如 kimi-k2.6、qwen-vl-ocr', urlHint: 'OpenAI 兼容视觉 Base URL，如 https://api.moonshot.cn/v1' },
-    { id: 'OCR-SCnet', label: 'OCR-SCnet', defaultBaseURL: 'https://api.scnet.cn/api/llm/v1/ocr/recognize', defaultModels: 'GENERAL', modelsHint: 'GENERAL,ID_CARD,VAT_INVOICE', urlHint: 'https://api.scnet.cn/api/llm/v1/ocr/recognize' },
-    { id: 'MinerU', label: 'MinerU', defaultModels: 'MinerU', modelsHint: 'MinerU', urlHint: 'MinerU /file_parse 端点' }
-  ];
-  const PROVIDER_TYPE_ALIASES = {
-    LiteLLM: 'Standard-TXT',
-    KIMI: 'Standard-TXT',
-    'OCR-KIMI': 'Standard-IMG',
-    'OCR-Qwen': 'Standard-IMG',
-    'OCR-Vision': 'Standard-IMG',
-    MinerU: 'MinerU',
-    mineru: 'MinerU',
-    'mineru-parse': 'MinerU'
-  };
-  function providerTypesOf(kind) {
-    return kind === 'ocr' ? OCR_PROVIDER_TYPES : TEXT_PROVIDER_TYPES;
-  }
-  function looksLikeMinerUModel(id) {
-    const s = String(id || '').trim();
-    return /^mineru(\b|[-_./]|$)/i.test(s);
-  }
-  function mineruHintFrom(hint) {
-    if (!hint) return false;
-    if (typeof hint === 'string') return looksLikeMinerUModel(hint);
-    if (looksLikeMinerUModel(hint.model) || looksLikeMinerUModel(hint.name)) return true;
-    return String(hint.models || '').split(',').some((s) => looksLikeMinerUModel(s.trim()));
-  }
-  function canonicalizeProviderType(raw, kind, hint) {
-    const list = providerTypesOf(kind);
-    let id = String(raw || '').trim();
-    if (PROVIDER_TYPE_ALIASES[id]) id = PROVIDER_TYPE_ALIASES[id];
-    if (list.some((t) => t.id === id)) return id;
-    if (kind === 'ocr' && mineruHintFrom(hint)) return 'MinerU';
-    return list[0].id;
-  }
-  function providerTypeMeta(id, kind, hint) {
-    const list = providerTypesOf(kind);
-    const canon = canonicalizeProviderType(id, kind, hint);
-    return list.find((t) => t.id === canon) || list[0];
-  }
-
-  // 构建一个 provider 行（类型 / 名称 / Base URL / API Key / 模型ID + 删除）
-  function addProviderRow(container, data, kind) {
-    const isOcr = kind === 'ocr';
-    const types = providerTypesOf(isOcr ? 'ocr' : 'text');
-    const kindKey = isOcr ? 'ocr' : 'text';
-    const initialType = canonicalizeProviderType(data && data.providerType, kindKey, data);
-    let meta = providerTypeMeta(initialType, kindKey);
-    const row = mk('div', 'provider-row');
-    const makeField = (labelText, input) => {
-      const label = mk('label', 'provider-field');
-      label.appendChild(document.createTextNode(labelText));
-      label.appendChild(input);
-      return label;
-    };
-    const typeSel = mk('select');
-    typeSel.dataset.field = 'providerType';
-    typeSel.title = '固定枚举，不可自定义';
-    typeSel.required = true;
-    types.forEach((t) => {
-      const opt = document.createElement('option');
-      opt.value = t.id;
-      opt.textContent = t.label;
-      typeSel.appendChild(opt);
-    });
-    typeSel.value = meta.id;
-    const name = mk('input', null, { type: 'text', placeholder: '名称', value: (data && data.name) || '' });
-    name.dataset.field = 'name';
-    const baseURL = mk('input', null, {
-      type: 'text',
-      placeholder: meta.urlHint || 'Base URL',
-      value: (data && data.baseURL) || ''
-    });
-    baseURL.dataset.field = 'baseURL';
-    const apiKey = mk('input', null, { type: 'password', placeholder: 'API Key', value: (data && data.apiKey) || '' });
-    apiKey.dataset.field = 'apiKey';
-    const models = mk('input', null, {
-      type: 'text',
-      placeholder: meta.modelsHint || '模型ID（逗号分隔）',
-      value: (data && data.models) || ''
-    });
-    models.dataset.field = 'models';
-    if (!(data && data.baseURL) && meta.defaultBaseURL) baseURL.value = meta.defaultBaseURL;
-    if (!(data && data.models) && meta.defaultModels) models.value = meta.defaultModels;
-    let lastDefaultUrl = meta.defaultBaseURL || '';
-    let lastDefaultModels = meta.defaultModels || '';
-    typeSel.addEventListener('change', () => {
-      meta = providerTypeMeta(typeSel.value, kindKey);
-      baseURL.placeholder = meta.urlHint || 'Base URL';
-      models.placeholder = meta.modelsHint || '模型ID（逗号分隔）';
-      const urlNow = baseURL.value.trim();
-      if (!urlNow || urlNow === lastDefaultUrl) {
-        baseURL.value = meta.defaultBaseURL || '';
-      }
-      const modelsNow = models.value.trim();
-      if (!modelsNow || modelsNow === lastDefaultModels) {
-        models.value = meta.defaultModels || '';
-      }
-      lastDefaultUrl = meta.defaultBaseURL || '';
-      lastDefaultModels = meta.defaultModels || '';
-    });
-    const del = mk('button', 'btn provider-del', { type: 'button', textContent: '✕ 删除', title: '删除该 provider' });
-    del.addEventListener('click', () => { row.remove(); });
-    row.appendChild(makeField('类型 providerType', typeSel));
-    row.appendChild(makeField('名称', name));
-    row.appendChild(makeField('Base URL', baseURL));
-    row.appendChild(makeField('API Key', apiKey));
-    row.appendChild(makeField(isOcr ? '模型ID / ocrType（逗号分隔）' : '模型ID（逗号分隔）', models));
-    row.appendChild(del);
-    container.appendChild(row);
-    return row;
-  }
-
-  // 读取容器内所有 provider 行
-  function collectProviders(container, kind) {
-    const rows = container.querySelectorAll('.provider-row');
-    const out = [];
-    rows.forEach((row) => {
-      const get = (f) => {
-        const el = row.querySelector('[data-field="' + f + '"]');
-        return el ? String(el.value || '').trim() : '';
-      };
-      const name = get('name');
-      const models = get('models');
-      const providerType = canonicalizeProviderType(get('providerType'), kind, { name: name, models: models });
-      const baseURL = get('baseURL');
-      const apiKey = get('apiKey');
-      if (baseURL || models) {
-        out.push({ name: name || 'provider', providerType, baseURL, apiKey, models });
-      }
-    });
-    return out;
-  }
+  // provider 表单已迁至 settings.js（全局配置标签页）。
 
   function buildDOM() {
     const header = mk('header', 'app-header');
+    const zoomBtn = mk('button', 'zoom-btn', { type: 'button', textContent: '⛶', title: '放大面板' });
     const title = mk('div', 'header-title', { textContent: 'Webpage Agent' });
     const buildBadge = mk('span', 'header-build', { textContent: BUILD_TAG, title: '扩展版本（manifest，须与页面桥一致）' });
     const headerRight = mk('div', 'header-right');
@@ -1270,10 +1526,12 @@
     headerRight.appendChild(skillLibBtn);
     headerRight.appendChild(clearBtn);
     headerRight.appendChild(settingsBtn);
+    headerRight.appendChild(zoomBtn);
     headerRight.appendChild(closeBtn);
     const headerLeft = mk('div', 'header-left');
+    const headerMain = mk('div', 'header-main');
     const headerBrand = mk('div', 'header-brand');
-    headerLeft.appendChild(title);
+    headerMain.appendChild(title);
     headerBrand.appendChild(buildBadge);
     const connLampWrap = mk('div', 'conn-lamp-wrap');
     const connLamp = mk('span', 'conn-lamp connecting', { title: '连接中' });
@@ -1281,101 +1539,121 @@
     connLampWrap.appendChild(connLamp);
     connLampWrap.appendChild(connLampLabel);
     headerBrand.appendChild(connLampWrap);
-    headerLeft.appendChild(headerBrand);
+    headerMain.appendChild(headerBrand);
+    headerLeft.appendChild(headerMain);
     header.appendChild(headerLeft);
     header.appendChild(headerRight);
 
     const settingsPanel = mk('section', 'settings-panel hidden');
     settingsPanel.id = 'settingsPanel';
-    const mkLabel = (text, input) => {
+    const openGlobalSettingsBtn = mk('button', 'btn primary global-settings-btn', {
+      type: 'button',
+      textContent: '全局配置',
+      title: '在新标签页打开全局配置'
+    });
+    settingsPanel.appendChild(openGlobalSettingsBtn);
+    settingsPanel.appendChild(mk('div', 'page-settings-hint', {
+      textContent: '对话记录、附件与输入框高度按当前网站保存。下方「本页配置」只作用于当前网页，不会改写全局配置。模型、密钥、全局运行参数、界面透明度与缩放比例在「全局配置」中设置。'
+    }));
+
+    function mkNumInput(id, min, max, step, value, title) {
+      const input = mk('input');
+      input.id = id;
+      input.type = 'number';
+      input.min = String(min);
+      input.max = String(max);
+      input.step = String(step);
+      input.value = String(value);
+      if (title) input.title = title;
+      return input;
+    }
+    function mkFieldLabel(text, input) {
       const label = mk('label');
       label.appendChild(document.createTextNode(text));
       label.appendChild(input);
       return label;
-    };
-
-    // 配置导入/导出（置于面板顶部）：下载当前配置 JSON / 上传恢复配置（免重装后重新填 API）
-    const configIo = mk('div', 'config-io');
-    configIo.appendChild(mk('div', 'io-hint', { textContent: '导出当前配置为 JSON 备份，或上传 JSON 恢复配置（重装插件后无需重填 API）。' }));
-    const downloadConfigBtn = mk('button', 'btn', { type: 'button', textContent: '⬇ 下载配置' });
-    const uploadConfigBtn = mk('button', 'btn', { type: 'button', textContent: '⬆ 上传配置' });
-    const uploadConfigInput = mk('input');
-    uploadConfigInput.type = 'file';
-    uploadConfigInput.accept = '.json,application/json';
-    uploadConfigInput.style.display = 'none';
-    configIo.appendChild(downloadConfigBtn);
-    configIo.appendChild(uploadConfigBtn);
-    configIo.appendChild(uploadConfigInput);
-    settingsPanel.appendChild(configIo);
-
-    // 文本模型 Providers
-    const textSection = mk('div', 'provider-section');
-    textSection.appendChild(mk('div', 'provider-heading', { textContent: '文本模型 Providers（类型仅 Standard-TXT：OpenAI 兼容 /chat/completions，Base URL / 模型ID 自行填写）' }));
-    const textProvidersList = mk('div', 'provider-list');
-    textSection.appendChild(textProvidersList);
-    const addTextProviderBtn = mk('button', 'btn add-provider', { type: 'button', textContent: '＋ 添加 provider' });
-    textSection.appendChild(addTextProviderBtn);
-    settingsPanel.appendChild(textSection);
-
-    const systemPromptText = mk('textarea', null, { rows: 3, placeholder: '文本模型 System Prompt（每次调用置于上下文最前）' });
-    settingsPanel.appendChild(mkLabel('文本模型 System Prompt', systemPromptText));
-
-    // PDF-OCR 模型 Providers
-    const ocrSection = mk('div', 'provider-section');
-    ocrSection.appendChild(mk('div', 'provider-heading', { textContent: 'OCR Providers（类型必选：Standard-IMG 为视觉 chat；OCR-SCnet 为 multipart；MinerU 为文档解析）' }));
-    const ocrProvidersList = mk('div', 'provider-list');
-    ocrSection.appendChild(ocrProvidersList);
-    const addOcrProviderBtn = mk('button', 'btn add-provider', { type: 'button', textContent: '＋ 添加 provider' });
-    ocrSection.appendChild(addOcrProviderBtn);
-    settingsPanel.appendChild(ocrSection);
-
-    const systemPromptOcr = mk('textarea', null, { rows: 3, placeholder: 'OCR 模型 System Prompt（视觉模型调用时置于最前）' });
-    settingsPanel.appendChild(mkLabel('OCR 模型 System Prompt', systemPromptOcr));
-
-    const runSection = mk('div', 'provider-section run-settings');
-    runSection.appendChild(mk('div', 'provider-heading', { textContent: '运行参数' }));
-    const maxSteps = mk('input', null, { type: 'number', min: 1, max: 100, step: '1', placeholder: '15', value: '15' });
-    runSection.appendChild(mkLabel('最大步数', maxSteps));
-    const llmCallGapSec = mk('input', null, {
-      type: 'number', min: 0, max: 10, step: '0.1', placeholder: '0.5', value: '0.5',
-      title: '两次文本模型调用之间的最短间隔，避免连续请求被接口限流'
-    });
-    runSection.appendChild(mkLabel('模型调用间隔（秒）', llmCallGapSec));
-    const llmTimeoutRetry = mk('input', null, { type: 'number', min: 0, max: 3, step: '1', placeholder: '1', value: '1' });
-    runSection.appendChild(mkLabel('超时重试次数', llmTimeoutRetry));
-    const llmErrorRetry = mk('input', null, { type: 'number', min: 0, max: 5, step: '1', placeholder: '2', value: '2' });
-    runSection.appendChild(mkLabel('瞬时错误重试次数', llmErrorRetry));
-    const pageQuietSec = mk('input', null, {
-      type: 'number', min: 1, max: 15, step: '0.5', placeholder: '4', value: '4',
-      title: '操作后等待页面 DOM 稳定的上限'
-    });
-    runSection.appendChild(mkLabel('页面稳定等待上限（秒）', pageQuietSec));
-    const suggestWaitSec = mk('input', null, {
-      type: 'number', min: 0, max: 5, step: '0.1', placeholder: '1.4', value: '1.4',
-      title: '填写后等待搜索建议/选项卡片出现的上限'
-    });
-    runSection.appendChild(mkLabel('填写后等待建议层（秒）', suggestWaitSec));
-    const busyMaskEnabled = mk('input', null, { type: 'checkbox' });
-    busyMaskEnabled.checked = true;
-    const busyMaskRow = mk('label', 'settings-check-row');
-    busyMaskRow.appendChild(busyMaskEnabled);
-    busyMaskRow.appendChild(document.createTextNode('操作时显示半透明遮罩'));
-    runSection.appendChild(busyMaskRow);
-    const snapshotPiiMask = mk('input', null, { type: 'checkbox' });
-    const snapshotPiiRow = mk('label', 'settings-check-row');
-    snapshotPiiRow.appendChild(snapshotPiiMask);
-    snapshotPiiRow.appendChild(document.createTextNode('快照脱敏（邮箱 / 手机 / 证件号；默认关）'));
-    runSection.appendChild(snapshotPiiRow);
-    settingsPanel.appendChild(runSection);
-
-    const settingsActions = mk('div', 'settings-actions');
-    const saveBtn = mk('button', 'btn primary', { textContent: '保存' });
-    const testBtn = mk('button', 'btn', { textContent: '测试连接' });
-    settingsActions.appendChild(saveBtn);
-    settingsActions.appendChild(testBtn);
-    settingsPanel.appendChild(settingsActions);
-    const settingsStatus = mk('div', 'settings-status');
-    settingsPanel.appendChild(settingsStatus);
+    }
+    const pageConfigTab = mk('div', 'page-config-tab');
+    pageConfigTab.appendChild(mk('div', 'page-config-tab-head', { textContent: '本页配置' }));
+    const pageConfigBody = mk('div', 'page-config-tab-body');
+    pageConfigBody.appendChild(mk('div', 'page-config-scope', {
+      textContent: '仅对当前网页生效。保存在本站，不会改写「全局配置」里面向所有网页的运行参数。'
+    }));
+    const pageRunCard = mk('div', 'run-settings');
+    pageRunCard.appendChild(mk('div', 'settings-card-heading', { textContent: '运行参数' }));
+    const pageRunRow = mk('div', 'settings-row-2');
+    const pageMaxSteps = mkNumInput('pageMaxSteps', 1, 100, 1, 60);
+    const pageLlmCallGapSec = mkNumInput('pageLlmCallGapSec', 0, 10, 0.1, 0.5, '两次文本模型调用之间的最短间隔，避免连续请求被接口限流');
+    const pageLlmTimeoutRetry = mkNumInput('pageLlmTimeoutRetry', 0, 3, 1, 2);
+    const pageLlmErrorRetry = mkNumInput('pageLlmErrorRetry', 0, 5, 1, 2);
+    const pagePageQuietSec = mkNumInput('pagePageQuietSec', 1, 15, 0.5, 3, '操作后等待页面 DOM 稳定的上限');
+    const pageSuggestWaitSec = mkNumInput('pageSuggestWaitSec', 0, 5, 0.1, 1, '填写后等待搜索建议/选项卡片出现的上限');
+    pageRunRow.appendChild(mkFieldLabel('最大步数', pageMaxSteps));
+    pageRunRow.appendChild(mkFieldLabel('模型调用间隔（秒）', pageLlmCallGapSec));
+    pageRunRow.appendChild(mkFieldLabel('超时重试次数', pageLlmTimeoutRetry));
+    pageRunRow.appendChild(mkFieldLabel('瞬时错误重试次数', pageLlmErrorRetry));
+    pageRunRow.appendChild(mkFieldLabel('页面稳定等待上限（秒）', pagePageQuietSec));
+    pageRunRow.appendChild(mkFieldLabel('填写后等待建议层（秒）', pageSuggestWaitSec));
+    pageRunCard.appendChild(pageRunRow);
+    pageRunCard.appendChild(mk('div', 'pdf-parse-label', { textContent: 'PDF 解析范围（本地 PDFium；MinerU 仍提交整份）' }));
+    const pagePdfParseAll = mk('input');
+    pagePdfParseAll.id = 'pagePdfParseAll';
+    pagePdfParseAll.type = 'radio';
+    pagePdfParseAll.name = 'pageWpaPdfParseMode';
+    pagePdfParseAll.value = 'all';
+    pagePdfParseAll.checked = true;
+    const pagePdfParseAllRow = mk('label', 'settings-check-row');
+    pagePdfParseAllRow.appendChild(pagePdfParseAll);
+    pagePdfParseAllRow.appendChild(document.createTextNode('解析全部 PDF 页'));
+    pageRunCard.appendChild(pagePdfParseAllRow);
+    const pagePdfParsePagesMode = mk('input');
+    pagePdfParsePagesMode.id = 'pagePdfParsePagesMode';
+    pagePdfParsePagesMode.type = 'radio';
+    pagePdfParsePagesMode.name = 'pageWpaPdfParseMode';
+    pagePdfParsePagesMode.value = 'pages';
+    const pagePdfParsePagesModeRow = mk('label', 'settings-check-row');
+    pagePdfParsePagesModeRow.appendChild(pagePdfParsePagesMode);
+    pagePdfParsePagesModeRow.appendChild(document.createTextNode('按页码标号来解析'));
+    pageRunCard.appendChild(pagePdfParsePagesModeRow);
+    const pagePdfParsePagesWrap = mk('div', 'pdf-parse-pages-wrap');
+    pagePdfParsePagesWrap.hidden = true;
+    const pagePdfParsePages = mk('input');
+    pagePdfParsePages.id = 'pagePdfParsePages';
+    pagePdfParsePages.type = 'text';
+    pagePdfParsePages.placeholder = '例如 1,2,-1';
+    pagePdfParsePages.title = '多个页码用逗号分隔；负数表示从末尾倒数，-1 为最后一页（倒数第一页）';
+    pagePdfParsePagesWrap.appendChild(mkFieldLabel('页码', pagePdfParsePages));
+    pagePdfParsePagesWrap.appendChild(mk('div', 'pdf-parse-hint', {
+      textContent: '「-1」表示最后一页，也称为倒数第一页。可填多个数字（如 1,2,-1），OCR 也只识别这些页。'
+    }));
+    pageRunCard.appendChild(pagePdfParsePagesWrap);
+    const pagePdfParseAllHint = mk('div', 'pdf-parse-hint');
+    pagePdfParseAllHint.id = 'pagePdfParseAllHint';
+    pagePdfParseAllHint.textContent = '解析全部页会对每一页做文本提取，无文本层的页会渲染后 OCR，大文件可能较慢。';
+    pageRunCard.appendChild(pagePdfParseAllHint);
+    const pageBusyMaskEnabled = mk('input');
+    pageBusyMaskEnabled.id = 'pageBusyMaskEnabled';
+    pageBusyMaskEnabled.type = 'checkbox';
+    const pageBusyRow = mk('label', 'settings-check-row');
+    pageBusyRow.appendChild(pageBusyMaskEnabled);
+    pageBusyRow.appendChild(document.createTextNode('操作时显示半透明遮罩'));
+    pageRunCard.appendChild(pageBusyRow);
+    const pageSnapshotPiiMask = mk('input');
+    pageSnapshotPiiMask.id = 'pageSnapshotPiiMask';
+    pageSnapshotPiiMask.type = 'checkbox';
+    const pagePiiRow = mk('label', 'settings-check-row');
+    pagePiiRow.appendChild(pageSnapshotPiiMask);
+    pagePiiRow.appendChild(document.createTextNode('快照脱敏（邮箱 / 手机 / 证件号；默认关）'));
+    pageRunCard.appendChild(pagePiiRow);
+    const pageRunActions = mk('div', 'settings-actions');
+    const pageRunSaveBtn = mk('button', 'btn primary', { type: 'button', textContent: '保存本页运行参数' });
+    const pageRunStatus = mk('div', 'settings-status');
+    pageRunActions.appendChild(pageRunSaveBtn);
+    pageRunActions.appendChild(pageRunStatus);
+    pageRunCard.appendChild(pageRunActions);
+    pageConfigBody.appendChild(pageRunCard);
+    pageConfigTab.appendChild(pageConfigBody);
+    settingsPanel.appendChild(pageConfigTab);
 
     const skillLibrary = mk('section', 'settings-panel skill-library hidden');
     skillLibrary.id = 'skillLibrary';
@@ -1406,6 +1684,13 @@
     const skillLibStatus = mk('div', 'skill-lib-status');
     skillLibFooter.appendChild(skillLibStatus);
     skillLibrary.appendChild(skillLibFooter);
+
+    const mkLabel = (text, input) => {
+      const label = mk('label');
+      label.appendChild(document.createTextNode(text));
+      label.appendChild(input);
+      return label;
+    };
 
     const saveSkillModal = mk('div', 'modal-backdrop hidden');
     const saveSkillDialog = mk('div', 'modal');
@@ -1461,8 +1746,10 @@
     const archiveDialog = mk('div', 'modal');
     archiveDialog.appendChild(mk('h3', null, { textContent: '清空/存档对话' }));
     archiveDialog.appendChild(mk('div', 'archive-lead', {
-      textContent: '请选择一项操作。清空不可撤销；保存会下载到本机。'
+      textContent: '请选择一项操作。清空不可撤销。保存对话会打开下一页，可检查文本并用大模型脱敏后再保存。'
     }));
+    const archiveStatus = mk('div', 'archive-status');
+    archiveDialog.appendChild(archiveStatus);
     function mkArchiveAction(title, hint, extraClass) {
       const btn = mk('button', 'archive-action' + (extraClass ? ' ' + extraClass : ''), { type: 'button' });
       btn.appendChild(mk('span', 'archive-action-title', { textContent: title }));
@@ -1481,8 +1768,8 @@
       'danger'
     );
     const archiveSaveFull = mkArchiveAction(
-      '保存对话（所有用户输入与系统响应的内容与时间线）',
-      '下载带时间戳的完整对话（用户、助手、系统与模型调用）。'
+      '保存对话（用户 prompt、API 请求结构与系统响应）',
+      '下载用户输入、时间线，以及每次调用大模型 API 的请求结构（字段为解释词，不含网页快照等正文）。'
     );
     const archiveSaveUser = mkArchiveAction(
       '保存对话（仅用户输入）',
@@ -1498,6 +1785,46 @@
     archiveFooter.appendChild(archiveCancel);
     archiveDialog.appendChild(archiveFooter);
     archiveModal.appendChild(archiveDialog);
+
+    const archiveSaveModal = mk('div', 'modal-backdrop hidden');
+    const archiveSaveDialog = mk('div', 'modal');
+    archiveSaveDialog.appendChild(mk('h3', null, { textContent: '保存对话' }));
+    archiveSaveDialog.appendChild(mk('div', 'archive-lead', {
+      textContent: '可先用大模型按指令脱敏，满意后再保存本文档。脱敏可多次迭代。'
+    }));
+    const archiveRedactLabel = mk('label');
+    archiveRedactLabel.appendChild(document.createTextNode('传送给大模型的用户脱敏指令'));
+    const archiveRedactInput = mk('textarea', 'archive-redact-input', {
+      rows: 5,
+      maxLength: 2000,
+      placeholder: '填写发给文本模型的脱敏要求'
+    });
+    archiveRedactLabel.appendChild(archiveRedactInput);
+    archiveSaveDialog.appendChild(archiveRedactLabel);
+    const archiveDocLabel = mk('label');
+    archiveDocLabel.appendChild(document.createTextNode('对话历史内容文本'));
+    const archiveDocInput = mk('textarea', 'archive-doc-input', {
+      rows: 10,
+      placeholder: '将保存的对话文本'
+    });
+    archiveDocLabel.appendChild(archiveDocInput);
+    archiveSaveDialog.appendChild(archiveDocLabel);
+    const archiveModelRow = mk('label', 'archive-model-row');
+    archiveModelRow.appendChild(document.createTextNode('文本模型'));
+    const archiveModelSelect = mk('select', 'tag-select');
+    archiveModelRow.appendChild(archiveModelSelect);
+    archiveSaveDialog.appendChild(archiveModelRow);
+    const archiveSaveStatus = mk('div', 'archive-status');
+    archiveSaveDialog.appendChild(archiveSaveStatus);
+    const archiveSaveActions = mk('div', 'modal-actions');
+    const archiveSaveBack = mk('button', 'btn', { type: 'button', textContent: '返回' });
+    const archiveRedactBtn = mk('button', 'btn', { type: 'button', textContent: '采用大模型脱敏本文档' });
+    const archiveSaveDocBtn = mk('button', 'btn primary', { type: 'button', textContent: '保存本文档' });
+    archiveSaveActions.appendChild(archiveSaveBack);
+    archiveSaveActions.appendChild(archiveRedactBtn);
+    archiveSaveActions.appendChild(archiveSaveDocBtn);
+    archiveSaveDialog.appendChild(archiveSaveActions);
+    archiveSaveModal.appendChild(archiveSaveDialog);
 
     const connStatus = mk('div', 'conn-status hidden');
 
@@ -1515,15 +1842,17 @@
     const messages = mk('div', 'messages');
 
     const inputRow = mk('div', 'input-row');
-    const attachBtn = mk('button', 'attach-btn', { type: 'button', textContent: '📎', title: '上传附件（文本/PDF/图片）' });
     const userInput = mk('textarea');
     userInput.id = 'userInput';
     userInput.rows = 2;
     userInput.placeholder = '描述完整工作要求，例如：根据附件为张三提交事假申请\n如需多条独立任务，请每行使用编号或项目符号：\n1. 进入成果反馈页面\n2. 填写申请并上传附件';
+    const composerActions = mk('div', 'composer-actions');
+    const attachBtn = mk('button', 'attach-btn', { type: 'button', textContent: '📎', title: '上传附件（文本/PDF/图片）' });
     const sendBtn = mk('button', 'btn primary send-btn', { type: 'button', textContent: '发送', title: '发送' });
-    inputRow.appendChild(attachBtn);
+    composerActions.appendChild(attachBtn);
+    composerActions.appendChild(sendBtn);
     inputRow.appendChild(userInput);
-    inputRow.appendChild(sendBtn);
+    inputRow.appendChild(composerActions);
 
     // 输入行下方：两个模型标签选择器（文本 / OCR），切换立即持久化
     const tagRow = mk('div', 'tag-row');
@@ -1540,27 +1869,34 @@
     tagRow.appendChild(textTagField);
     tagRow.appendChild(ocrTagField);
 
+    const composer = mk('div', 'composer');
+    const inputResizeHandle = mk('div', 'input-resize-handle');
+    inputResizeHandle.title = '拖动调整输入框高度';
+    composer.appendChild(inputResizeHandle);
+    composer.appendChild(inputRow);
+    composer.appendChild(tagRow);
+
     shadow.appendChild(header);
     shadow.appendChild(settingsPanel);
     shadow.appendChild(skillLibrary);
     shadow.appendChild(connStatus);
     shadow.appendChild(attachArea);
     shadow.appendChild(messages);
-    shadow.appendChild(inputRow);
-    shadow.appendChild(tagRow);
+    shadow.appendChild(composer);
     shadow.appendChild(saveSkillModal);
     shadow.appendChild(confirmModal);
     shadow.appendChild(archiveModal);
+    shadow.appendChild(archiveSaveModal);
 
     return {
-      header, settingsBtn, closeBtn, clearBtn,
+      header, zoomBtn, settingsBtn, closeBtn, clearBtn,
       connLamp, connLampLabel,
       saveSkillBtn: saveSkillBtn, skillLibBtn: skillLibBtn,
-      settingsPanel, textProvidersList, ocrProvidersList,
-      addTextProviderBtn, addOcrProviderBtn,
-      systemPromptText, systemPromptOcr, maxSteps, llmCallGapSec, llmTimeoutRetry, llmErrorRetry,
-      pageQuietSec, suggestWaitSec, busyMaskEnabled, snapshotPiiMask, saveBtn, testBtn, settingsStatus,
-      downloadConfigBtn, uploadConfigBtn, uploadConfigInput,
+      settingsPanel, openGlobalSettingsBtn,
+      pageMaxSteps, pageLlmCallGapSec, pageLlmTimeoutRetry, pageLlmErrorRetry,
+      pagePageQuietSec, pageSuggestWaitSec,
+      pagePdfParseAll, pagePdfParsePagesMode, pagePdfParsePages, pagePdfParsePagesWrap, pagePdfParseAllHint,
+      pageBusyMaskEnabled, pageSnapshotPiiMask, pageRunSaveBtn, pageRunStatus,
       skillLibrary, skillSearch, skillFilterAll, skillFilterMatch, skillList,
       importSkillsBtn, exportSelectedBtn, exportAllBtn, importSkillsInput, skillLibStatus,
       saveSkillModal, saveSkillName, saveSkillUrl, saveSkillMatch,
@@ -1568,8 +1904,11 @@
       saveSkillCancel, saveSkillConfirm,
       confirmModal, confirmWarn, confirmCancel, confirmOk,
       archiveModal, archiveCancel, archiveClearKeepFiles, archiveClearAll, archiveSaveFull, archiveSaveUser,
+      archiveStatus,
+      archiveSaveModal, archiveRedactInput, archiveDocInput, archiveModelSelect,
+      archiveSaveStatus, archiveSaveBack, archiveRedactBtn, archiveSaveDocBtn,
       connStatus, attachArea, chips, fileInput, attachBtn,
-      messages, userInput, sendBtn,
+      messages, userInput, sendBtn, inputResizeHandle,
       textTagSelect, ocrTagSelect
     };
   }
@@ -1607,6 +1946,7 @@
 
   function trKey() { return 'tr:' + origin; }
   function fileKey() { return 'files:' + origin; }
+  function uiKey() { return 'ui:' + origin; }
   function canPersist() { return origin !== ''; }
 
   // ============ 会话持久化 ============
@@ -1641,7 +1981,7 @@
     // 在预算内逐个保存；一个大 PDF 不应连带清空其它小附件。
     let used = 0;
     const toStore = attachedFiles.map((f) => {
-      const meta = { key: f.key, name: f.name, type: f.type, size: f.size, kind: f.kind };
+      const meta = { key: f.key, name: f.name, type: f.type, size: f.size, kind: f.kind, contentHash: f.contentHash || '', aliases: Array.isArray(f.aliases) ? f.aliases.slice() : [], needsName: !!f.needsName };
       const len = f.dataUrl ? f.dataUrl.length : 0;
       if (len && used + len <= MAX_FILES_BYTES) {
         used += len;
@@ -1657,14 +1997,60 @@
     return new Date().toISOString();
   }
 
-  function addBubble(role, text) {
-    if (text == null || text === '') return;
+  function isSilentAttachStatus(text) {
+    const t = String(text || '');
+    return t.indexOf('附件命中缓存：') === 0 || t.indexOf('已在后台解析，复用进行中的任务') >= 0;
+  }
+
+  function insertTextAtCursor(ta, text) {
+    if (!ta) return;
+    const chunk = String(text || '');
+    if (!chunk) return;
+    const v = String(ta.value || '');
+    const start = typeof ta.selectionStart === 'number' ? ta.selectionStart : v.length;
+    const end = typeof ta.selectionEnd === 'number' ? ta.selectionEnd : start;
+    ta.value = v.slice(0, start) + chunk + v.slice(end);
+    const caret = start + chunk.length;
+    if (typeof ta.focus === 'function') ta.focus();
+    if (typeof ta.setSelectionRange === 'function') {
+      try { ta.setSelectionRange(caret, caret); } catch (e) {}
+    }
+  }
+
+  function renderUserBubble(text) {
+    const prompt = String(text || '');
+    const div = mk('div', 'bubble user');
+    const body = mk('div', 'bubble-text', { textContent: prompt });
+    const reloadBtn = mk('button', 'prompt-reload-btn', {
+      type: 'button',
+      textContent: '↻',
+      title: '将此提示插入输入框光标处'
+    });
+    reloadBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      insertTextAtCursor(els.userInput, prompt);
+    });
+    div.appendChild(body);
+    div.appendChild(reloadBtn);
+    els.messages.appendChild(div);
+    return div;
+  }
+
+  function renderRoleBubble(role, text) {
+    if (role === 'user') return renderUserBubble(text);
     const div = mk('div', 'bubble ' + role, { textContent: String(text) });
     els.messages.appendChild(div);
+    return div;
+  }
+
+  function addBubble(role, text) {
+    if (text == null || text === '') return;
+    if ((role === 'status' || role === 'system') && isSilentAttachStatus(text)) return;
+    renderRoleBubble(role, String(text));
     scrollDown();
     transcript.push({ role: role, text: String(text), at: nowIso() });
     persistTranscript();
-    return div;
   }
 
   function formatModelOutput(raw) {
@@ -1726,7 +2112,8 @@
       return div;
     }
     const wrap = mk('div', 'assistant-block');
-    const bubble = mk('div', 'bubble assistant', { textContent: summary || '模型返回' });
+    const bubble = mk('div', 'bubble assistant has-detail');
+    const body = mk('div', 'bubble-text', { textContent: summary || '模型返回' });
     const toggle = mk('button', 'assistant-detail-btn', { type: 'button', textContent: '详情' });
     toggle.setAttribute('aria-expanded', 'false');
     const detail = mk('div', 'assistant-output');
@@ -1734,8 +2121,9 @@
     const pre = mk('pre', null, { textContent: display });
     detail.appendChild(copyBtn);
     detail.appendChild(pre);
+    bubble.appendChild(body);
+    bubble.appendChild(toggle);
     wrap.appendChild(bubble);
-    wrap.appendChild(toggle);
     wrap.appendChild(detail);
     toggle.addEventListener('click', function () {
       const open = detail.classList.toggle('open');
@@ -1850,6 +2238,13 @@
     if (state.parseNote && !looksLikeLlmStatusLine(state.parseNote)) o.parseNote = String(state.parseNote).slice(0, 400);
     const preview = llmOutputPreview(state.output) || state.outputPreview;
     if (preview) o.outputPreview = String(preview).slice(0, 120);
+    if (state.prompt) o.prompt = String(state.prompt).slice(0, 4000);
+    if (state.requestShape && typeof state.requestShape === 'object') {
+      try {
+        const dumped = JSON.stringify(state.requestShape);
+        if (dumped && dumped.length < 20000) o.requestShape = JSON.parse(dumped);
+      } catch (e) {}
+    }
     return o;
   }
 
@@ -2001,6 +2396,7 @@
       for (const m of savedTr) {
         if (m && m.role && m.text != null) {
           if (isConnHintMessage(m)) { stripped = true; continue; }
+          if ((m.role === 'status' || m.role === 'system') && isSilentAttachStatus(m.text)) { stripped = true; continue; }
           if (m.role === 'llm-call') {
             const saved = (m.llm && typeof m.llm === 'object') ? m.llm : parseStoredLlmStatusLine(m.text);
             upsertLlmCallCard(Object.assign({
@@ -2023,9 +2419,7 @@
             });
             continue;
           }
-          const div = mk('div', 'bubble ' + m.role);
-          div.textContent = String(m.text);
-          els.messages.appendChild(div);
+          renderRoleBubble(m.role, m.text);
           transcript.push({ role: m.role, text: String(m.text), at: m.at || undefined });
         }
       }
@@ -2039,7 +2433,9 @@
       for (const f of savedFiles) {
         if (f && f.key) {
           const kind = f.kind || classifyFile(f.name, f.type);
-          attachedFiles.push({ key: f.key, name: f.name || '', type: f.type || '', size: f.size || 0, dataUrl: f.dataUrl || '', kind: kind });
+          const row = { key: f.key, name: f.name || '', type: f.type || '', size: f.size || 0, dataUrl: f.dataUrl || '', kind: kind, aliases: Array.isArray(f.aliases) ? f.aliases.filter(Boolean) : [], needsName: !!f.needsName };
+          row.contentHash = f.contentHash || (row.dataUrl ? fileContentHash(row) : '');
+          attachedFiles.push(row);
           const m = /^f(\d+)$/.exec(String(f.key));
           if (m) { const n = parseInt(m[1], 10); if (n > maxSeq) maxSeq = n; }
         }
@@ -2047,6 +2443,8 @@
     }
     fileSeq = maxSeq;
     renderChips();
+    queuePrepareAttach();
+    await loadPageUi();
   }
 
   // ============ 文件相关 ============
@@ -2063,7 +2461,8 @@
       const chip = mk('span', 'chip');
       const badge = mk('span', 'chip-badge ' + kindBadgeClass(kind), { textContent: kindBadge(kind), title: '类别：' + kind });
       const name = mk('span', 'chip-name', { textContent: f.name || '' });
-      name.title = f.name || '';
+      const aliasTitle = (Array.isArray(f.aliases) && f.aliases.length) ? ('；别名 ' + f.aliases.join('、')) : '';
+      name.title = (f.name || '') + aliasTitle + (f.needsName ? '（正在根据 OCR 命名）' : '');
       const size = mk('span', 'chip-size', {
         textContent: fileSizeLabel(f.size || 0) + (!f.dataUrl ? ' · 需重加' : ''),
         title: !f.dataUrl ? '附件内容未持久化，请移除后重新添加' : ''
@@ -2092,53 +2491,163 @@
     });
   }
 
-  async function handleFiles(fileList) {
+  async function handleFiles(fileList, opts) {
     const arr = Array.from(fileList || []);
+    const fromPaste = !!(opts && opts.fromPaste);
+    const addedForParse = [];
     for (const file of arr) {
       try {
         if ((file.size || 0) > MAX_SINGLE_FILE_BYTES) {
-          addBubble('error', '附件过大，单个文件最多 8MB：' + file.name);
+          addBubble('error', '附件过大，单个文件最多 8MB：' + (file.name || '粘贴图片'));
           continue;
         }
         const currentBytes = attachedFiles.reduce((sum, f) => sum + (f.size || 0), 0);
         if (currentBytes + (file.size || 0) > MAX_RUNTIME_FILES_BYTES) {
-          addBubble('error', '附件总大小最多 16MB；未添加：' + file.name);
+          addBubble('error', '附件总大小最多 16MB；未添加：' + (file.name || '粘贴图片'));
           continue;
         }
         const dataUrl = await readFileAsDataUrl(file);
-        const kind = classifyFile(file.name, file.type);
-        if (attachedFiles.some((f) => f.name === file.name && f.size === file.size && f.dataUrl === dataUrl)) {
-          addBubble('status', '已忽略重复附件：' + file.name);
+        const kind = fromPaste ? 'image' : classifyFile(file.name, file.type);
+        const contentHash = dataUrl ? fileContentHash({ name: file.name, size: file.size, dataUrl: dataUrl }) : '';
+        const same = attachedFiles.find((f) => {
+          if (contentHash && f.contentHash && f.contentHash === contentHash) return true;
+          return f.name === file.name && f.size === file.size && f.dataUrl === dataUrl;
+        });
+        if (same) {
+          if (fromPaste && same.needsName) {
+            queuePrepareAttach([same]);
+            addBubble('status', '正在用当前 OCR 模型重新识别粘贴图片…');
+            continue;
+          }
+          const prev = same.name;
+          if (file.name && file.name !== same.name) {
+            mergeFileAliases(same, file.name);
+            renderChips();
+            persistFiles();
+            addBubble('status', '已合并同内容附件别名：' + file.name + '（与「' + prev + '」内容相同，不重复解析）');
+          } else {
+            addBubble('status', same.name === file.name
+              ? ('已忽略重复附件：' + file.name)
+              : ('已忽略重复附件：' + file.name + '（与「' + same.name + '」内容相同）'));
+          }
           continue;
         }
-        attachedFiles.push({
-          // key 只是上传句柄；加入时间和随机段，避免刷新/新会话复用 f1 导致缓存串件
+        const ext = imageExtFromMime(file.type, file.name);
+        const displayName = fromPaste
+          ? uniqueAttachFileName('粘贴图片', ext, attachDisplayNames()).name
+          : (file.name || ('附件.' + ext));
+        const row = {
+          // key 只是上传句柄；身份以 contentHash 为准，同字节改名记入 aliases，不重跑解析
           key: 'f' + Date.now().toString(36) + '-' + (++fileSeq).toString(36) + '-' + Math.random().toString(36).slice(2, 8),
-          name: file.name,
-          type: file.type || '',
+          name: displayName,
+          type: file.type || (fromPaste ? 'image/' + (ext === 'jpg' ? 'jpeg' : ext) : ''),
           size: file.size || 0,
           dataUrl: dataUrl,
-          kind: kind
-        });
+          kind: kind,
+          contentHash: contentHash,
+          aliases: [],
+          needsName: fromPaste
+        };
+        attachedFiles.push(row);
+        if (kind === 'pdf' || kind === 'image') addedForParse.push(row);
       } catch (e) {
-        addBubble('error', '读取文件失败：' + file.name);
+        addBubble('error', '读取文件失败：' + (file && file.name ? file.name : '粘贴图片'));
       }
     }
     renderChips();
     persistFiles();
+    if (addedForParse.length) queuePrepareAttach(addedForParse);
     if (filesTotalBytes() > MAX_FILES_BYTES) {
       addBubble('status', '附件总体积超过本地持久化预算；当前页面可正常使用，但刷新后未保存内容的附件需要重新添加。');
     }
     els.fileInput.value = '';
   }
 
+  function filesForPrepare(list) {
+    return (list || attachedFiles).filter(function (f) {
+      if (!f || !f.dataUrl) return false;
+      const kind = f.kind || classifyFile(f.name, f.type);
+      return kind === 'pdf' || kind === 'image';
+    }).map(function (f) {
+      return {
+        key: f.key,
+        name: f.name,
+        type: f.type,
+        size: f.size,
+        kind: f.kind,
+        dataUrl: f.dataUrl,
+        contentHash: f.contentHash || '',
+        aliases: Array.isArray(f.aliases) ? f.aliases.slice() : [],
+        needsName: !!f.needsName
+      };
+    });
+  }
+
+  function queuePrepareAttach(list) {
+    const files = filesForPrepare(list);
+    if (!files.length) return;
+    if (!port || portDead) return;
+    try {
+      port.postMessage({ cmd: 'prepareAttach', files: files });
+    } catch (e) {}
+  }
+
+  function applyPastedAttachName(key, title) {
+    const row = attachedFiles.find(function (f) { return f && f.key === key; });
+    if (!row) return;
+    const stem = String(title || '').trim();
+    if (!stem) {
+      pastedAttachNameFailed({ reason: 'empty-title' });
+      return;
+    }
+    const ext = imageExtFromMime(row.type, row.name);
+    const u = uniqueAttachFileName(stem, ext, attachDisplayNames(row.key));
+    if (!u.ok) {
+      addBubble('error', '粘贴图片无法生成不重复的附件名（已加 5 次 new 后缀），请移除后重试。');
+      return;
+    }
+    mergeFileAliases(row, u.name);
+    row.needsName = false;
+    renderChips();
+    persistFiles();
+  }
+
+  function pastedAttachNameFailed(msg) {
+    const reason = String((msg && msg.reason) || '');
+    const err = String((msg && msg.error) || '').trim();
+    let text = '粘贴图片无法识别有效文字，请更换 OCR 模型后重新粘贴。';
+    if (reason === 'ocr-fail') {
+      text = '粘贴图片 OCR 失败，请更换 OCR 模型后重新粘贴。';
+      if (err) text += '（' + err + '）';
+    } else if (reason === 'ocr-empty') {
+      text = '粘贴图片未识别到有效文字，请更换 OCR 模型后重新粘贴。';
+    } else if (reason === 'text-fail' || reason === 'empty-title') {
+      text = '无法为粘贴图片生成附件名，请稍后重试或检查文本模型。';
+      if (err) text += '（' + err + '）';
+    }
+    addBubble('error', text);
+  }
+
+  function onInputPaste(e) {
+    if (els.attachBtn && els.attachBtn.disabled) return;
+    const dt = e.clipboardData;
+    if (!dt) return;
+    if (clipboardTextIsContent(clipboardPlainText(dt))) return;
+    const images = collectClipboardImages(dt);
+    if (!images.length) return;
+    e.preventDefault();
+    handleFiles(images, { fromPaste: true });
+  }
+
   // ============ 拖拽 ============
   function initDrag() {
     let drag = null;
     els.header.addEventListener('pointerdown', (e) => {
-      // 排除按钮区：标题、清空、设置、关闭
+      // 点到按钮内文字节点时 e.target 不是元素：用 contains，避免拖拽吞掉缩放 click。
+      if (els.zoomBtn && els.zoomBtn.contains(e.target)) return;
+      const t = e.target && e.target.nodeType === 3 ? e.target.parentElement : e.target;
       if (e.target === els.settingsBtn || e.target === els.closeBtn || e.target === els.clearBtn) return;
-      if (e.target.closest && e.target.closest('.header-right')) return;
+      if (t && t.closest && (t.closest('.header-right') || t.closest('.zoom-btn'))) return;
       const rect = host.getBoundingClientRect();
       drag = {
         startX: e.clientX,
@@ -2234,7 +2743,9 @@
 
     const files = attachedFiles.map((f) => ({
       key: f.key, name: f.name, type: f.type, size: f.size,
-      dataUrl: f.dataUrl, kind: f.kind
+      dataUrl: f.dataUrl, kind: f.kind, contentHash: f.contentHash || '',
+      aliases: Array.isArray(f.aliases) ? f.aliases.slice() : [],
+      needsName: !!f.needsName
     }));
     try {
       port.postMessage({ cmd: 'runTask', task: text, files: files });
@@ -2282,7 +2793,6 @@
       renderChips();
       if (canPersist()) storeSet({ [fileKey()]: [] });
     }
-    els.settingsStatus.textContent = '';
     addBubble('status', keepFiles ? '已清空对话历史（附件已保留）' : '已清空对话历史与附件');
   }
 
@@ -2330,6 +2840,19 @@
     });
   }
 
+  function nearestArchiveUserPrompt(items, index) {
+    for (let i = index - 1; i >= 0; i--) {
+      if (items[i] && items[i].role === 'user') return String(items[i].text || '').trim();
+    }
+    return '';
+  }
+
+  function formatArchiveRequestShape(shape) {
+    if (!shape) return '';
+    if (typeof shape === 'string') return shape;
+    try { return JSON.stringify(shape, null, 2); } catch (e) { return ''; }
+  }
+
   function buildArchiveMarkdown(items, userOnly) {
     const now = new Date();
     const lines = [
@@ -2337,20 +2860,42 @@
       '',
       '- 页面：' + (location.href || ''),
       '- 保存时间：' + formatLocalDateTime(now),
-      '- 范围：' + (userOnly ? '仅用户输入' : '全部（用户输入与系统响应）'),
+      '- 范围：' + (userOnly ? '仅用户输入' : '全部（用户 prompt、API 请求结构与系统响应）'),
       ''
     ];
+    if (!userOnly) {
+      lines.push('API 请求仅保存结构：字段值为解释词，不含网页快照、附件正文、图像 dataURL 等正文。');
+      lines.push('');
+    }
     if (!items.length) {
       lines.push('（当前没有可保存的内容）');
       return lines.join('\n');
     }
-    items.forEach((m) => {
+    items.forEach((m, idx) => {
       const t = formatMessageTime(m.at);
       const title = t ? (t + ' · ' + archiveRoleLabel(m.role)) : archiveRoleLabel(m.role);
       lines.push('## ' + title);
       lines.push('');
       const body = String(m.text || '').trim();
       lines.push(body || '（无文本）');
+      if (!userOnly && m.role === 'llm-call') {
+        const prompt = String((m.llm && m.llm.prompt) || nearestArchiveUserPrompt(items, idx) || '').trim();
+        if (prompt) {
+          lines.push('');
+          lines.push('### 输入 prompt');
+          lines.push('');
+          lines.push(prompt);
+        }
+        const shapeText = formatArchiveRequestShape(m.llm && m.llm.requestShape);
+        if (shapeText) {
+          lines.push('');
+          lines.push('### API 请求结构');
+          lines.push('');
+          lines.push('```json');
+          lines.push(shapeText);
+          lines.push('```');
+        }
+      }
       if (!userOnly && m.output) {
         lines.push('');
         lines.push('### 完整输出');
@@ -2364,30 +2909,206 @@
     return lines.join('\n');
   }
 
-  function saveConversation(userOnly) {
+  const DEFAULT_ARCHIVE_REDACT_HINT =
+    '检查附加的对话历史内容文本，将其中能定位到个人/私人/项目/单位的名称、地址、资金、ID号等等敏感属性的文字都使用类似<姓名>、<人员ID>、<单位名>、<项目ID>、<地址>等代替，目的是：保存后的对话历史记录文本可以安全放心的传送到任何大模型来解析，而不会引发隐私泄露。';
+
+  function setArchiveStatus(text, isErr) {
+    [els.archiveStatus, els.archiveSaveStatus].forEach((el) => {
+      if (!el) return;
+      el.textContent = text || '';
+      el.classList.toggle('err', !!isErr);
+    });
+  }
+
+  function setArchiveBusy(busy) {
+    archiveBusy = !!busy;
+    const btns = [
+      els.archiveClearKeepFiles, els.archiveClearAll, els.archiveSaveFull, els.archiveSaveUser,
+      els.archiveRedactBtn, els.archiveSaveDocBtn
+    ];
+    btns.forEach((b) => { if (b) b.disabled = archiveBusy; });
+    if (els.archiveRedactInput) els.archiveRedactInput.disabled = archiveBusy;
+    if (els.archiveDocInput) els.archiveDocInput.disabled = archiveBusy;
+    if (els.archiveModelSelect) els.archiveModelSelect.disabled = archiveBusy;
+  }
+
+  function defaultArchiveRedactHint() {
+    const cfg = currentConfig || {};
+    const defs = cfg.defaults || {};
+    if (typeof cfg.archiveRedactHint === 'string') return cfg.archiveRedactHint;
+    if (typeof defs.archiveRedactHint === 'string') return defs.archiveRedactHint;
+    return DEFAULT_ARCHIVE_REDACT_HINT;
+  }
+
+  function requestArchiveRedact(markdown, hint, tag) {
+    return new Promise((resolve, reject) => {
+      if (archiveRedactWait) {
+        reject(new Error('已有脱敏任务进行中'));
+        return;
+      }
+      archiveRedactWait = { resolve: resolve, reject: reject };
+      try {
+        port.postMessage({
+          cmd: 'redactArchive',
+          markdown: markdown,
+          hint: hint,
+          provider: tag && tag.provider || '',
+          model: tag && tag.model || ''
+        });
+      } catch (e) {
+        archiveRedactWait = null;
+        reject(e);
+      }
+    });
+  }
+
+  function requestSaveTextAs(text, filename) {
+    return new Promise((resolve) => {
+      archiveSaveWait = { resolve: resolve };
+      try {
+        port.postMessage({ cmd: 'saveTextAs', text: text, filename: filename });
+      } catch (e) {
+        archiveSaveWait = null;
+        resolve({ ok: false, error: String(e && e.message || e) });
+      }
+    });
+  }
+
+  async function tryShowSaveFilePicker(text, filename) {
+    if (typeof window.showSaveFilePicker !== 'function') return null;
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{ description: 'Markdown', accept: { 'text/markdown': ['.md'], 'text/plain': ['.md', '.txt'] } }]
+      });
+      const writable = await handle.createWritable();
+      await writable.write(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+      await writable.close();
+      return { ok: true, via: 'picker' };
+    } catch (e) {
+      if (e && e.name === 'AbortError') return { ok: false, cancelled: true };
+      return null;
+    }
+  }
+
+  async function saveArchiveFile(text, filename) {
+    const picked = await tryShowSaveFilePicker(text, filename);
+    if (picked) return picked;
+    const viaBg = await requestSaveTextAs(text, filename);
+    if (viaBg && viaBg.cancelled) return { ok: false, cancelled: true };
+    if (viaBg && viaBg.ok) return { ok: true, via: 'downloads' };
+    downloadTextFile(text, filename, 'text/markdown;charset=utf-8');
+    return { ok: true, via: 'anchor' };
+  }
+
+  async function saveConversation(userOnly) {
+    if (archiveBusy) return;
     const items = archiveItems(!!userOnly);
     if (!items.length) {
-      addBubble('status', userOnly ? '当前没有用户输入可保存' : '当前没有可保存的对话');
+      setArchiveStatus(userOnly ? '当前没有用户输入可保存' : '当前没有可保存的对话', true);
+      return;
+    }
+    const stamp = formatStampForFile(new Date());
+    const filename = (userOnly ? '对话存档-用户输入-' : '对话存档-完整-') + stamp + '.md';
+    archiveSaveMeta = { userOnly: !!userOnly, filename: filename };
+    if (els.archiveRedactInput) els.archiveRedactInput.value = defaultArchiveRedactHint();
+    if (els.archiveDocInput) els.archiveDocInput.value = buildArchiveMarkdown(items, !!userOnly);
+    if (els.archiveModelSelect && currentConfig) {
+      const selected = parseTagValue(els.textTagSelect && els.textTagSelect.value) || currentConfig.selectedTextTag;
+      buildTagOptions(els.archiveModelSelect, currentConfig.textProviders, selected);
+    }
+    setArchiveStatus('');
+    els.archiveModal.classList.add('hidden');
+    els.archiveSaveModal.classList.remove('hidden');
+  }
+
+  async function redactArchiveDocument() {
+    if (archiveBusy) return;
+    const hint = String(els.archiveRedactInput && els.archiveRedactInput.value || '').trim();
+    if (!hint) {
+      setArchiveStatus('脱敏指令为空，未调用大模型。可直接保存本文档，或填写指令后再脱敏。', true);
+      return;
+    }
+    if (!port || portDead) {
+      setArchiveStatus('未连接后台，无法脱敏', true);
+      return;
+    }
+    const markdown = String(els.archiveDocInput && els.archiveDocInput.value || '');
+    const tag = parseTagValue(els.archiveModelSelect && els.archiveModelSelect.value);
+    setArchiveBusy(true);
+    setArchiveStatus('正在按提示词调用文本模型脱敏…');
+    try {
+      const out = await requestArchiveRedact(markdown, hint, tag);
+      if (els.archiveDocInput) els.archiveDocInput.value = out;
+      setArchiveBusy(false);
+      setArchiveStatus('脱敏完成，可继续改指令再脱敏，或保存本文档。');
+    } catch (e) {
+      setArchiveBusy(false);
+      setArchiveStatus('脱敏失败：' + String(e && e.message || e), true);
+    }
+  }
+
+  async function saveArchiveDocument() {
+    if (archiveBusy) return;
+    const filename = (archiveSaveMeta && archiveSaveMeta.filename)
+      || ('对话存档-' + formatStampForFile(new Date()) + '.md');
+    const markdown = String(els.archiveDocInput && els.archiveDocInput.value || '');
+    setArchiveBusy(true);
+    const saved = await saveArchiveFile(markdown, filename);
+    setArchiveBusy(false);
+    if (saved && saved.cancelled) {
+      setArchiveStatus('已取消保存');
+      return;
+    }
+    if (!saved || !saved.ok) {
+      setArchiveStatus('保存失败' + (saved && saved.error ? '：' + saved.error : ''), true);
       return;
     }
     hideArchiveModal();
-    const stamp = formatStampForFile(new Date());
-    const filename = (userOnly ? '对话存档-用户输入-' : '对话存档-完整-') + stamp + '.md';
-    downloadTextFile(buildArchiveMarkdown(items, !!userOnly), filename, 'text/markdown;charset=utf-8');
     addBubble('status', '已保存：' + filename);
   }
 
+  function backToArchiveModal() {
+    if (archiveBusy) {
+      try { port.postMessage({ cmd: 'cancelArchiveRedact' }); } catch (e) {}
+      if (archiveRedactWait) {
+        const w = archiveRedactWait;
+        archiveRedactWait = null;
+        try { w.reject(new Error('已取消脱敏')); } catch (e) {}
+      }
+      setArchiveBusy(false);
+    }
+    setArchiveStatus('');
+    if (els.archiveSaveModal) els.archiveSaveModal.classList.add('hidden');
+    els.archiveModal.classList.remove('hidden');
+  }
+
   function hideArchiveModal() {
+    if (archiveBusy) {
+      try { port.postMessage({ cmd: 'cancelArchiveRedact' }); } catch (e) {}
+      if (archiveRedactWait) {
+        const w = archiveRedactWait;
+        archiveRedactWait = null;
+        try { w.reject(new Error('已取消脱敏')); } catch (e) {}
+      }
+      setArchiveBusy(false);
+    }
+    setArchiveStatus('');
+    archiveSaveMeta = null;
     els.archiveModal.classList.add('hidden');
+    if (els.archiveSaveModal) els.archiveSaveModal.classList.add('hidden');
   }
 
   function openArchiveModal() {
     els.settingsPanel.classList.add('hidden');
     els.skillLibrary.classList.add('hidden');
+    setArchiveStatus('');
+    if (els.archiveSaveModal) els.archiveSaveModal.classList.add('hidden');
     els.archiveModal.classList.remove('hidden');
   }
 
   // ============ 配置 ============
+  // 全局配置在独立标签页 settings.js；后台 exportPayload 白名单字段为权威。
   function clampInt(n, min, max, fallback) {
     const v = Number(n);
     if (!Number.isFinite(v)) return fallback;
@@ -2407,54 +3128,226 @@
     return String(Math.round(v) / 1000);
   }
 
-  function collectConfig() {
+  function syncPagePdfParseUi() {
+    const pages = !!(els.pagePdfParsePagesMode && els.pagePdfParsePagesMode.checked);
+    if (els.pagePdfParsePagesWrap) els.pagePdfParsePagesWrap.hidden = !pages;
+    if (els.pagePdfParseAllHint) els.pagePdfParseAllHint.hidden = pages;
+  }
+
+  function globalRuntimeFromConfig(cfg) {
+    const src = cfg || {};
     return {
-      textProviders: collectProviders(els.textProvidersList, 'text'),
-      ocrProviders: collectProviders(els.ocrProvidersList, 'ocr'),
-      systemPromptText: els.systemPromptText.value,
-      systemPromptOcr: els.systemPromptOcr.value,
-      maxSteps: clampInt(els.maxSteps.value, 1, 100, 15),
-      llmCallGapMs: secInputToMs(els.llmCallGapSec, 0, 10000, 500),
-      llmTimeoutRetry: clampInt(els.llmTimeoutRetry && els.llmTimeoutRetry.value, 0, 3, 1),
-      llmErrorRetry: clampInt(els.llmErrorRetry && els.llmErrorRetry.value, 0, 5, 2),
-      pageQuietMs: secInputToMs(els.pageQuietSec, 1000, 15000, 4000),
-      suggestWaitMs: secInputToMs(els.suggestWaitSec, 0, 5000, 1400),
-      busyMaskEnabled: !(els.busyMaskEnabled) || !!els.busyMaskEnabled.checked,
-      snapshotPiiMask: !!(els.snapshotPiiMask && els.snapshotPiiMask.checked),
-      // 标签由下拉选择驱动（selectTag 实时持久化），此处带回当前选择以备保存
-      selectedTextTag: currentConfig ? currentConfig.selectedTextTag : null,
-      selectedOcrTag: currentConfig ? currentConfig.selectedOcrTag : null
+      maxSteps: clampInt(src.maxSteps, 1, 100, 60),
+      llmCallGapMs: clampInt(src.llmCallGapMs, 0, 10000, 500),
+      llmTimeoutRetry: clampInt(src.llmTimeoutRetry, 0, 3, 2),
+      llmErrorRetry: clampInt(src.llmErrorRetry, 0, 5, 2),
+      pageQuietMs: clampInt(src.pageQuietMs, 1000, 15000, 3000),
+      suggestWaitMs: clampInt(src.suggestWaitMs, 0, 5000, 1000),
+      pdfParseMode: src.pdfParseMode === 'pages' ? 'pages' : 'all',
+      pdfParsePages: String(src.pdfParsePages == null ? '1,2,-1' : src.pdfParsePages),
+      busyMaskEnabled: src.busyMaskEnabled === true,
+      snapshotPiiMask: src.snapshotPiiMask === true
     };
   }
 
-  function fillSettings(cfg) {
+  function fillPageRuntimeForm() {
+    const src = Object.assign({}, globalRuntimeFromConfig(currentConfig), currentPageConfig || {});
+    if (els.pageMaxSteps) els.pageMaxSteps.value = String(src.maxSteps);
+    if (els.pageLlmCallGapSec) els.pageLlmCallGapSec.value = msToSecValue(src.llmCallGapMs, 500);
+    if (els.pageLlmTimeoutRetry) els.pageLlmTimeoutRetry.value = String(src.llmTimeoutRetry);
+    if (els.pageLlmErrorRetry) els.pageLlmErrorRetry.value = String(src.llmErrorRetry);
+    if (els.pagePageQuietSec) els.pagePageQuietSec.value = msToSecValue(src.pageQuietMs, 3000);
+    if (els.pageSuggestWaitSec) els.pageSuggestWaitSec.value = msToSecValue(src.suggestWaitMs, 1000);
+    const mode = src.pdfParseMode === 'pages' ? 'pages' : 'all';
+    if (els.pagePdfParseAll) els.pagePdfParseAll.checked = mode === 'all';
+    if (els.pagePdfParsePagesMode) els.pagePdfParsePagesMode.checked = mode === 'pages';
+    if (els.pagePdfParsePages) els.pagePdfParsePages.value = src.pdfParsePages != null ? String(src.pdfParsePages) : '1,2,-1';
+    syncPagePdfParseUi();
+    if (els.pageBusyMaskEnabled) els.pageBusyMaskEnabled.checked = src.busyMaskEnabled === true;
+    if (els.pageSnapshotPiiMask) els.pageSnapshotPiiMask.checked = src.snapshotPiiMask === true;
+  }
+
+  function collectPageRuntimeConfig() {
+    return {
+      maxSteps: clampInt(els.pageMaxSteps && els.pageMaxSteps.value, 1, 100, 60),
+      llmCallGapMs: secInputToMs(els.pageLlmCallGapSec, 0, 10000, 500),
+      llmTimeoutRetry: clampInt(els.pageLlmTimeoutRetry && els.pageLlmTimeoutRetry.value, 0, 3, 2),
+      llmErrorRetry: clampInt(els.pageLlmErrorRetry && els.pageLlmErrorRetry.value, 0, 5, 2),
+      pageQuietMs: secInputToMs(els.pagePageQuietSec, 1000, 15000, 3000),
+      suggestWaitMs: secInputToMs(els.pageSuggestWaitSec, 0, 5000, 1000),
+      pdfParseMode: (els.pagePdfParsePagesMode && els.pagePdfParsePagesMode.checked) ? 'pages' : 'all',
+      pdfParsePages: String(els.pagePdfParsePages && els.pagePdfParsePages.value || '').trim() || '1,2,-1',
+      busyMaskEnabled: !!(els.pageBusyMaskEnabled && els.pageBusyMaskEnabled.checked),
+      snapshotPiiMask: !!(els.pageSnapshotPiiMask && els.pageSnapshotPiiMask.checked)
+    };
+  }
+
+  function setPageRunStatus(text, kind) {
+    if (!els.pageRunStatus) return;
+    els.pageRunStatus.textContent = text || '';
+    els.pageRunStatus.classList.toggle('err', kind === 'err');
+    els.pageRunStatus.classList.toggle('ok', kind === 'ok');
+  }
+
+  function savePageRuntimeConfig() {
+    if (!port || portDead) {
+      setPageRunStatus('未连接后台', 'err');
+      return;
+    }
+    if (!origin) {
+      setPageRunStatus('当前页没有可用的网站标识', 'err');
+      return;
+    }
+    try {
+      port.postMessage({ cmd: 'savePageConfig', config: collectPageRuntimeConfig() });
+      setPageRunStatus('正在保存…');
+    } catch (e) {
+      setPageRunStatus('保存失败：' + String(e && e.message || e), 'err');
+    }
+  }
+
+  function clampHostPosition() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const rect = host.getBoundingClientRect();
+    let left = rect.left;
+    let top = rect.top;
+    const pw = rect.width;
+    const ph = rect.height;
+    left = Math.max(-20, Math.min(vw - pw + 20, left));
+    top = Math.max(-20, Math.min(vh - ph + 20, top));
+    host.style.right = 'auto';
+    host.style.left = left + 'px';
+    host.style.top = top + 'px';
+  }
+
+  function panelScaleFrac(prop, fallback) {
+    const n = parseFloat(host.style.getPropertyValue(prop));
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.max(0.3, Math.min(1, n));
+  }
+
+  function applyPanelSize() {
+    const prev = host.getBoundingClientRect();
+    const anchorRight = prev.right;
+    const anchorTop = prev.top;
+    if (panelExpanded) {
+      host.classList.add('expanded');
+      const sx = panelScaleFrac('--wpa-scale-x', 0.7);
+      const sy = panelScaleFrac('--wpa-scale-y', 0.7);
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const w = Math.max(280, Math.round(Math.min(vw * sx, vw - 16)));
+      const h = Math.max(200, Math.round(Math.min(vh * sy, vh - 16)));
+      host.style.width = w + 'px';
+      host.style.height = h + 'px';
+      host.style.maxHeight = Math.max(200, vh - 16) + 'px';
+    } else {
+      host.classList.remove('expanded');
+      host.style.width = '';
+      host.style.height = '';
+      host.style.maxHeight = '';
+    }
+    if (els.zoomBtn) {
+      els.zoomBtn.textContent = panelExpanded ? '⤡' : '⛶';
+      els.zoomBtn.title = panelExpanded ? '还原面板大小' : '放大面板至网页比例';
+    }
+    const next = host.getBoundingClientRect();
+    if (prev.width > 1 && prev.height > 1) {
+      host.style.right = 'auto';
+      host.style.left = Math.round(anchorRight - next.width) + 'px';
+      host.style.top = Math.round(anchorTop) + 'px';
+    }
+    if (panelExpanded || host.style.left) clampHostPosition();
+    syncOverlayTop();
+  }
+
+  function syncOverlayTop() {
+    const h = (els.header && els.header.offsetHeight) || 56;
+    host.style.setProperty('--wpa-header-h', Math.round(h) + 'px');
+  }
+
+  function onWindowResize() {
+    if (host.hidden) return;
+    if (panelExpanded) applyPanelSize();
+    else clampHostPosition();
+    syncOverlayTop();
+  }
+
+  function applyPanelChrome(cfg) {
+    const opacity = clampInt(cfg && cfg.uiOpacity, 20, 100, 100);
+    const sx = clampInt(cfg && cfg.panelScaleX, 30, 100, 70);
+    const sy = clampInt(cfg && cfg.panelScaleY, 30, 100, 70);
+    host.style.setProperty('--wpa-alpha', String(opacity / 100));
+    host.style.setProperty('--wpa-scale-x', String(sx / 100));
+    host.style.setProperty('--wpa-scale-y', String(sy / 100));
+    applyPanelSize();
+  }
+
+  function persistPageUi() {
+    if (!canPersist()) return;
+    const h = parseInt(els.userInput.style.height, 10);
+    storeSet({
+      [uiKey()]: {
+        inputHeight: Number.isFinite(h) ? h : 0
+      }
+    });
+  }
+
+  async function loadPageUi() {
+    panelExpanded = false;
+    if (!canPersist()) {
+      applyPanelSize();
+      return;
+    }
+    const obj = await storeGet(uiKey());
+    const ui = obj[uiKey()] || {};
+    const h = clampInt(ui.inputHeight, INPUT_H_MIN, INPUT_H_MAX, 0);
+    if (h) els.userInput.style.height = h + 'px';
+    else els.userInput.style.height = INPUT_H_DEFAULT + 'px';
+    applyPanelSize();
+  }
+
+  function togglePanelZoom() {
+    panelExpanded = !panelExpanded;
+    applyPanelSize();
+  }
+
+  function initInputResize() {
+    const handle = els.inputResizeHandle;
+    if (!handle) return;
+    let drag = null;
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.button != null && e.button !== 0) return;
+      const startH = els.userInput.getBoundingClientRect().height;
+      drag = { startY: e.clientY, startH: startH };
+      handle.classList.add('dragging');
+      handle.setPointerCapture && handle.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    handle.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const next = clampInt(drag.startH - (e.clientY - drag.startY), INPUT_H_MIN, INPUT_H_MAX, INPUT_H_DEFAULT);
+      els.userInput.style.height = next + 'px';
+    });
+    const endDrag = (e) => {
+      if (!drag) return;
+      handle.classList.remove('dragging');
+      drag = null;
+      persistPageUi();
+      try { handle.releasePointerCapture && handle.releasePointerCapture(e.pointerId); } catch (err) {}
+    };
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+  }
+
+  function applyConfig(cfg) {
     if (!cfg) return;
-    // providers
-    els.textProvidersList.textContent = '';
-    els.ocrProvidersList.textContent = '';
-    const textProviders = Array.isArray(cfg.textProviders) ? cfg.textProviders : [];
-    const ocrProviders = Array.isArray(cfg.ocrProviders) ? cfg.ocrProviders : [];
-    if (textProviders.length === 0) addProviderRow(els.textProvidersList, { name: '默认', providerType: 'Standard-TXT' }, 'text');
-    textProviders.forEach((p) => addProviderRow(els.textProvidersList, p, 'text'));
-    ocrProviders.forEach((p) => addProviderRow(els.ocrProvidersList, p, 'ocr'));
-
-    // system prompts：空值用 defaults 预填
-    const defs = cfg.defaults || {};
-    els.systemPromptText.value = cfg.systemPromptText != null ? cfg.systemPromptText : (defs.systemPromptText || '');
-    els.systemPromptOcr.value = cfg.systemPromptOcr != null ? cfg.systemPromptOcr : (defs.systemPromptOcr || '');
-
-    if (cfg.maxSteps != null) els.maxSteps.value = cfg.maxSteps;
-    if (els.llmCallGapSec) els.llmCallGapSec.value = msToSecValue(cfg.llmCallGapMs, 500);
-    if (els.llmTimeoutRetry && cfg.llmTimeoutRetry != null) els.llmTimeoutRetry.value = cfg.llmTimeoutRetry;
-    if (els.llmErrorRetry && cfg.llmErrorRetry != null) els.llmErrorRetry.value = cfg.llmErrorRetry;
-    if (els.pageQuietSec) els.pageQuietSec.value = msToSecValue(cfg.pageQuietMs, 4000);
-    if (els.suggestWaitSec) els.suggestWaitSec.value = msToSecValue(cfg.suggestWaitMs, 1400);
-    if (els.busyMaskEnabled) els.busyMaskEnabled.checked = cfg.busyMaskEnabled !== false;
-    if (els.snapshotPiiMask) els.snapshotPiiMask.checked = cfg.snapshotPiiMask === true;
-
-    // 保存最新配置并重建标签下拉
     currentConfig = cfg;
     rebuildTagSelectors(cfg);
+    applyPanelChrome(cfg);
+    fillPageRuntimeForm();
   }
 
   // 重建某类标签下拉选项（provider名 / 模型ID），并选中当前 selectedXxxTag
@@ -2522,35 +3415,6 @@
     downloadTextFile(json, filename, 'application/json');
   }
 
-  function exportConfig() {
-    if (!port || portDead) {
-      els.settingsStatus.textContent = '导出失败：未连接后台';
-      return;
-    }
-    try { port.postMessage({ cmd: 'exportConfig' }); } catch (e) {
-      els.settingsStatus.textContent = '导出失败：' + String(e && e.message || e);
-    }
-  }
-
-  async function importConfig(file) {
-    if (!file) return;
-    let text;
-    try { text = await file.text(); } catch (e) {
-      els.settingsStatus.textContent = '读取文件失败：' + String(e && e.message || e);
-      els.uploadConfigInput.value = '';
-      return;
-    }
-    if (!port || portDead) {
-      els.settingsStatus.textContent = '导入失败：未连接后台';
-      els.uploadConfigInput.value = '';
-      return;
-    }
-    try { port.postMessage({ cmd: 'importConfig', raw: String(text) }); } catch (e) {
-      els.settingsStatus.textContent = '导入失败：' + String(e && e.message || e);
-    }
-    els.uploadConfigInput.value = '';
-  }
-
   // ============ WEB-SKILL ============
   function collectUserPrompt() {
     return transcript
@@ -2574,6 +3438,7 @@
     if (open) {
       els.settingsPanel.classList.add('hidden');
       els.skillLibrary.classList.remove('hidden');
+      syncOverlayTop();
       requestSkillList();
     } else {
       els.skillLibrary.classList.add('hidden');
@@ -2893,7 +3758,10 @@
         await loadPersisted();
       }
       setConnState('connected');
-      if (wasReconnecting) upsertConnHint(CONN_HINT_CONNECTED, 'system');
+      if (wasReconnecting) {
+        upsertConnHint(CONN_HINT_CONNECTED, 'system');
+        queuePrepareAttach();
+      }
       // SW 重启后 visibleTabs 会丢失，若面板可见则重新上报
       if (!host.hidden) reportVisibility(true);
       if (runningBeforeDisconnect && !msg.taskRunning) {
@@ -2911,7 +3779,9 @@
   }
 
   function handleConfig(msg) {
-    if (msg.config) fillSettings(msg.config);
+    if (msg.pageConfig && typeof msg.pageConfig === 'object') currentPageConfig = msg.pageConfig;
+    if (msg.config) applyConfig(msg.config);
+    else fillPageRuntimeForm();
   }
 
   function handleAsk(msg) {
@@ -2953,32 +3823,63 @@
           break;
         case 'config': handleConfig(msg); break;
         case 'configSaved':
-          els.settingsStatus.textContent = msg.ok ? '已保存 ✓' : '保存失败';
+          break;
+        case 'pageConfig':
+          if (msg.config && typeof msg.config === 'object') {
+            currentPageConfig = msg.config;
+            fillPageRuntimeForm();
+          }
+          break;
+        case 'pageConfigSaved':
+          if (msg.ok) {
+            if (msg.config && typeof msg.config === 'object') currentPageConfig = msg.config;
+            fillPageRuntimeForm();
+            setPageRunStatus('已保存 ✓', 'ok');
+          } else {
+            setPageRunStatus('保存失败' + (msg.error ? '：' + msg.error : ''), 'err');
+          }
           break;
         case 'configExport':
-          if (typeof msg.json === 'string') {
-            downloadJsonText(msg.json, 'assistant-config.json');
-            els.settingsStatus.textContent = '已导出配置 JSON ✓（含完整 provider/密钥/提示词，可重装后导入恢复）';
-          }
           break;
         case 'configImported':
-          if (msg.ok) {
-            els.settingsStatus.textContent = '已导入并保存配置 ✓';
-            addBubble('status', '已导入配置并生效');
-          } else {
-            const em = '导入配置失败：' + (msg.error || '文件无效');
-            els.settingsStatus.textContent = em;
-            addBubble('error', em);
-          }
+          if (msg.ok) addBubble('status', '已导入配置并生效');
+          else addBubble('error', '导入配置失败：' + (msg.error || '文件无效'));
           break;
         case 'tagSaved':
           // 标签已持久化；无需额外动作（下拉已即时反映）
           break;
         case 'testResult':
-          els.settingsStatus.textContent = msg.message != null ? String(msg.message) : (msg.ok ? '连接成功' : '连接失败');
+          break;
+        case 'archiveRedactProgress':
+          setArchiveStatus(msg.text != null ? String(msg.text) : '');
+          break;
+        case 'archiveRedact':
+          if (archiveRedactWait) {
+            const w = archiveRedactWait;
+            archiveRedactWait = null;
+            if (msg.ok) w.resolve(msg.markdown);
+            else w.reject(new Error(msg.error || '脱敏失败'));
+          }
+          break;
+        case 'archiveSaved':
+          if (archiveSaveWait) {
+            const w = archiveSaveWait;
+            archiveSaveWait = null;
+            w.resolve({
+              ok: !!msg.ok,
+              error: msg.error || '',
+              cancelled: !!msg.cancelled || /cancel/i.test(String(msg.error || ''))
+            });
+          }
           break;
         case 'status':
           addBubble(msg.kind === 'error' ? 'error' : 'status', msg.text != null ? String(msg.text) : '');
+          break;
+        case 'attachNameReady':
+          applyPastedAttachName(msg.key, msg.title);
+          break;
+        case 'attachNameFailed':
+          pastedAttachNameFailed(msg);
           break;
         case 'llmCall':
           upsertLlmCallCard(msg);
@@ -3183,7 +4084,25 @@
     els.settingsBtn.addEventListener('click', () => {
       const opening = els.settingsPanel.classList.contains('hidden');
       els.settingsPanel.classList.toggle('hidden');
-      if (opening) els.skillLibrary.classList.add('hidden');
+      if (opening) {
+        els.skillLibrary.classList.add('hidden');
+        syncOverlayTop();
+      }
+    });
+    els.openGlobalSettingsBtn.addEventListener('click', () => {
+      els.settingsPanel.classList.add('hidden');
+      try { port.postMessage({ cmd: 'openGlobalSettings' }); } catch (e) {}
+    });
+    if (els.pagePdfParseAll) els.pagePdfParseAll.addEventListener('change', syncPagePdfParseUi);
+    if (els.pagePdfParsePagesMode) els.pagePdfParsePagesMode.addEventListener('change', syncPagePdfParseUi);
+    if (els.pageRunSaveBtn) els.pageRunSaveBtn.addEventListener('click', () => savePageRuntimeConfig());
+    els.zoomBtn.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+    });
+    els.zoomBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      togglePanelZoom();
     });
     els.closeBtn.addEventListener('click', () => {
       hidePanel();
@@ -3214,11 +4133,19 @@
     els.archiveCancel.addEventListener('click', () => hideArchiveModal());
     els.archiveClearKeepFiles.addEventListener('click', () => clearConversation(true));
     els.archiveClearAll.addEventListener('click', () => clearConversation(false));
-    els.archiveSaveFull.addEventListener('click', () => saveConversation(false));
-    els.archiveSaveUser.addEventListener('click', () => saveConversation(true));
+    els.archiveSaveFull.addEventListener('click', () => { saveConversation(false); });
+    els.archiveSaveUser.addEventListener('click', () => { saveConversation(true); });
+    if (els.archiveSaveBack) els.archiveSaveBack.addEventListener('click', () => backToArchiveModal());
+    if (els.archiveRedactBtn) els.archiveRedactBtn.addEventListener('click', () => { redactArchiveDocument(); });
+    if (els.archiveSaveDocBtn) els.archiveSaveDocBtn.addEventListener('click', () => { saveArchiveDocument(); });
     els.archiveModal.addEventListener('click', (e) => {
       if (e.target === els.archiveModal) hideArchiveModal();
     });
+    if (els.archiveSaveModal) {
+      els.archiveSaveModal.addEventListener('click', (e) => {
+        if (e.target === els.archiveSaveModal && !archiveBusy) backToArchiveModal();
+      });
+    }
     els.skillSearch.addEventListener('input', () => renderSkillList());
     els.skillFilterAll.addEventListener('click', () => setSkillFilter('all'));
     els.skillFilterMatch.addEventListener('click', () => setSkillFilter('match'));
@@ -3244,30 +4171,9 @@
       }
       exportSkills(ids);
     });
-    els.saveBtn.addEventListener('click', () => {
-      try {
-        port.postMessage({ cmd: 'saveConfig', config: collectConfig() });
-      } catch (e) {}
-    });
-    els.testBtn.addEventListener('click', () => {
-      els.settingsStatus.textContent = '测试中…';
-      try {
-        port.postMessage({ cmd: 'testLLM', config: collectConfig() });
-      } catch (e) {
-        els.settingsStatus.textContent = '测试失败：未连接';
-      }
-    });
-    els.addTextProviderBtn.addEventListener('click', () => addProviderRow(els.textProvidersList, { name: 'provider', providerType: 'Standard-TXT' }, 'text'));
-    els.addOcrProviderBtn.addEventListener('click', () => addProviderRow(els.ocrProvidersList, { name: 'OCR', providerType: 'Standard-IMG' }, 'ocr'));
-    els.downloadConfigBtn.addEventListener('click', () => exportConfig());
-    els.uploadConfigBtn.addEventListener('click', () => els.uploadConfigInput.click());
-    els.uploadConfigInput.addEventListener('change', () => {
-      if (els.uploadConfigInput.files && els.uploadConfigInput.files[0]) {
-        importConfig(els.uploadConfigInput.files[0]);
-      }
-    });
     els.attachBtn.addEventListener('click', () => els.fileInput.click());
     els.fileInput.addEventListener('change', () => handleFiles(els.fileInput.files));
+    els.userInput.addEventListener('paste', onInputPaste);
     // 标签下拉切换：立即持久化，对下一次调用生效
     els.textTagSelect.addEventListener('change', () => {
       const tag = parseTagValue(els.textTagSelect.value);
@@ -3293,6 +4199,8 @@
       }
     });
     initDrag();
+    initInputResize();
+    window.addEventListener('resize', onWindowResize);
 
     // chrome.runtime.onMessage：仅响应 showPanel，其余忽略
     try {
@@ -3336,6 +4244,7 @@
     }
     try { window.removeEventListener('pageshow', onPageShow); } catch (e) {}
     try { window.removeEventListener('pagehide', onPageHide); } catch (e) {}
+    try { window.removeEventListener('resize', onWindowResize); } catch (e) {}
     try {
       if (chrome && chrome.runtime && chrome.runtime.onMessage) {
         chrome.runtime.onMessage.removeListener(onRuntimeShowPanel);

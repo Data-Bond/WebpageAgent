@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>网页智能助手 · 全局配置</title>
+  <style>
+    :root {
+      --bg: #eef1f8;
+      --card: #ffffff;
+      --text: #23283a;
+      --muted: #5a6072;
+      --line: #e6e8f0;
+      --accent: #4f7cff;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .page {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 24px 20px 80px;
+    }
+    .page-header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: 0.3px;
+    }
+    .sub {
+      color: var(--muted);
+      margin-top: 4px;
+      font-size: 12px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: 0 8px 24px rgba(35, 40, 58, 0.05);
+    }
+    .heading {
+      font-size: 13px;
+      font-weight: 700;
+      color: #4a5270;
+      margin-bottom: 10px;
+    }
+    label.field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    input[type="text"],
+    input[type="password"],
+    input[type="number"],
+    input[type="range"],
+    select,
+    textarea {
+      border: 1px solid #d8dbe7;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+      outline: none;
+      background: #fbfcfe;
+      font-family: inherit;
+      width: 100%;
+    }
+    textarea {
+      min-height: 72px;
+      resize: vertical;
+      line-height: 1.45;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.15);
+    }
+    .row-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    @media (max-width: 640px) {
+      .row-2 { grid-template-columns: 1fr; }
+    }
+    .check-row {
+      display: flex !important;
+      flex-direction: row !important;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .check-row input { width: auto; margin: 0; }
+    .hint {
+      font-size: 11px;
+      color: #8a90a0;
+      line-height: 1.45;
+      margin: 4px 0 8px;
+    }
+    .io-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .btn {
+      border: 1px solid #d8dbe7;
+      background: #fff;
+      color: #2b2f3a;
+      border-radius: 8px;
+      padding: 7px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn:hover { background: #f6f7fb; }
+    .btn.primary {
+      background: linear-gradient(135deg, #4f7cff 0%, #6a5cff 100%);
+      border: none;
+      color: #fff;
+      font-weight: 600;
+    }
+    .btn.danger {
+      color: #b42318;
+      border-color: #f3c4c0;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      position: sticky;
+      bottom: 0;
+      background: linear-gradient(180deg, rgba(238,241,248,0.2), var(--bg) 30%);
+      padding: 12px 0 8px;
+    }
+    .status {
+      min-height: 20px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .status.ok { color: #1f7a4d; }
+    .status.err { color: #b42318; }
+    .provider-list { display: flex; flex-direction: column; gap: 8px; }
+    .provider-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 10px;
+      border: 1px solid #e8ebf5;
+      border-radius: 10px;
+      background: #fafbff;
+    }
+    .provider-field {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .range-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .range-row input[type="range"] { flex: 1; padding: 0; }
+    .range-val {
+      min-width: 52px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="page-header">
+      <div>
+        <h1>全局配置</h1>
+        <div class="sub">对所有网页上的插件生效。对话记录、附件与输入框高度仍按当前网站单独保存。</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="heading">配置导入 / 导出</div>
+      <div class="hint">导出当前配置为 JSON 备份，或上传 JSON 恢复配置（重装插件后无需重填 API）。导出含白名单字段（含运行参数）。</div>
+      <div class="io-bar">
+        <button type="button" class="btn" id="downloadConfigBtn">⬇ 下载配置</button>
+        <button type="button" class="btn" id="uploadConfigBtn">⬆ 上传配置</button>
+        <input id="uploadConfigInput" type="file" accept=".json,application/json" hidden>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="heading">插件界面</div>
+      <label class="field">
+        插件界面透明度
+        <div class="range-row">
+          <input id="uiOpacity" type="range" min="20" max="100" step="1" value="100">
+          <span class="range-val" id="uiOpacityVal">100%</span>
+        </div>
+      </label>
+      <div class="hint">数值越小越透明，可透过面板看到网页。按钮与文字保持清晰。</div>
+      <div class="row-2">
+        <label class="field">
+          放大后横向比例（%）
+          <input id="panelScaleX" type="number" min="30" max="100" step="1" value="70">
+        </label>
+        <label class="field">
+          放大后纵向比例（%）
+          <input id="panelScaleY" type="number" min="30" max="100" step="1" value="70">
+        </label>
+      </div>
+      <div class="hint">标题栏缩放按钮会把面板放到当前网页可视区域的该比例。附件与发送按钮保持原像素大小。</div>
+    </div>
+
+    <div class="card run-settings">
+      <div class="heading">运行参数（全局）</div>
+      <div class="row-2">
+        <label class="field">最大步数<input id="maxSteps" type="number" min="1" max="100" step="1" value="60"></label>
+        <label class="field">模型调用间隔（秒）<input id="llmCallGapSec" type="number" min="0" max="10" step="0.1" value="0.5" title="两次文本模型调用之间的最短间隔，避免连续请求被接口限流"></label>
+        <label class="field">超时重试次数<input id="llmTimeoutRetry" type="number" min="0" max="3" step="1" value="2"></label>
+        <label class="field">瞬时错误重试次数<input id="llmErrorRetry" type="number" min="0" max="5" step="1" value="2"></label>
+        <label class="field">页面稳定等待上限（秒）<input id="pageQuietSec" type="number" min="1" max="15" step="0.5" value="3" title="操作后等待页面 DOM 稳定的上限"></label>
+        <label class="field">填写后等待建议层（秒）<input id="suggestWaitSec" type="number" min="0" max="5" step="0.1" value="1" title="填写后等待搜索建议/选项卡片出现的上限"></label>
+      </div>
+      <div class="pdf-parse-label">PDF 解析范围（本地 PDFium；MinerU 仍提交整份）</div>
+      <label class="check-row"><input id="pdfParseAll" type="radio" name="wpaPdfParseMode" value="all" checked>解析全部 PDF 页</label>
+      <label class="check-row"><input id="pdfParsePagesMode" type="radio" name="wpaPdfParseMode" value="pages">按页码标号来解析</label>
+      <div id="pdfParsePagesWrap" hidden>
+        <label class="field">页码<input id="pdfParsePages" type="text" placeholder="例如 1,2,-1" title="多个页码用逗号分隔；负数表示从末尾倒数，-1 为最后一页（倒数第一页）"></label>
+        <div class="hint">「-1」表示最后一页，也称为倒数第一页。可填多个数字（如 1,2,-1），OCR 也只识别这些页。</div>
+      </div>
+      <div class="hint" id="pdfParseAllHint">解析全部页会对每一页做文本提取，无文本层的页会渲染后 OCR，大文件可能较慢。</div>
+      <label class="check-row"><input id="busyMaskEnabled" type="checkbox">操作时显示半透明遮罩</label>
+      <label class="check-row"><input id="snapshotPiiMask" type="checkbox">快照脱敏（邮箱 / 手机 / 证件号；默认关）</label>
+    </div>
+
+    <div class="card">
+      <div class="heading">存档脱敏指令</div>
+      <div class="hint">保存对话时可用这段话作为发给文本模型的用户脱敏指令。此处改的是默认文案；每次保存仍可再改，并可多次迭代脱敏。</div>
+      <label class="field">默认脱敏指令
+        <textarea id="archiveRedactHint" rows="5" maxlength="2000"></textarea>
+      </label>
+    </div>
+
+    <div class="card">
+      <div class="heading">文本模型 Providers（类型仅 OpenAI-chat-completions：OpenAI 兼容 /chat/completions，Base URL / 模型ID 自行填写）</div>
+      <div class="provider-list" id="textProvidersList"></div>
+      <button type="button" class="btn" id="addTextProviderBtn">＋ 添加 provider</button>
+      <label class="field" style="margin-top:12px">
+        文本模型 System Prompt
+        <textarea id="systemPromptText" rows="3" placeholder="文本模型 System Prompt（每次调用置于上下文最前）"></textarea>
+      </label>
+    </div>
+
+    <div class="card">
+      <div class="heading">OCR Providers（类型必选：OpenAI-chat-completions-image_url 为视觉 chat；OCR-SCnet 为 multipart；MinerU 为文档解析）</div>
+      <div class="provider-list" id="ocrProvidersList"></div>
+      <button type="button" class="btn" id="addOcrProviderBtn">＋ 添加 provider</button>
+      <label class="field" style="margin-top:12px">
+        OCR 模型 System Prompt
+        <textarea id="systemPromptOcr" rows="3" placeholder="OCR 模型 System Prompt（视觉模型调用时置于最前）"></textarea>
+      </label>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="btn primary" id="saveBtn">保存</button>
+      <button type="button" class="btn" id="testBtn">测试当前模型的连接</button>
+      <div class="status" id="settingsStatus"></div>
+    </div>
+  </div>
+  <script src="settings.js"></script>
+</body>
+</html>
