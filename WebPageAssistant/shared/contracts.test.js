@@ -41,6 +41,10 @@ describe('WPA contracts kernel', () => {
     assert.equal(C.resolveWorld('upload', flags), 'isolated');
     assert.equal(C.resolveWorld('officeFill', flags), 'main');
     assert.equal(C.resolveWorld('watchTraffic', flags), 'main');
+    // vueMethods 读页面 world 的 __vue__ expando，隔离 world 拿不到
+    assert.equal(C.resolveWorld('scriptHints', flags), 'main');
+    // listOptions 要点开下拉/滚动虚拟列表，与 selectOption 同批不拆 world
+    assert.equal(C.resolveWorld('listOptions', flags), 'main');
   });
 
   it('兼容模式把 fire/converge 钉在 MAIN，不改 read', () => {

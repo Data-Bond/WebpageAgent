@@ -1304,6 +1304,23 @@ ok(/function resolveFileInputEl/.test(srcs['content.js']), 'upload 可从按钮/
 ok(/consumed: afterEvent\.length === 0/.test(srcs['content.js']), 'upload 记录组件是否消费并清空 input');
 
 const contentSrc = srcs['content.js'];
+const uploadRootBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(contentSrc, 'resolveUploadRoot') +
+      '\nfunction queryDeep(s) { this.lastQuery = s; return { sel: s }; }\n' +
+      'this.resolveUploadRoot = resolveUploadRoot;',
+    uploadRootBox
+  );
+  ok(typeof uploadRootBox.resolveUploadRoot === 'function', 'resolveUploadRoot 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 resolveUploadRoot 失败: ' + (e && e.message));
+}
+if (uploadRootBox.resolveUploadRoot) {
+  ok(uploadRootBox.resolveUploadRoot(12).sel === '[data-wpa-i="12"]', 'upload 数字 idx 反查 data-wpa-i');
+  ok(uploadRootBox.resolveUploadRoot('7').sel === '[data-wpa-i="7"]', 'upload 数字字符串 idx 反查 data-wpa-i');
+  ok(uploadRootBox.resolveUploadRoot('#file-input').sel === '#file-input', 'upload CSS 选择器原样查询');
+}
 const uploadHelpers = [
   extractFn(contentSrc, 'isFileInputEl'),
   extractFn(contentSrc, 'fileListsMatch'),
@@ -1435,7 +1452,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '4.8.0', '锁步版本为中间号升级');
+ok(manifestVer === '4.9.1', '锁步版本为补丁号升级');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -1684,8 +1701,9 @@ if (pdfPageBox.parsePdfPageRefs) {
 ok(/【本步序号】/.test(bg), 'PLAYBOOK 含【本步序号】');
 ok(/禁止跨轮复用/.test(bg), 'PLAYBOOK 禁止跨轮复用 idx');
 ok(/page\.click\(12\)/.test(bg) && /page\.setVal\(12/.test(bg), 'PLAYBOOK 示例用数字 idx click/setVal');
-ok(/selectOption/.test(bg.match(/【本步序号】[\s\S]{0,500}/)[0]), '本步序号仍要求下拉用 selectOption');
-ok(/clickByText/.test(bg.match(/【本步序号】[\s\S]{0,500}/)[0]), '本步序号仍保留 clickByText');
+ok(/不要点整条分页条容器/.test(bg) && /单字符页码不要 clickByText/.test(bg), 'PLAYBOOK 翻页用页码 idx');
+ok(/selectOption/.test(bg.match(/【本步序号】[\s\S]{0,800}/)[0]), '本步序号仍要求下拉用 selectOption');
+ok(/clickByText/.test(bg.match(/【本步序号】[\s\S]{0,800}/)[0]), '本步序号仍保留 clickByText');
 ok(/waitFor 在结构化操作中接受本步 idx/.test(bg), 'PLAYBOOK waitFor 可接受本步 idx');
 ok(!/张文帅/.test(bg) && !/学科分类/.test(bg), 'PLAYBOOK 测试不含站点字段名');
 
@@ -1696,6 +1714,28 @@ ok(/dialog, \[role="dialog"\]/.test(bridge), '弹层判定用通用 dialog/role=
 ok(/(?:modal\|popup\|dialog\|drawer\|overlay)/.test(bridge), '弹层 class 用通用 token');
 ok(/snapIndex = \[\]/.test(bridge), '每次快照清空 snapIndex');
 ok(/data-wpa-i/.test(bridge), '可选廉价 data-wpa-i 标注');
+ok(/function hydrateSnapIndexFromDom\(/.test(bridge)
+  && /hydrateSnapIndexFromDom\(/.test(extractFn(bridge, 'runOperations')),
+  'runOps 前按 data-wpa-i 补齐跨 world 的 idx');
+ok(/snapIndex\[n\] = el;/.test(extractFn(bridge, 'hydrateSnapIndexFromDom'))
+  && !/if \(!snapIndex\[n\]\)/.test(extractFn(bridge, 'hydrateSnapIndexFromDom')),
+  'hydrate 无条件覆盖本 world 的过期节点引用');
+ok(/function clearWpaIdxAttrs\(/.test(bridge)
+  && /clearWpaIdxAttrs\(\);/.test(extractFn(bridge, 'snapshot')),
+  '每轮快照编号前清掉上一轮 data-wpa-i');
+ok(/isNumericIdx\(rawSel\) != null/.test(extractFn(bridge, 'captureImage'))
+  && /resolveTarget\(rawSel\)/.test(extractFn(bridge, 'captureImage')),
+  'captureImage 接受本轮快照 idx（resolveTarget + data-wpa-i 回退）');
+ok(/op === 'sleep' && batchWorld/.test(extractFn(bg, 'runPageOpsBatch')),
+  'sleep 沿用当前批次 world，不拆 watchTraffic 的 MAIN chunk');
+ok(/worldDefault: 'main'/.test(String(srcs['shared/contracts.js'].match(/scriptHints: \{[^}]*\}/) || '')),
+  'scriptHints 默认页面 world（vueMethods 依赖页面 expando）');
+ok(/worldDefault: 'main'/.test(String(srcs['shared/contracts.js'].match(/listOptions: \{[^}]*\}/) || '')),
+  'listOptions 默认页面 world（开下拉/滚虚拟列表，与 selectOption 同批）');
+ok(/\.el-pager li/.test(bridge) && /\.ant-pagination-item/.test(bridge), '快照收录常见分页页码');
+ok(/请点分页条上的页码/.test(bridge), '点击整条分页容器有明确报错');
+ok(/tag === 'LI'/.test(extractFn(bridge, 'snapshot')), '快照为分页 li 抽取可见文本');
+ok(/inPagerHost\(el\)/.test(extractFn(bridge, 'snapshot')), '分页控件提高快照保留优先级');
 const snapFn = extractFn(bridge, 'snapshot');
 ok(!!snapFn, '可抽出 snapshot');
 ok(!/uniqueSelector\(el\)/.test(snapFn), 'snapshot L0 不再对每个元素 uniqueSelector');
@@ -1749,7 +1789,12 @@ try {
   vm.runInNewContext(
     extractFn(bridge, 'isNumericIdx') + '\n' + extractFn(bridge, 'resolveTarget') +
       '\nvar snapIndex = []; snapIndex[5] = { id: "live" };\n' +
-      'function queryDeep(s) { return s === "#ok" ? { id: "css" } : (s === "div >>> span" ? { id: "deep" } : null); }\n' +
+      'function queryDeep(s) {\n' +
+      '  if (s === "#ok") return { id: "css" };\n' +
+      '  if (s === "div >>> span") return { id: "deep" };\n' +
+      '  if (s === \'[data-wpa-i="7"]\') return { id: "attr" };\n' +
+      '  return null;\n' +
+      '}\n' +
       'this.resolveTarget = resolveTarget;',
     resolveBox
   );
@@ -1761,6 +1806,7 @@ if (resolveBox.resolveTarget) {
   ok(resolveBox.resolveTarget(5) && resolveBox.resolveTarget(5).id === 'live', '数字 idx 解析 snapIndex');
   ok(resolveBox.resolveTarget('5') && resolveBox.resolveTarget('5').id === 'live', '数字字符串 idx 解析 snapIndex');
   ok(resolveBox.resolveTarget({ idx: 5 }) && resolveBox.resolveTarget({ idx: 5 }).id === 'live', '{idx} 解析 snapIndex');
+  ok(resolveBox.resolveTarget(7) && resolveBox.resolveTarget(7).id === 'attr', '本 world 无 snapIndex 时回退 data-wpa-i');
   ok(resolveBox.resolveTarget({ selector: '#ok' }) && resolveBox.resolveTarget({ selector: '#ok' }).id === 'css', '{selector} 走 queryDeep');
   ok(resolveBox.resolveTarget('#ok') && resolveBox.resolveTarget('#ok').id === 'css', '普通 CSS 走 queryDeep');
   ok(resolveBox.resolveTarget('div >>> span') && resolveBox.resolveTarget('div >>> span').id === 'deep', '深层选择器仍走 queryDeep');
@@ -2001,6 +2047,24 @@ ok(/ARCHIVE_REDACT_MAX_BYTES = 20 \* 1024/.test(bg) && /function planArchiveReda
 ok(/provider-row:nth-child\(8n\+1\)/.test(settingsHtml) && /#dceaff/.test(settingsHtml),
   'provider 配置卡用不同背景色区分');
 ok(/function diagFail\(/.test(bg) && /DIAG_STORE_KEY = 'wpaDiag'/.test(bg), '后台有诊断黑匣子写入');
+const ocrSelBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(bg, 'ocrTargetToSelector') + '\nthis.ocrTargetToSelector = ocrTargetToSelector;',
+    ocrSelBox
+  );
+  ok(typeof ocrSelBox.ocrTargetToSelector === 'function', 'ocrTargetToSelector 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 ocrTargetToSelector 失败: ' + (e && e.message));
+}
+if (ocrSelBox.ocrTargetToSelector) {
+  ok(ocrSelBox.ocrTargetToSelector(12) === '12', 'ocr 目标接受数字 idx');
+  ok(ocrSelBox.ocrTargetToSelector(' captcha ') === 'captcha', 'ocr 目标字符串去空白');
+  ok(ocrSelBox.ocrTargetToSelector({ x: 1 }) === '' && ocrSelBox.ocrTargetToSelector(-3) === '',
+    'ocr 目标拒绝对象与非正数');
+}
+ok(/需要选择器字符串或本轮快照 idx/.test(bg) && /ocrTargetToSelector\(args && args\[0\]\)/.test(bg),
+  'ocr/ocrFill 入口放行本轮快照 idx');
 ok(/function enqueueDiagMut\(/.test(bg) && /enqueueDiagMut\(persistDiagTrail\)/.test(bg)
   && /enqueueDiagMut\(function \(\) \{ return persistDiagRow\(rec\)/.test(bg),
   '诊断错误与轨迹刷新共用写队列');

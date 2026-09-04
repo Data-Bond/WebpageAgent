@@ -3,7 +3,7 @@
 // PDFium WASM 以 ES module 加载；库单例活在本 offscreen 文档寿命内。
 import { PDFiumLibrary } from './vendor/pdfium/index.esm.browser.js';
 
-const OFFSCREEN_VERSION = '4.8.0';
+const OFFSCREEN_VERSION = '4.9.1';
 
 const MAX_TEXT_CHARS = 150000;
 const MIN_USEFUL_CHARS = 40;

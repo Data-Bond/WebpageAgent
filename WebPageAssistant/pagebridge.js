@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '4.8.0';
+  var BRIDGE_VERSION = '4.9.1';
   var SNAPSHOT_TIME_BUDGET_MS = 2800;
 
   function install() {
@@ -1717,6 +1717,10 @@
       if (magicCaptcha) {
         el = pickPageCaptchaImage();
         if (!el) throw new Error('未找到可见的验证码图片');
+      } else if (isNumericIdx(rawSel) != null) {
+        // 本轮快照 idx：resolveTarget 自带 data-wpa-i 回退，MAIN world 无需先 hydrate
+        el = resolveTarget(rawSel);
+        if (!el) throw new Error('元素未找到: ' + sel);
       } else {
         el = queryDeep(rawSel);
         if (!el) throw new Error('元素未找到: ' + sel);
@@ -1793,6 +1797,61 @@
 
     var ACTIVE_CLASSES = ['active', 'selected', 'on', 'current', 'is-active', 'router-link-active', 'active-link', 'menu-item-active'];
 
+    // 分页条宿主（整条）与页码叶子。页码多为无 role 的 li，不收录则快照里只剩每页条数下拉和箭头。
+    var PAGER_HOST_SELECTOR = [
+      '.el-pagination', '.ant-pagination', '.ivu-page', '.n-pagination',
+      '.van-pagination', '.layui-laypage', '.pagination',
+      'nav[aria-label*="pagination"]', 'nav[aria-label*="Pagination"]'
+    ].join(', ');
+    var PAGER_ITEM_SELECTOR = [
+      '.el-pager li',
+      '.el-pagination .btn-prev', '.el-pagination .btn-next',
+      '.ant-pagination-item', '.ant-pagination-prev', '.ant-pagination-next',
+      '.ivu-page-item', '.ivu-page-prev', '.ivu-page-next',
+      '.n-pagination-item',
+      '.van-pagination__item',
+      '.layui-laypage a', '.layui-laypage span',
+      '.pagination .page-item', '.pagination li',
+      'nav[aria-label*="pagination"] a', 'nav[aria-label*="pagination"] button',
+      'nav[aria-label*="Pagination"] a', 'nav[aria-label*="Pagination"] button'
+    ].join(', ');
+
+    function isPagerHost(el) {
+      try { return !!(el && el.matches && el.matches(PAGER_HOST_SELECTOR)); }
+      catch (e) { return false; }
+    }
+
+    function inPagerHost(el) {
+      try { return !!(el && el.closest && el.closest(PAGER_HOST_SELECTOR)); }
+      catch (e) { return false; }
+    }
+
+    // 快照在 ISOLATED 编号并写 data-wpa-i；click 默认在 MAIN 执行。MAIN 的 snapIndex 是空的，
+    // 若不按 DOM 标注补齐，page.click(idx) 会全部报「序号已过期」。
+    // 无条件覆盖：本 world 可能留有上一轮快照的过期节点引用，属性标注才是本轮真相。
+    function hydrateSnapIndexFromDom() {
+      var nodes;
+      try { nodes = queryAllDeep('[data-wpa-i]'); } catch (e) { return; }
+      if (!nodes || !nodes.length) return;
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        var n = 0;
+        try { n = parseInt(el.getAttribute && el.getAttribute('data-wpa-i'), 10); } catch (e2) { n = 0; }
+        if (!n || n < 1) continue;
+        snapIndex[n] = el;
+      }
+    }
+
+    // 新一轮编号前清掉上一轮的 data-wpa-i：残留标注会让跨 world 的 idx 回退命中过期编号。
+    function clearWpaIdxAttrs() {
+      var nodes;
+      try { nodes = queryAllDeep('[data-wpa-i]'); } catch (e) { return; }
+      if (!nodes) return;
+      for (var i = 0; i < nodes.length; i++) {
+        try { nodes[i].removeAttribute('data-wpa-i'); } catch (e2) {}
+      }
+    }
+
     // 可交互元素采集范围：标准标签 + ARIA 角色 + 非标准可点击控件（图标按钮、data-act 操作按钮等）
     // 许多前端框架用 <span>/<i>/<div> + data-* 或图标类实现按钮（如文件删除 span.file-action[data-file-act="delete"]），
     // 仅靠标准标签会漏采，导致模型在快照中根本看不到这些控件。
@@ -1811,6 +1870,7 @@
       '.ivu-cascader-menu-item', '.ant-cascader-menu-item',
       'li[id^="cascader-menu-"]', 'li[id*="-cascader-menu-"]',
       '.van-option', '.dropdown-item', '[data-value]',
+      PAGER_ITEM_SELECTOR,
       // 复选/单选框：框架包装器（iView/element/ant/layui/vant/nut）、ARIA 角色与原生 label 包裹。
       // 真实 input 被框架用 opacity:0 隐藏，可见可点的是包装器——不收录包装器，快照里就看不到复选框。
       '[role="checkbox"]', '[role="radio"]',
@@ -2418,6 +2478,10 @@
       var n = isNumericIdx(sel);
       if (n != null) {
         var hit = snapIndex[n];
+        if (!hit) {
+          try { hit = queryDeep('[data-wpa-i="' + n + '"]'); } catch (eIdx) { hit = null; }
+          if (hit) snapIndex[n] = hit;
+        }
         if (!hit) throw new Error('序号已过期，请用本轮快照 idx');
         return hit;
       }
@@ -2907,6 +2971,7 @@
       var l0Cap = full ? 500 : 300;
       snapIndex = [];
       lastSnapElements = [];
+      clearWpaIdxAttrs();
       markSample();
       var all = queryAllDeep(INTERACTIVE_SELECTOR);
       // 大型后台页面常有数百菜单项。优先保留可见表单控件和可操作控件，
@@ -2918,6 +2983,7 @@
           if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') s += 60;
           if (tag === 'BUTTON' || (el.getAttribute && /button|checkbox|radio|option|textbox/.test(el.getAttribute('role') || ''))) s += 40;
           if (el.getAttribute && (el.getAttribute('data-testid') || el.getAttribute('name') || el.getAttribute('aria-label'))) s += 20;
+          if (inPagerHost(el)) s += 80;
           if (el.disabled) s -= 30;
           return s;
         }
@@ -2950,9 +3016,9 @@
           }
           if (!actionableHidden) { skipHidden++; continue; }
         }
-        // 文本：A/BUTTON 取全文；SPAN/I/DIV/LABEL 也取（图标按钮可能无文本，靠 icon/dataAct 识别；LABEL 多为复选框文字）
+        // 文本：A/BUTTON 取全文；SPAN/I/DIV/LABEL/LI 也取（分页页码是 li；图标按钮可能无文本，靠 icon/dataAct 识别）
         var text = '';
-        if (tag === 'A' || tag === 'BUTTON' || tag === 'SPAN' || tag === 'I' || tag === 'DIV' || tag === 'LABEL') {
+        if (tag === 'A' || tag === 'BUTTON' || tag === 'SPAN' || tag === 'I' || tag === 'DIV' || tag === 'LABEL' || tag === 'LI') {
           text = (el.innerText || el.textContent || '').trim().slice(0, 60);
         }
         // 图标语义：抽取后代 <i>/<svg>/<span> 的 icon-* 类名（如 icon-trash → 删除、icon-close → 关闭）
@@ -5265,6 +5331,9 @@
           },
           click: async function (sel) {
             var el = page.q(sel); if (!el) throw notFoundError(sel);
+            if (isPagerHost(el)) {
+              throw new Error('请点分页条上的页码或下一页/上一页按钮，不要点整条分页容器');
+            }
             if (cascaderOptionOf(el)) {
               throw new Error(
                 '级联菜单选项禁止直接 page.click（点击分支/旧 li 选择器无法可靠确认层级）。' +
@@ -6108,6 +6177,7 @@
 
     async function runOperations(operations) {
       scriptAborted = false;
+      hydrateSnapIndexFromDom();
       var allowed = {
         setVal: 1, click: 1, select: 1, getText: 1, findControls: 1,
         clickByText: 1, inspect: 1,

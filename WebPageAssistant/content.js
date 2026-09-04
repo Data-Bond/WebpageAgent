@@ -6,7 +6,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、pagebridge.js 的 BRIDGE_VERSION 相同。
-  var CONTENT_VERSION = '4.8.0';
+  var CONTENT_VERSION = '4.9.1';
   if (window.__dsContentLoaded === CONTENT_VERSION) return;
   try {
     if (typeof window.__dsContentDispose === 'function') window.__dsContentDispose();
@@ -130,8 +130,20 @@
     return null;
   }
 
+  // 契约允许 upload 第一参数用本轮快照的数字 idx；编号写在共享 DOM 的 data-wpa-i 上，
+  // 隔离 world 没有 snapIndex，按属性反查即可。
+  function resolveUploadRoot(selector) {
+    var s = selector;
+    if (typeof s === 'number' && isFinite(s) && s > 0) {
+      s = '[data-wpa-i="' + Math.floor(s) + '"]';
+    } else if (typeof s === 'string' && /^\d+$/.test(s.trim())) {
+      s = '[data-wpa-i="' + s.trim() + '"]';
+    }
+    return queryDeep(String(s == null ? '' : s));
+  }
+
   async function uploadInIsolatedWorld(selector, fileKey) {
-    var root = queryDeep(selector);
+    var root = resolveUploadRoot(selector);
     var keys = Array.isArray(fileKey) ? fileKey : [fileKey];
     if (!keys.length) throw new Error('未提供附件 key');
     var el = resolveFileInputEl(root, keys.length > 1);

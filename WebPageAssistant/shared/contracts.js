@@ -37,7 +37,9 @@
     clickOptionByText: { kind: 'fire', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
     findOption: { kind: 'read', runtime: 'page', worldDefault: 'isolated', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
     selectOption: { kind: 'converge', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'selectedText', risk: 'none', timeoutMs: 30000 },
-    listOptions: { kind: 'read', runtime: 'page', worldDefault: 'isolated', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 30000 },
+    // 名为 read 实为交互：要点开下拉、滚动虚拟列表。与 selectOption/filterSelect 同在页面 world，
+    // listOptions→selectOption 连招不拆批，也兼容打开逻辑依赖页面 JS 状态的控件（AJAX Select2 等）。
+    listOptions: { kind: 'read', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 30000 },
     filterSelect: { kind: 'converge', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 20000 },
     setChecked: { kind: 'converge', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'checked', risk: 'none', timeoutMs: 12000 },
     sleep: { kind: 'read', runtime: 'page', worldDefault: 'isolated', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 15000 },
@@ -48,7 +50,8 @@
     ocrFill: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 180000 },
     needAttach: { kind: 'read', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 5000 },
     urlHints: { kind: 'read', runtime: 'page', worldDefault: 'isolated', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
-    scriptHints: { kind: 'read', runtime: 'page', worldDefault: 'isolated', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
+    // vueMethods 读节点上的 __vue__/__vueParentComponent（页面 world 挂的 expando），隔离 world 看不到
+    scriptHints: { kind: 'read', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
     hover: { kind: 'fire', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
     openFileMenu: { kind: 'fire', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
     contextClick: { kind: 'fire', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 12000 },

@@ -278,7 +278,7 @@ const RUNTIME_PLAYBOOK =
   PLAYBOOK_BEGIN + '\n' +
   '以下规则优先级高于历史会话中的旧说明：\n' +
   '【动作输出格式】每一轮只输出一个 JSON 对象，禁止在 JSON 前后写中文说明或 Markdown。执行网页动作时必须是 {"action":"execute","summary":"意图","expect":"预期变化","operations":[{"op":"helper名","args":[参数...]}]}。helper名仅可为 setVal/click/select/upload/getText/findControls/clickByText/inspect/optionTexts/clickOptionByText/findOption/selectOption/listOptions/filterSelect/setChecked/sleep/waitFor/probe/scroll/ocr/ocrFill/needAttach/urlHints/scriptHints/hover/openFileMenu/contextClick/watchTraffic/officeRead/officeFill。同一表单里多个独立输入框的 setVal 必须放在同一次 execute，全部填完再 click 提交，禁止每个字段单独一轮；只有相互依赖、需要先看上一步结果才能继续的操作才拆成多轮。禁止把 helper 名当成 action（错误示例：{"action":"click"}），action 只能是 execute、ask 或 done。禁止输出 plan/script，禁止输出可执行的 document./window. 代码；文件上传必须使用结构化 upload。散文或手册摘抄里的 {"op":"upload"} 片段不是合法动作，缺少 action 字段会被丢弃。用户给出的 document.querySelector("css") 或长 CSS 路径只是选择器字符串：抽出中间的 css 作为 click/inspect 的 selector 或 clickByText 的 within，不要写成脚本。\n' +
-  '【本步序号】优先用本轮快照 outline/elements 的数字 idx：page.click(12)、page.setVal(12,"值")、page.setChecked(12,true)。idx 只在本轮有效，禁止跨轮复用上一轮序号。下拉/级联仍用 selectOption（触发器可用本步 idx 或选择器，选项用可见文本）；短可见文案仍用 clickByText。waitFor 可传入本步 idx 或选择器。视口外字段先对该字段 idx 调用 page.scroll(idx,"down")（或 "up"）。\n' +
+  '【本步序号】优先用本轮快照 outline/elements 的数字 idx：page.click(12)、page.setVal(12,"值")、page.setChecked(12,true)。idx 只在本轮有效，禁止跨轮复用上一轮序号。下拉/级联仍用 selectOption（触发器可用本步 idx 或选择器，选项用可见文本）；短可见文案仍用 clickByText。waitFor 可传入本步 idx 或选择器。视口外字段先对该字段 idx 调用 page.scroll(idx,"down")（或 "up"）。翻页点本轮快照里页码数字或下一页按钮的 idx，不要点整条分页条容器（点容器中心往往仍停在当前页）；单字符页码不要 clickByText（整表数字太多），必须用 idx。\n' +
   '【滚动】视口外字段先对该字段 idx 调用 page.scroll(idx,"down") 或 page.scroll(idx,"up")：helper 从该节点向上找最近真正溢出的 overflow:auto|scroll 祖先，没有再退到整页。outline 里的 scrollable 行只是提示，不是白名单；未列出的容器仍可通过字段 idx 或 CSS 滚动。禁止用 inspect 代替滚动。page.scroll("page","down") 滚整页。truncated=true 时可 inspect(页面主区) 再 scroll(css)。\n' +
   'upload 参数格式为 ["文件输入或上传按钮/容器 selector","附件 key"]；控件 multiple=true 时可把第二参数设为 key 数组，一次性上传多个附件，禁止对同一控件连续单文件上传（会覆盖前一个）。选择器可以是 input[type=file]，也可以是可见的「上传文件」按钮或其外包层，引擎会定位到真正的 file 输入。禁止 click 上传按钮（会弹出操作系统文件框，助手无法填入）。iView/Element/Ant Design 等组件在 change 后清空 input 是正常现象，verified 以赋值是否成功为准。\n' +
   'waitFor 在结构化操作中接受本步 idx、selector 字符串与可选 {timeout,poll}，不能传函数。timeout 上限 8000ms，超时表示该目标未出现，不是崩溃。\n' +
@@ -5183,6 +5183,14 @@ async function cropPngDataUrl(fullPng, geom) {
   return blobToDataUrl(out);
 }
 
+// ocr/ocrFill 的目标参数：CSS 字符串或本轮快照数字 idx。
+// 数字归一成字符串透传，页面桥 resolveTarget 会按 snapIndex / data-wpa-i 解析。
+function ocrTargetToSelector(raw) {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return String(Math.floor(raw));
+  if (typeof raw === 'string') return raw.trim();
+  return '';
+}
+
 function ocrHintFromArgs(args) {
   if (!args || args.length < 2) return '';
   const h = args[1];
@@ -5231,14 +5239,14 @@ async function resolveCapturedImageDataUrl(tabId, cap) {
 }
 
 async function ocrPageSelector(tabId, args, ctx) {
-  const selector = args && args[0];
+  const selector = ocrTargetToSelector(args && args[0]);
   const hint = ocrHintFromArgs(args);
   ctx = ctx || {};
   const origin = ctx.origin || '';
   const postMsg = ctx.postMsg || function () {};
   const cancelRef = ctx.cancelRef;
-  if (!selector || typeof selector !== 'string') {
-    return { ok: false, kind: 'query', error: 'page.ocr 需要选择器字符串' };
+  if (!selector) {
+    return { ok: false, kind: 'query', error: 'page.ocr 需要选择器字符串或本轮快照 idx' };
   }
   const cfg = await getConfigMerged(origin);
   if (!resolveTag(cfg, 'ocr')) {
@@ -5314,23 +5322,23 @@ async function ocrPageSelector(tabId, args, ctx) {
 function ocrFillSubmitSelector(args) {
   if (!args || args.length < 3) return '';
   const s = args[2];
-  if (typeof s === 'string') return s.trim();
+  if (typeof s === 'string' || typeof s === 'number') return ocrTargetToSelector(s);
   if (s && typeof s === 'object' && typeof s.submit === 'string') return s.submit.trim();
   return '';
 }
 
 async function ocrFillAndSubmit(tabId, args, ctx) {
-  const imgSel = args && args[0];
-  const inputSel = args && args[1];
+  const imgSel = ocrTargetToSelector(args && args[0]);
+  const inputSel = ocrTargetToSelector(args && args[1]);
   const submitSel = ocrFillSubmitSelector(args);
   ctx = ctx || {};
   const postMsg = ctx.postMsg || function () {};
   const cancelRef = ctx.cancelRef;
-  if (!imgSel || typeof imgSel !== 'string') {
-    return { ok: false, kind: 'query', error: 'page.ocrFill 需要图片选择器或 captcha' };
+  if (!imgSel) {
+    return { ok: false, kind: 'query', error: 'page.ocrFill 需要图片选择器、本轮快照 idx 或 captcha' };
   }
-  if (!inputSel || typeof inputSel !== 'string' || !inputSel.trim()) {
-    return { ok: false, kind: 'query', error: 'page.ocrFill 需要验证码输入框选择器' };
+  if (!inputSel) {
+    return { ok: false, kind: 'query', error: 'page.ocrFill 需要验证码输入框选择器或本轮快照 idx' };
   }
   // 前置事实核查：验证码输入框还在不在页面上。登录提交成功后页面常已切换，
   // 模型却可能凭空断定“仍在登录页”而重复 ocrFill——那会先点验证码图“刷新”（在已登录页面乱点）、
@@ -5500,6 +5508,9 @@ async function runPageOpsBatch(tabId, operations, ctx) {
       const w = WPA_CONTRACTS.resolveWorld(op, flags);
       world = w === 'isolated' ? 'ISOLATED' : 'MAIN';
     }
+    // sleep 两个 world 皆可：沿用当前批次，避免把 watchTraffic start→click→sleep→stop
+    // 拆成多个 chunk（MAIN chunk 结束会 autoStop 拆掉流量钩子，stop 就收不到请求了）。
+    if (op === 'sleep' && batchWorld && batchWorld !== 'upload') world = batchWorld;
     if (batchWorld && world !== batchWorld) {
       const flushed = await flush();
       if (flushed.navigated) return { resp: flushed.resp, navigated: true };
