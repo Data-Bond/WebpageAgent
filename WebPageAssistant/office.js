@@ -1,6 +1,6 @@
 // office.js — MAIN world 在线表格/文档适配器
 // 通过 chrome.scripting.executeScript(world: "MAIN") 与 pagebridge.js 一同注入。
-// 暴露 window.__assistantOffice：snapshotDigest / read / fill
+// 暴露 globalThis.__wpaOffice（非页面可枚举公开 API）：snapshotDigest / read / fill
 // 纯函数（A1、行角色、解释源）为 function 声明，供 wpa-test extractFn 单测。
 (function () {
   'use strict';
@@ -359,7 +359,7 @@
       if (/\/sheet\//.test(path) || pad === 'sheet') return 'sheet';
       if (/\/doc\//.test(path) || pad === 'doc' || pad === 'slide') return 'doc';
       if (window.SpreadsheetApp) return 'sheet';
-      return 'doc';
+      return 'none';
     }
     if (host === 'google') {
       if (/\/spreadsheets\//.test(path) || /sheets\.google/.test(String(location.hostname || ''))) return 'sheet';
@@ -379,9 +379,7 @@
     'input[class*="bar-label"]',
     '#t-name-box',
     'input.docs-name-box',
-    '.docs-name-box input',
-    '[class*="name-box"] input',
-    '[class*="NameBox"] input'
+    '.docs-name-box input'
   ];
   var FORMULA_SELS = [
     '#alloy-simple-text-editor',
@@ -1071,6 +1069,9 @@
     var host = detectOfficeHost();
     var kind = detectOfficeKind(host);
     if (a && typeof a === 'object' && !Array.isArray(a) && b == null) {
+      if (kind !== 'sheet') {
+        return { ok: false, kind: 'mutation', ready: false, reason: 'not-sheet', verified: false };
+      }
       var keys = Object.keys(a);
       var results = [];
       for (var i = 0; i < keys.length; i++) {
@@ -1097,14 +1098,31 @@
     return fillSheetCell(String(a), b);
   }
 
-  window.__assistantOffice = {
-    snapshotDigest: snapshotDigest,
-    read: officeRead,
-    fill: officeFill,
-    // 测试/调试可见
-    parseA1: parseA1,
-    toA1: toA1,
-    classifySheetRows: classifySheetRows,
-    cellContextFromGrid: cellContextFromGrid
-  };
+  try { delete window.__assistantOffice; } catch (ePub) {}
+  try {
+    Object.defineProperty(globalThis, '__wpaOffice', {
+      value: {
+        snapshotDigest: snapshotDigest,
+        read: officeRead,
+        fill: officeFill,
+        parseA1: parseA1,
+        toA1: toA1,
+        classifySheetRows: classifySheetRows,
+        cellContextFromGrid: cellContextFromGrid
+      },
+      configurable: true,
+      enumerable: false,
+      writable: true
+    });
+  } catch (eDef) {
+    globalThis.__wpaOffice = {
+      snapshotDigest: snapshotDigest,
+      read: officeRead,
+      fill: officeFill,
+      parseA1: parseA1,
+      toA1: toA1,
+      classifySheetRows: classifySheetRows,
+      cellContextFromGrid: cellContextFromGrid
+    };
+  }
 })();

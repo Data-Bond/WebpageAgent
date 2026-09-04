@@ -1,13 +1,11 @@
-// pagebridge.js — 运行在页面 MAIN world（页面的 JS 世界）
-// 通过 chrome.scripting.executeScript(world: "MAIN") 注入。
-// 暴露 window.__assistantPage，与隔离 world 的 content.js 通过 DOM CustomEvent 通信。
+// pagebridge.js — 注入 MAIN 与 ISOLATED。SW 通过 executeScript(func) 调用 dispatch，
+// 不再使用可伪造的 DOM CustomEvent。公开 window.__assistantPage 已移除。
 (function () {
   'use strict';
 
-  var INSTALLED = '__assistantPage';
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  // 已打开页面靠此号决定是否重注入 MAIN world；面板角标读 manifest。
-  var BRIDGE_VERSION = '4.7.0';
+  var BRIDGE_VERSION = '4.8.0';
+  var SNAPSHOT_TIME_BUDGET_MS = 2800;
 
   function install() {
     var scriptAborted = false;
@@ -65,7 +63,9 @@
       hideBusyMask();
       scriptAborted = true;
     }
-    document.addEventListener('__ds_abort', onAbortSignal);
+    function officeApi() {
+      try { return globalThis.__wpaOffice || null; } catch (e) { return null; }
+    }
 
     var snapIndex = [];
     var prevSnapEls = null;
@@ -2565,10 +2565,12 @@
       }
       return document.scrollingElement || document.documentElement;
     }
-    function collectScrollableCandidates() {
+    function collectScrollableCandidates(deadline) {
       var nodes = queryAllDeep('*');
       var raw = [];
+      var hitBudget = false;
       for (var i = 0; i < nodes.length; i++) {
+        if (deadline && Date.now() > deadline) { hitBudget = true; break; }
         var el = nodes[i];
         if (!isOverflowScrollable(el) || isTinyDropdownPanel(el)) continue;
         var top = el.scrollTop || 0;
@@ -2614,7 +2616,7 @@
         }
         return score(y) - score(x);
       });
-      return { all: keep, shown: keep.slice(0, 20) };
+      return { all: keep, shown: keep.slice(0, 20), truncated: hitBudget || keep.length > 20 };
     }
     function doScroll(target, dir) {
       dir = String(dir || 'down').toLowerCase();
@@ -2927,7 +2929,10 @@
       var idx = 0;
       // 全部 SELECT 的候选预览总预算：多 SELECT 表单若不限量会挤占整个快照（每步都发给大模型）
       var optionsBudget = 500;
+      var truncatedByTime = false;
+      var deadline = tSnap + SNAPSHOT_TIME_BUDGET_MS;
       for (var i = 0; i < ordered.length && elements.length < l0Cap; i++) {
+        if (Date.now() > deadline) { truncatedByTime = true; break; }
         var el = ordered[i];
         var tag = el.tagName ? el.tagName.toUpperCase() : '';
         var type = el.getAttribute ? (el.getAttribute('type') || '') : '';
@@ -3081,7 +3086,7 @@
         }
       }
       prevSnapEls = nextPrev;
-      var sc = collectScrollableCandidates();
+      var sc = collectScrollableCandidates(deadline);
       var seenScroll = typeof Set !== 'undefined' ? new Set() : null;
       for (var sk = 1; sk < snapIndex.length; sk++) {
         if (snapIndex[sk] && seenScroll) seenScroll.add(snapIndex[sk]);
@@ -3105,8 +3110,9 @@
         starFields: starFields,
         officeContext: (function () {
           try {
-            if (window.__assistantOffice && typeof window.__assistantOffice.snapshotDigest === 'function') {
-              return window.__assistantOffice.snapshotDigest();
+            var api = officeApi();
+            if (api && typeof api.snapshotDigest === 'function') {
+              return api.snapshotDigest();
             }
           } catch (eOc) {}
           return { kind: 'none' };
@@ -3120,7 +3126,7 @@
         snapshotCount: elements.length,
         scrollableShown: sc.shown.length,
         scrollableTotal: sc.all.length,
-        truncated: elements.length >= l0Cap || sc.all.length > sc.shown.length,
+        truncated: elements.length >= l0Cap || sc.all.length > sc.shown.length || truncatedByTime || !!(sc.truncated),
         skipHidden: skipHidden,
         skipNoSel: skipNoSel,
         snapshotMs: Date.now() - tSnap,
@@ -3222,20 +3228,8 @@
       };
     }
 
-    function dsReq(cmd, payload) {
-      return new Promise(function (resolve) {
-        var id = '__ds' + Math.random().toString(36).slice(2) + Date.now();
-        var timer = setTimeout(function () { cleanup(); resolve(null); }, 12000);
-        function handler(e) {
-          if (e.detail && e.detail.id === id) { cleanup(); resolve(e.detail); }
-        }
-        function cleanup() {
-          clearTimeout(timer);
-          document.removeEventListener('__ds_resp', handler);
-        }
-        document.addEventListener('__ds_resp', handler);
-        document.dispatchEvent(new CustomEvent('__ds_req', { detail: { id: id, cmd: cmd, payload: payload } }));
-      });
+    function dsReq() {
+      return Promise.resolve(null);
     }
 
     var ELEMENT_STABLE_MAX_MS = 400;
@@ -6093,16 +6087,16 @@
             return parts.length;
           },
           officeRead: function (opts) {
-            var api = window.__assistantOffice;
+            var api = officeApi();
             if (!api || typeof api.read !== 'function') {
-              return { ok: false, kind: 'query', reason: 'office-missing', officeContext: { kind: 'none' } };
+              return { ok: false, kind: 'query', reason: 'office-missing', officeContext: { kind: 'none' }, ready: false };
             }
             return api.read(opts);
           },
           officeFill: async function (a, b) {
-            var api = window.__assistantOffice;
+            var api = officeApi();
             if (!api || typeof api.fill !== 'function') {
-              throw new Error('在线文档桥未注入。请刷新页面后重试。');
+              return { ok: false, kind: 'mutation', reason: 'office-missing', ready: false, verified: false };
             }
             return await api.fill(a, b);
           },
@@ -6174,77 +6168,49 @@
       };
     }
 
-    // 处理来自 content.js（隔离 world）的 __ds_req
-    function onReq(e) {
-      var detail = e.detail;
-      if (!detail || !detail.id) return;
-      var id = detail.id;
-      var cmd = detail.cmd;
-      function respond(data, ok) {
-        document.dispatchEvent(new CustomEvent('__ds_resp', {
-          detail: { id: id, ok: ok !== false, data: data }
-        }));
+    async function dispatch(cmd, payload) {
+      payload = payload || {};
+      if (cmd === 'snapshot') return snapshot(payload);
+      if (cmd === 'probe') return probeSignals();
+      if (cmd === 'runOps') return runOperations(payload.operations || []);
+      if (cmd === 'setBusyMask') {
+        setBusyMaskVisible(!!payload.on);
+        return { ok: true };
       }
-      if (cmd === 'snapshot') {
-        try { respond(snapshot(detail.payload)); } catch (err) { respond(String(err && err.stack || err), false); }
-      } else if (cmd === 'probe') {
-        try { respond(probeSignals()); } catch (err) { respond(String(err && err.stack || err), false); }
-      } else if (cmd === 'runScript') {
-        var script = detail.payload && detail.payload.script;
-        runScript(script || '').then(function (res) {
-          respond(res, res && res.ok !== false);
-        });
-      } else if (cmd === 'runOps') {
-        var operations = detail.payload && detail.payload.operations;
-        runOperations(operations || []).then(function (res) {
-          respond(res, res && res.ok !== false);
-        });
-      } else if (cmd === 'setBusyMask') {
-        try {
-          setBusyMaskVisible(!!(detail.payload && detail.payload.on));
-          respond({ ok: true });
-        } catch (errM) { respond({ ok: false, error: String(errM && errM.message || errM) }, false); }
-      } else if (cmd === 'submitFailureContext') {
-        try {
-          respond(collectSubmitFailureContext((detail.payload && detail.payload.targets) || []));
-        } catch (errC) { respond(String(errC && errC.stack || errC), false); }
-      } else if (cmd === 'viewPrint') {
-        try { respond(collectViewPrint(detail.payload || {})); } catch (errV) { respond(String(errV && errV.stack || errV), false); }
-      } else if (cmd === 'captureImage') {
-        var capSel = detail.payload && detail.payload.selector;
-        captureImage(capSel || '').then(function (res) {
-          respond(res, res && res.ok !== false);
-        }).catch(function (err) {
-          respond({ ok: false, error: String(err && err.message || err) }, false);
-        });
+      if (cmd === 'abort') {
+        onAbortSignal();
+        return { ok: true };
       }
+      if (cmd === 'submitFailureContext') return collectSubmitFailureContext(payload.targets || []);
+      if (cmd === 'viewPrint') return collectViewPrint(payload);
+      if (cmd === 'captureImage') return captureImage(payload.selector || '');
+      if (cmd === 'officeDigest') {
+        try {
+          var api = officeApi();
+          if (api && typeof api.snapshotDigest === 'function') return api.snapshotDigest();
+        } catch (eD) {}
+        return { kind: 'none' };
+      }
+      if (cmd === 'runScript') return runScript('');
+      return { ok: false, error: 'unknown cmd ' + cmd };
     }
-    // 只监听捕获阶段一次即可：事件直接 dispatch 到 document 上时，
-    // 目标即 document，捕获监听器即可收到；若再加冒泡监听会导致 onReq 触发两次，
-    // 使 runScript 被重复执行（双重副作用）。
-    document.addEventListener('__ds_req', onReq, true);
 
-    window.__assistantPage = {
+    globalThis.__wpaBridge = {
       version: BRIDGE_VERSION,
-      snapshot: snapshot,
-      runScript: runScript,
-      runOperations: runOperations,
+      dispatch: dispatch,
       dispose: function () {
-        document.removeEventListener('__ds_req', onReq, true);
-        document.removeEventListener('__ds_abort', onAbortSignal);
-      },
-      __io: {
-        getFile: function (key) { return dsReq('getFile', { key: key }).then(function (d) { return d && d.data != null ? d.data : null; }); },
-        getFileName: function (key) { return dsReq('getFileName', { key: key }).then(function (d) { return d ? d.data : null; }); }
+        try { onAbortSignal(); } catch (e) {}
       }
     };
   }
 
-  if (window.__assistantPage && window.__assistantPage.version === BRIDGE_VERSION) return;
+  if (globalThis.__wpaBridge && globalThis.__wpaBridge.version === BRIDGE_VERSION &&
+      typeof globalThis.__wpaBridge.dispatch === 'function') return;
   try {
-    if (window.__assistantPage && typeof window.__assistantPage.dispose === 'function') {
-      window.__assistantPage.dispose();
+    if (globalThis.__wpaBridge && typeof globalThis.__wpaBridge.dispose === 'function') {
+      globalThis.__wpaBridge.dispose();
     }
   } catch (e) {}
+  try { delete window.__assistantPage; } catch (e2) {}
   install();
 })();

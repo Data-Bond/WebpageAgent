@@ -1,6 +1,8 @@
 // background.js — MV3 service worker
 'use strict';
 
+importScripts('shared/contracts.js');
+
 const DEFAULT_SYSTEM_PROMPT_OCR =
   "请完整识别并提取这张图片中的所有文字内容，保持原始排版格式，直接输出识别结果，不要添加任何额外说明。";
 const DEFAULT_ARCHIVE_REDACT_HINT =
@@ -36,7 +38,8 @@ const DEFAULT_CONFIG = {
   uiOpacity: 100,
   panelScaleX: 70,
   panelScaleY: 70,
-  archiveRedactHint: DEFAULT_ARCHIVE_REDACT_HINT
+  archiveRedactHint: DEFAULT_ARCHIVE_REDACT_HINT,
+  diagCapKb: 50
 };
 
 function clampInt(n, min, max, fallback) {
@@ -69,6 +72,13 @@ function applyUiKnobs(cfg) {
   };
 }
 
+function applyDiagKnobs(cfg) {
+  const src = cfg || {};
+  return {
+    diagCapKb: clampInt(src.diagCapKb, 10, 200, DEFAULT_CONFIG.diagCapKb != null ? DEFAULT_CONFIG.diagCapKb : 50)
+  };
+}
+
 function pageConfigKey(origin) {
   return 'pageCfg:' + String(origin || '');
 }
@@ -77,7 +87,8 @@ function pageRuntimeHasFields(page) {
   if (!page || typeof page !== 'object') return false;
   const keys = [
     'maxSteps', 'llmCallGapMs', 'busyMaskEnabled', 'llmTimeoutRetry', 'llmErrorRetry',
-    'pageQuietMs', 'suggestWaitMs', 'pdfParseMode', 'pdfParsePages', 'snapshotPiiMask'
+    'pageQuietMs', 'suggestWaitMs', 'pdfParseMode', 'pdfParsePages', 'snapshotPiiMask',
+    'compatMode', 'convergeBackup'
   ];
   for (let i = 0; i < keys.length; i++) {
     if (keys[i] in page) return true;
@@ -89,7 +100,9 @@ function applyPageRuntimeKnobs(page) {
   const src = page || {};
   return Object.assign({
     maxSteps: clampInt(src.maxSteps, 1, 100, DEFAULT_CONFIG.maxSteps),
-    snapshotPiiMask: src.snapshotPiiMask === true
+    snapshotPiiMask: src.snapshotPiiMask === true,
+    compatMode: src.compatMode === true,
+    convergeBackup: src.convergeBackup === true
   }, applyRuntimeKnobs(src), normalizePdfParseConfig(src));
 }
 
@@ -314,18 +327,502 @@ function withRuntimePlaybook(content) {
   }
   return sys + '\n\n' + RUNTIME_PLAYBOOK;
 }
-function storageSet(obj) {
+function storageSet(obj, opts) {
   return new Promise((resolve) => {
     chrome.storage.local.set(obj, () => {
       const err = chrome.runtime.lastError;
       if (err) {
         console.warn('storage.local 写入失败:', err.message);
+        if (!(opts && opts.silent)) diagFail('storage', err);
         resolve({ ok: false, error: err.message });
       } else {
         resolve({ ok: true });
       }
     });
   });
+}
+
+function sessionGet(keys) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.session.get(keys, (obj) => {
+        void chrome.runtime.lastError;
+        resolve(obj || {});
+      });
+    } catch (e) {
+      resolve({});
+    }
+  });
+}
+
+function sessionSet(obj) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.session.set(obj, () => {
+        void chrome.runtime.lastError;
+        resolve(true);
+      });
+    } catch (e) {
+      resolve(false);
+    }
+  });
+}
+
+let configWriteQueue = Promise.resolve();
+function enqueueConfigWrite(fn) {
+  const run = configWriteQueue.then(fn, fn);
+  configWriteQueue = run.catch(() => {});
+  return run;
+}
+
+const DIAG_STORE_KEY = 'wpaDiag';
+const diagTrail = [];
+let diagTrailStore = [];
+let diagWriteQueue = Promise.resolve();
+let diagTrailTimer = null;
+let diagCapKbMemo = WPA_CONTRACTS.DIAG_CAP_KB_DEFAULT;
+
+function noteDiagCap(cfg) {
+  diagCapKbMemo = WPA_CONTRACTS.clampDiagCapKb(cfg && cfg.diagCapKb);
+}
+
+function diagHit(probe) {
+  const p = String(probe || '');
+  if (!WPA_CONTRACTS.DIAG_PROBES[p]) return;
+  const now = Date.now();
+  diagTrail.push(p);
+  if (diagTrail.length > 20) diagTrail.splice(0, diagTrail.length - 20);
+  diagTrailStore = WPA_CONTRACTS.foldDiagTrail(diagTrailStore, p, now);
+  scheduleDiagTrailFlush();
+}
+
+function diagFail(probe, err, extra) {
+  extra = extra || {};
+  const rec = WPA_CONTRACTS.makeDiagRecord({
+    probe: probe,
+    err: err,
+    code: extra.code,
+    ms: extra.ms,
+    world: extra.world,
+    op: extra.op,
+    trail: diagTrail.slice(),
+    now: Date.now()
+  });
+  if (!rec) return;
+  enqueueDiagWrite(rec);
+}
+
+function enqueueDiagMut(fn) {
+  const run = diagWriteQueue.then(fn, fn);
+  diagWriteQueue = run.catch(function () {});
+  return run;
+}
+
+function enqueueDiagWrite(rec) {
+  return enqueueDiagMut(function () { return persistDiagRow(rec); });
+}
+
+function cancelDiagTrailTimer() {
+  if (!diagTrailTimer) return;
+  try { clearTimeout(diagTrailTimer); } catch (e) {}
+  diagTrailTimer = null;
+}
+
+function scheduleDiagTrailFlush() {
+  if (diagTrailTimer) return;
+  diagTrailTimer = setTimeout(function () {
+    diagTrailTimer = null;
+    void enqueueDiagMut(persistDiagTrail);
+  }, 1200);
+}
+
+async function persistDiagTrail() {
+  try {
+    const saved = await storageGet(DIAG_STORE_KEY);
+    const cur = saved && saved[DIAG_STORE_KEY];
+    const next = WPA_CONTRACTS.mergeDiagTrail(cur, diagTrailStore, {
+      capKb: diagCapKbMemo,
+      now: Date.now()
+    });
+    diagTrailStore = Array.isArray(next.trail) ? next.trail : diagTrailStore;
+    const write = {};
+    write[DIAG_STORE_KEY] = next;
+    await storageSet(write, { silent: true });
+  } catch (e) {}
+}
+
+async function flushDiagTrail() {
+  cancelDiagTrailTimer();
+  return enqueueDiagMut(persistDiagTrail);
+}
+
+async function persistDiagRow(rec) {
+  try {
+    const saved = await storageGet(DIAG_STORE_KEY);
+    const cur = saved && saved[DIAG_STORE_KEY];
+    const withTrail = WPA_CONTRACTS.mergeDiagTrail(cur, diagTrailStore, {
+      capKb: diagCapKbMemo,
+      now: Date.now()
+    });
+    const next = WPA_CONTRACTS.appendDiagStore(withTrail, rec, {
+      capKb: diagCapKbMemo,
+      now: Date.now()
+    });
+    diagTrailStore = Array.isArray(next.trail) ? next.trail : diagTrailStore;
+    const write = {};
+    write[DIAG_STORE_KEY] = next;
+    await storageSet(write, { silent: true });
+  } catch (e) {}
+}
+
+async function loadDiagStore() {
+  const saved = await storageGet(DIAG_STORE_KEY);
+  const cur = saved && saved[DIAG_STORE_KEY];
+  if (!cur || typeof cur !== 'object' || Array.isArray(cur)) {
+    return { schemaVersion: WPA_CONTRACTS.DIAG_SCHEMA_VERSION, rows: [], trail: [] };
+  }
+  if (Array.isArray(cur.trail) && !diagTrailStore.length) diagTrailStore = cur.trail.slice();
+  return cur;
+}
+
+async function exportDiagForHours(hours) {
+  cancelDiagTrailTimer();
+  return enqueueDiagMut(async function () {
+    await persistDiagTrail();
+    const store = await loadDiagStore();
+    return WPA_CONTRACTS.exportDiagStore(store, { hours: hours, now: Date.now() });
+  });
+}
+
+async function clearDiagStore() {
+  cancelDiagTrailTimer();
+  diagTrailStore = [];
+  diagTrail.length = 0;
+  return enqueueDiagMut(function () {
+    diagTrailStore = [];
+    diagTrail.length = 0;
+    const write = {};
+    write[DIAG_STORE_KEY] = { schemaVersion: WPA_CONTRACTS.DIAG_SCHEMA_VERSION, rows: [], trail: [] };
+    return storageSet(write, { silent: true });
+  });
+}
+
+const bridgeKeys = new Map();
+const snapState = new Map();
+const offscreenJobs = new Map();
+let offscreenIdleAt = 0;
+
+async function recordTelemetry(entry) {
+  try {
+    const key = 'wpaTelemetry';
+    const cur = await sessionGet(key);
+    const prev = (cur && cur[key] && Array.isArray(cur[key].rows)) ? cur[key].rows : [];
+    const rows = prev.concat([Object.assign({ t: Date.now() }, entry)]).slice(-80);
+    await sessionSet({ [key]: { rows: rows } });
+  } catch (e) {}
+}
+
+async function journalWrite(tabId, entry) {
+  try {
+    const key = 'runJournal:' + tabId;
+    const cur = await sessionGet(key);
+    const prev = (cur && cur[key] && Array.isArray(cur[key].rows)) ? cur[key].rows : [];
+    const rows = prev.concat([Object.assign({ t: Date.now() }, entry)]).slice(-40);
+    await sessionSet({ [key]: { rows: rows } });
+  } catch (e) {}
+}
+
+function stampSnapshot(tabId, snap) {
+  if (!snap || typeof snap !== 'object') return snap;
+  const prev = snapState.get(tabId) || { generation: 0 };
+  const generation = (Number(prev.generation) || 0) + 1;
+  snap.generation = generation;
+  const elements = Array.isArray(snap.elements) ? snap.elements : [];
+  const selectors = [];
+  const fileSelectors = [];
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    if (!el) continue;
+    if (el.selector) selectors.push(String(el.selector));
+    const type = String(el.type || '').toLowerCase();
+    const tag = String(el.tag || '').toUpperCase();
+    if (type === 'file' || (tag === 'INPUT' && type === 'file')) {
+      if (el.selector) fileSelectors.push(String(el.selector));
+      if (el.idx != null) fileSelectors.push(String(el.idx));
+    }
+  }
+  snapState.set(tabId, {
+    generation: generation,
+    idxMax: snap.snapshotCount != null ? Number(snap.snapshotCount) : elements.length,
+    selectors: selectors,
+    fileSelectors: fileSelectors
+  });
+  return snap;
+}
+
+function flagsFromPage(page) {
+  return WPA_CONTRACTS.resolveFlags({
+    compatMode: !!(page && page.compatMode),
+    convergeBackup: !!(page && page.convergeBackup),
+    worlds: (page && page.worlds) || {}
+  }, {});
+}
+
+async function bindWorld(tabId, world) {
+  const nonce = 'wpa' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tabId },
+    world: world,
+    func: function (nonce) {
+      var inst = globalThis.__wpaBridge;
+      if (!inst || typeof inst.dispatch !== 'function') return { ok: false, error: 'missing' };
+      globalThis[nonce] = inst.dispatch;
+      return { ok: true, version: inst.version || '' };
+    },
+    args: [nonce]
+  });
+  const ret = results && results[0] && results[0].result;
+  if (!ret || !ret.ok) throw new Error('绑定页面桥失败: ' + ((ret && ret.error) || 'no result'));
+  return nonce;
+}
+
+async function callBridge(tabId, world, cmd, payload) {
+  diagHit('bridge');
+  let slot = bridgeKeys.get(tabId);
+  if (!slot || !slot.main || !slot.isolated) {
+    try { await inject(tabId); } catch (e) {}
+    slot = bridgeKeys.get(tabId);
+  }
+  if (!slot) {
+    diagFail('bridge', { message: '页面桥未注入' }, { world: world });
+    return { __error: '页面桥未注入' };
+  }
+  const chromeWorld = world === 'ISOLATED' ? 'ISOLATED' : 'MAIN';
+  const nonce = chromeWorld === 'ISOLATED' ? slot.isolated : slot.main;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      world: chromeWorld,
+      func: async function (key, cmd, payload) {
+        var fn = globalThis[key];
+        if (typeof fn !== 'function') return { ok: false, error: 'dispatcher missing' };
+        return await fn(cmd, payload);
+      },
+      args: [nonce, cmd, payload == null ? {} : payload]
+    });
+    const ret = results && results[0] && results[0].result;
+    if (ret == null) {
+      diagFail('bridge', { message: 'empty bridge result' }, { world: chromeWorld });
+      return { __error: 'empty bridge result' };
+    }
+    if (ret && ret.error === 'dispatcher missing') {
+      diagFail('bridge', { message: 'dispatcher missing' }, { world: chromeWorld });
+    }
+    return ret;
+  } catch (e) {
+    diagFail('bridge', e, { world: chromeWorld });
+    return { __error: String(e && e.message || e) };
+  }
+}
+
+async function callBridgeRetry(tabId, world, cmd, payload) {
+  let resp = await callBridge(tabId, world, cmd, payload);
+  if (resp && (resp.__error || resp.error === 'dispatcher missing')) {
+    try { await inject(tabId); } catch (e) {}
+    resp = await callBridge(tabId, world, cmd, payload);
+  }
+  return resp;
+}
+
+async function takeSnapshot(tabId, full) {
+  let snap = await callBridgeRetry(tabId, 'ISOLATED', 'snapshot', { full: !!full });
+  if (snap && (snap.__error || snap.error === 'dispatcher missing')) {
+    snap = await callBridgeRetry(tabId, 'MAIN', 'snapshot', { full: !!full });
+  }
+  if (snap && !snap.__error) {
+    try {
+      const office = await callBridge(tabId, 'MAIN', 'officeDigest', {});
+      if (office && !office.__error && office.kind) snap.officeContext = office;
+    } catch (e) {}
+    stampSnapshot(tabId, snap);
+    try {
+      const bytes = JSON.stringify(snap).length;
+      await recordTelemetry({
+        op: 'snapshot', world: 'ISOLATED', kind: 'read',
+        outcome: 'ok', snapshotBytes: bytes, truncated: !!snap.truncated,
+        generation: snap.generation, elapsedMs: snap.snapshotMs
+      });
+    } catch (eT) {}
+  }
+  return snap;
+}
+
+const ATTACH_DB_NAME = 'wpa-attachments';
+const ATTACH_STORE = 'blobs';
+
+function openAttachDb() {
+  return new Promise(function (resolve, reject) {
+    const req = indexedDB.open(ATTACH_DB_NAME, 1);
+    req.onupgradeneeded = function () {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(ATTACH_STORE)) db.createObjectStore(ATTACH_STORE);
+    };
+    req.onsuccess = function () { resolve(req.result); };
+    req.onerror = function () { reject(req.error || new Error('打开附件 IndexedDB 失败')); };
+  });
+}
+
+function attachOp(mode, fn) {
+  return openAttachDb().then(function (db) {
+    return new Promise(function (resolve, reject) {
+      const tx = db.transaction(ATTACH_STORE, mode);
+      const store = tx.objectStore(ATTACH_STORE);
+      let req;
+      try { req = fn(store); } catch (e) { try { db.close(); } catch (x) {} reject(e); return; }
+      const box = { value: undefined };
+      if (req) {
+        req.onsuccess = function () { box.value = req.result; };
+        req.onerror = function () { reject(req.error); };
+      }
+      tx.oncomplete = function () { try { db.close(); } catch (x) {} resolve(box.value); };
+      tx.onerror = function () { try { db.close(); } catch (x) {} reject(tx.error); };
+      tx.onabort = function () { try { db.close(); } catch (x) {} reject(tx.error || new Error('附件 IndexedDB 中止')); };
+    });
+  });
+}
+
+function attachKey(origin, fileKey) {
+  return String(origin || '') + '\0' + String(fileKey || '');
+}
+
+function attachPut(origin, fileKey, dataUrl) {
+  return attachOp('readwrite', function (store) {
+    return store.put({ schemaVersion: 1, createdAt: Date.now(), dataUrl: dataUrl }, attachKey(origin, fileKey));
+  });
+}
+
+function attachGet(origin, fileKey) {
+  return attachOp('readonly', function (store) { return store.get(attachKey(origin, fileKey)); });
+}
+
+function attachDel(origin, fileKey) {
+  return attachOp('readwrite', function (store) { return store.delete(attachKey(origin, fileKey)); });
+}
+
+async function hydrateFileRows(origin, rows) {
+  const list = Array.isArray(rows) ? rows : (rows && Array.isArray(rows.items) ? rows.items : []);
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const row = Object.assign({}, list[i]);
+    if (!row.dataUrl && row.key) {
+      try {
+        const blob = await attachGet(origin, row.key);
+        if (blob && blob.dataUrl) row.dataUrl = blob.dataUrl;
+      } catch (e) {}
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+async function persistFileRows(origin, rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const meta = [];
+  let pressure = false;
+  for (let i = 0; i < list.length; i++) {
+    const rec = Object.assign({}, list[i]);
+    if (rec.dataUrl) {
+      try {
+        await attachPut(origin, rec.key, rec.dataUrl);
+        delete rec.dataUrl;
+        rec.hasBlob = true;
+      } catch (e) {
+        pressure = true;
+        rec.hasBlob = false;
+        diagFail('idb', e);
+      }
+    }
+    meta.push(rec);
+  }
+  const write = await storageSet({
+    ['files:' + origin]: { schemaVersion: WPA_CONTRACTS.STORAGE_SCHEMA_VERSION, items: meta }
+  });
+  return { ok: write.ok, pressure: pressure, error: write.error };
+}
+
+function publicConfigPayload(cfg) {
+  const base = configPayload(cfg);
+  base.textProviders = WPA_CONTRACTS.maskProviderList(base.textProviders, false);
+  base.ocrProviders = WPA_CONTRACTS.maskProviderList(base.ocrProviders, false);
+  return base;
+}
+
+function settingsConfigPayload(cfg) {
+  return configPayload(cfg);
+}
+
+function extensionPageUrl(file) {
+  try { return chrome.runtime.getURL(file); } catch (e) { return ''; }
+}
+
+function portSenderUrl(port) {
+  const s = (port && port.sender) || {};
+  return String(s.url || (s.tab && s.tab.url) || '');
+}
+
+function isSettingsSenderUrl(url) {
+  const want = extensionPageUrl('settings.html');
+  if (!want) return false;
+  const u = String(url || '').split('#')[0].split('?')[0];
+  return u === want;
+}
+
+// options_ui.open_in_tab=true 时 sender.tab 一定存在；按扩展页 URL 识别，不能因有 tab 就拒。
+function assertSettingsPort(port) {
+  return isSettingsSenderUrl(portSenderUrl(port));
+}
+
+function assertPanelPort(port) {
+  const s = (port && port.sender) || {};
+  const tab = s.tab;
+  if (!tab || tab.id == null) return false;
+  if (s.frameId != null && s.frameId !== 0) return false;
+  if (isSettingsSenderUrl(portSenderUrl(port))) return false;
+  return true;
+}
+
+async function lockTrustedStorage() {
+  try {
+    if (chrome.storage && chrome.storage.local && chrome.storage.local.setAccessLevel) {
+      await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+    }
+  } catch (e) {}
+}
+
+async function ensureStorageSchema() {
+  const saved = await storageGet('wpaSchema');
+  const cur = saved && saved.wpaSchema;
+  if (cur && cur.version === WPA_CONTRACTS.STORAGE_SCHEMA_VERSION) return;
+  await storageSet({ wpaSchema: { version: WPA_CONTRACTS.STORAGE_SCHEMA_VERSION, migratedAt: Date.now() } });
+}
+
+function offscreenRetain(id) {
+  offscreenJobs.set(id, Date.now());
+  offscreenIdleAt = 0;
+}
+
+function offscreenRelease(id) {
+  offscreenJobs.delete(id);
+  if (offscreenJobs.size === 0) offscreenIdleAt = Date.now();
+}
+
+async function maybeCloseOffscreen() {
+  if (offscreenJobs.size > 0) return;
+  if (!offscreenIdleAt) return;
+  if (Date.now() - offscreenIdleAt < 60000) return;
+  try { await chrome.offscreen.closeDocument(); } catch (e) {}
+  resetOffscreenPort();
+  offscreenIdleAt = 0;
 }
 
 // 把单个 provider 配置标准化（兜底字段 + providerType）。
@@ -393,7 +890,8 @@ async function getConfigMerged(origin) {
     archiveRedactHint: typeof cfg.archiveRedactHint === 'string'
       ? cfg.archiveRedactHint.slice(0, 2000)
       : DEFAULT_CONFIG.archiveRedactHint
-  }, applyRuntimeKnobs(cfg), applyUiKnobs(cfg), normalizePdfParseConfig(cfg));
+  }, applyRuntimeKnobs(cfg), applyUiKnobs(cfg), applyDiagKnobs(cfg), normalizePdfParseConfig(cfg));
+  noteDiagCap(merged);
   if (origin) {
     const page = await getPageConfig(origin);
     return mergePageRuntimeConfig(merged, page);
@@ -456,6 +954,7 @@ function configPayload(cfg) {
     uiOpacity: cfg.uiOpacity,
     panelScaleX: cfg.panelScaleX,
     panelScaleY: cfg.panelScaleY,
+    diagCapKb: WPA_CONTRACTS.clampDiagCapKb(cfg.diagCapKb),
     archiveRedactHint: typeof cfg.archiveRedactHint === 'string'
       ? cfg.archiveRedactHint.slice(0, 2000)
       : DEFAULT_CONFIG.archiveRedactHint,
@@ -469,12 +968,13 @@ function configPayload(cfg) {
   };
 }
 
-// 导出配置负载：白名单字段（含运行参数）；apiKey 明文以支持重装免重配
-function exportPayload(cfg) {
+// 导出配置负载：默认掩码密钥；includeKeys 时保留明文
+function exportPayload(cfg, opts) {
+  const includeKeys = !!(opts && opts.includeKeys);
   const knobs = applyRuntimeKnobs(cfg);
   return Object.assign({
-    textProviders: cfg.textProviders,
-    ocrProviders: cfg.ocrProviders,
+    textProviders: WPA_CONTRACTS.maskProviderList(cfg.textProviders, includeKeys),
+    ocrProviders: WPA_CONTRACTS.maskProviderList(cfg.ocrProviders, includeKeys),
     selectedTextTag: cfg.selectedTextTag,
     selectedOcrTag: cfg.selectedOcrTag,
     systemPromptText: cfg.systemPromptText,
@@ -484,7 +984,7 @@ function exportPayload(cfg) {
     archiveRedactHint: typeof cfg.archiveRedactHint === 'string'
       ? cfg.archiveRedactHint.slice(0, 2000)
       : DEFAULT_CONFIG.archiveRedactHint
-  }, knobs, applyUiKnobs(cfg), normalizePdfParseConfig(cfg));
+  }, knobs, applyUiKnobs(cfg), applyDiagKnobs(cfg), normalizePdfParseConfig(cfg));
 }
 
 // 导入侧把常见别名摊成 normalizeProvider 认识的字段；对不上的键丢掉。
@@ -616,6 +1116,7 @@ function validateImportConfig(obj, current) {
   importClamped('uiOpacity', 20, 100, DEFAULT_CONFIG.uiOpacity);
   importClamped('panelScaleX', 30, 100, DEFAULT_CONFIG.panelScaleX);
   importClamped('panelScaleY', 30, 100, DEFAULT_CONFIG.panelScaleY);
+  importClamped('diagCapKb', 10, 200, DEFAULT_CONFIG.diagCapKb);
   if ('busyMaskEnabled' in obj) {
     merged.busyMaskEnabled = obj.busyMaskEnabled === true;
   }
@@ -634,7 +1135,7 @@ function validateImportConfig(obj, current) {
   if ('archiveRedactHint' in obj && typeof obj.archiveRedactHint === 'string') {
     merged.archiveRedactHint = obj.archiveRedactHint.slice(0, 2000);
   }
-  Object.assign(merged, applyRuntimeKnobs(merged), applyUiKnobs(merged), normalizePdfParseConfig(merged));
+  Object.assign(merged, applyRuntimeKnobs(merged), applyUiKnobs(merged), applyDiagKnobs(merged), normalizePdfParseConfig(merged));
 
   return { ok: true, config: merged };
 }
@@ -1499,6 +2000,7 @@ async function callLLM(messages, kind, reporter, signal, opt) {
   if ((kind || 'text') === 'text') {
     await waitLlmCallGap(config, signal);
   }
+  diagHit((kind || 'text') === 'ocr' ? 'ocr' : 'llm');
   if (reporter) {
     const chars = estimateMessageChars(messages);
     const payload = chatCompletionsPayload(tag.model, messages, {}, undefined);
@@ -1512,6 +2014,7 @@ async function callLLM(messages, kind, reporter, signal, opt) {
       prompt: extractUserPromptForArchive(messages)
     });
   }
+  const llmStarted = Date.now();
   let usageSeen = null;
   try {
     const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, {
@@ -1526,6 +2029,7 @@ async function callLLM(messages, kind, reporter, signal, opt) {
   } catch (e) {
     if ((kind || 'text') === 'text') lastTextLlmAt = Date.now();
     if (isUserCancelled(e) || (signal && signal.aborted)) throw cancelledError();
+    diagFail((kind || 'text') === 'ocr' ? 'ocr' : 'llm', e, { ms: Date.now() - llmStarted });
     if (reporter) reporter.failure(label, url, e);
     throw e;
   }
@@ -1540,7 +2044,7 @@ const ARCHIVE_REDACT_SYSTEM =
   '4. 用简短占位（如[姓名]、[手机]、[地址]）替换，不要加解释、不要输出“以下是结果”。\n' +
   '5. 完整输出脱敏后的文档：第一行是 <document>，最后一行是 </document>，中间是文档正文。不要用外层 markdown 围栏再包一层。';
 const ARCHIVE_REDACT_HINT_MAX = 2000;
-const ARCHIVE_REDACT_CHUNK_CHARS = 18000;
+const ARCHIVE_REDACT_MAX_BYTES = 20 * 1024;
 
 function extractRedactedDocument(raw) {
   const s = String(raw == null ? '' : raw).trim();
@@ -1572,9 +2076,25 @@ function archiveFenceLines(text) {
   return (String(text || '').match(/^```/gm) || []).length;
 }
 
-function packArchiveChunks(sections, maxChars) {
-  const n = Number(maxChars);
-  const cap = (Number.isFinite(n) && n > 0) ? n : ARCHIVE_REDACT_CHUNK_CHARS;
+function utf8ByteLength(s) {
+  const str = String(s || '');
+  try {
+    if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(str).length;
+  } catch (e) {}
+  let n = 0;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff) { n += 4; i++; }
+    else n += 3;
+  }
+  return n;
+}
+
+function packArchiveChunks(sections, maxBytes) {
+  const n = Number(maxBytes);
+  const cap = (Number.isFinite(n) && n > 0) ? n : ARCHIVE_REDACT_MAX_BYTES;
   const chunks = [];
   let buf = [];
   let size = 0;
@@ -1589,12 +2109,32 @@ function packArchiveChunks(sections, maxChars) {
   }
   for (let i = 0; i < sections.length; i++) {
     const sec = String(sections[i] || '');
-    if (buf.length && size + sec.length > cap && !oddFences()) flush();
+    const add = utf8ByteLength(sec);
+    if (buf.length && size + add > cap && !oddFences()) flush();
     buf.push(sec);
-    size += sec.length;
+    size += add;
   }
   flush();
   return chunks;
+}
+
+function planArchiveRedactChunks(src, maxBytes) {
+  const text = String(src || '');
+  const cap = (Number.isFinite(Number(maxBytes)) && Number(maxBytes) > 0)
+    ? Number(maxBytes)
+    : ARCHIVE_REDACT_MAX_BYTES;
+  if (utf8ByteLength(text) <= cap) {
+    return { chunks: [text], usingSections: false, preamble: '' };
+  }
+  const split = splitArchiveSections(text);
+  if (!split.sections.length) {
+    return { chunks: [text], usingSections: false, preamble: '' };
+  }
+  return {
+    chunks: packArchiveChunks(split.sections, cap),
+    usingSections: true,
+    preamble: split.preamble
+  };
 }
 
 function buildArchiveRedactMessages(hint, documentText, meta) {
@@ -1661,20 +2201,20 @@ async function redactArchiveMarkdown(markdown, hint, onProgress, signal, opt) {
   const policy = String(hint || '').trim();
   if (!policy) return src;
   if (signal && signal.aborted) throw cancelledError();
-  const split = splitArchiveSections(src);
-  const chunks = split.sections.length
-    ? packArchiveChunks(split.sections, ARCHIVE_REDACT_CHUNK_CHARS)
-    : [src];
-  const usingSections = split.sections.length > 0;
+  const plan = planArchiveRedactChunks(src, ARCHIVE_REDACT_MAX_BYTES);
+  const chunks = plan.chunks;
+  const usingSections = plan.usingSections;
   const outputs = [];
   for (let i = 0; i < chunks.length; i++) {
     if (signal && signal.aborted) throw cancelledError();
     const body = usingSections
-      ? (i === 0 ? String(split.preamble || '') + chunks[i] : chunks[i])
+      ? (i === 0 ? String(plan.preamble || '') + chunks[i] : chunks[i])
       : chunks[i];
     const expectH2 = countArchiveH2(body);
     if (typeof onProgress === 'function') {
-      onProgress('正在脱敏第 ' + (i + 1) + ' / ' + chunks.length + ' 段…');
+      onProgress(chunks.length > 1
+        ? ('正在脱敏第 ' + (i + 1) + ' / ' + chunks.length + ' 段…')
+        : '正在调用文本模型脱敏…');
     }
     const messages = buildArchiveRedactMessages(policy, body, {
       part: i + 1,
@@ -1700,7 +2240,7 @@ async function redactArchiveMarkdown(markdown, hint, onProgress, signal, opt) {
     outputs.push(extracted);
   }
   if (!usingSections) return (outputs[0] || src).replace(/\s+$/, '') + '\n';
-  return mergeRedactedArchive(split.preamble, outputs);
+  return mergeRedactedArchive(plan.preamble, outputs);
 }
 
 function markdownDownloadDataUrl(text) {
@@ -1745,6 +2285,49 @@ function downloadTextAsFile(text, filename) {
       }
     });
   });
+}
+
+async function copyTextOffscreen(text) {
+  try {
+    await ensureOffscreen();
+    if (!offscreenPort) return { ok: false, error: 'offscreen 不可用' };
+    const id = 'copy' + Date.now().toString(36);
+    const port = offscreenPort;
+    return await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        try { port.onMessage.removeListener(onMsg); } catch (e) {}
+        resolve({ ok: false, error: 'copy timeout' });
+      }, 4000);
+      function onMsg(msg) {
+        if (!msg || msg.id !== id) return;
+        clearTimeout(timer);
+        try { port.onMessage.removeListener(onMsg); } catch (e) {}
+        resolve({ ok: !!msg.ok, error: msg.error || '' });
+      }
+      port.onMessage.addListener(onMsg);
+      try { port.postMessage({ cmd: 'copyText', id: id, text: String(text || '') }); }
+      catch (e) {
+        clearTimeout(timer);
+        try { port.onMessage.removeListener(onMsg); } catch (e2) {}
+        resolve({ ok: false, error: String(e && e.message || e) });
+      }
+    });
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+
+async function hydrateTaskFiles(origin, files) {
+  const list = Array.isArray(files) ? files.slice() : [];
+  for (let i = 0; i < list.length; i++) {
+    if (list[i] && !list[i].dataUrl && list[i].key) {
+      try {
+        const blob = await attachGet(origin, list[i].key);
+        if (blob && blob.dataUrl) list[i] = Object.assign({}, list[i], { dataUrl: blob.dataUrl });
+      } catch (e) {}
+    }
+  }
+  return list;
 }
 
 // OCR 调用：按 providerType.protocol 分派。
@@ -2341,9 +2924,11 @@ async function hasOffscreenDoc() {
 }
 
 async function ensureOffscreen() {
-  if (typeof chrome.offscreen === 'undefined') {
-    throw new Error('chrome.offscreen 不可用：manifest 缺少 "offscreen" 权限或浏览器版本过低');
-  }
+  diagHit('offscreen');
+  try {
+    if (typeof chrome.offscreen === 'undefined') {
+      throw new Error('chrome.offscreen 不可用：manifest 缺少 "offscreen" 权限或浏览器版本过低');
+    }
   if (offscreenPort) return true;
   if (offscreenCreating) {
     await offscreenCreating;
@@ -2360,7 +2945,7 @@ async function ensureOffscreen() {
   offscreenCreating = chrome.offscreen.createDocument({
     url: 'offscreen.html',
     reasons: ['DOM_PARSER', 'WORKERS'],
-    justification: '解析 PDF 文本层并渲染页面为图像供 OCR 模型识别'
+    justification: '解析 PDF 文本层并渲染页面为图像供 OCR 模型识别，并在扩展文档内复制文本'
   }).then(() => true).catch((e) => {
     const m = String(e && e.message || e);
     if (/single offscreen document|already exists/i.test(m)) return true;
@@ -2377,6 +2962,10 @@ async function ensureOffscreen() {
   ]);
   if (!port && !offscreenPort) throw new Error('offscreen 端口未连接');
   return true;
+  } catch (e) {
+    diagFail('offscreen', e);
+    throw e;
+  }
 }
 
 const PDF_JOB_DB_NAME = 'wpa-pdf-jobs';
@@ -2433,6 +3022,7 @@ async function dataUrlToUint8(dataUrl) {
 async function processPdfOnce(dataUrl, cancelRef, pageSpec) {
   if (!offscreenPort) throw new Error('offscreen 端口不可用');
   const id = 'pdf' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  offscreenRetain(id);
   const jobId = id;
   const spec = pageSpec && pageSpec.mode === 'pages' ? pageSpec : { mode: 'all' };
   const bytes = await dataUrlToUint8(dataUrl);
@@ -2495,7 +3085,9 @@ async function processPdfOnce(dataUrl, cancelRef, pageSpec) {
       }
     });
   } finally {
+    offscreenRelease(id);
     try { await pdfJobDelete(jobId); } catch (e) {}
+    void maybeCloseOffscreen();
   }
 }
 
@@ -2512,7 +3104,10 @@ async function processPdf(dataUrl, cancelRef, pageSpec) {
       if (isUserCancelled(e, cancelRef)) throw cancelledError();
       lastErr = e;
       const transient = /offscreen|端口|连接|disconnected/i.test(String(e && e.message || e));
-      if (!transient || attempt > 0) throw e;
+      if (!transient || attempt > 0) {
+        diagFail('offscreen', e);
+        throw e;
+      }
       try { await chrome.offscreen.closeDocument(); } catch (x) {}
       resetOffscreenPort();
     }
@@ -2722,8 +3317,9 @@ async function ocrCacheClear(origin) {
 
 
 async function inject(tabId) {
+  diagHit('inject');
   const files = [
-    { files: ['content.js'], world: 'ISOLATED' },
+    { files: ['content.js', 'pagebridge.js'], world: 'ISOLATED' },
     { files: ['office.js', 'pagebridge.js'], world: 'MAIN' },
     { files: ['panel.js'], world: 'ISOLATED' }
   ];
@@ -2740,7 +3336,17 @@ async function inject(tabId) {
     }
   }
   if (failures.length) {
-    throw new Error('页面桥接未完整注入（可能是 chrome:// 等不支持的页面）：' + failures.join('；'));
+    const err = new Error('页面桥接未完整注入（可能是 chrome:// 等不支持的页面）：' + failures.join('；'));
+    diagFail('inject', err);
+    throw err;
+  }
+  try {
+    const isolated = await bindWorld(tabId, 'ISOLATED');
+    const main = await bindWorld(tabId, 'MAIN');
+    bridgeKeys.set(tabId, { main: main, isolated: isolated });
+  } catch (e) {
+    diagFail('inject', e);
+    throw e;
   }
 }
 
@@ -3762,6 +4368,8 @@ async function preprocessFiles({ files, origin, postMsg, cancelRef }) {
           return { textBlocks, ocrBlocks, aborted: true, cancelled: true, reason: '已停止' };
         }
         const localPdf = isLocalPdfProcessError(e);
+        if (localPdf) diagFail('offscreen', e);
+        else if (hasOcr && !e.breakerOpen && !e.unusable) diagFail('ocr', e);
         if (hasOcr && !e.breakerOpen && !localPdf && !e.unusable) ocrBreakerRecordFailure(origin);
         const failNote = (!localPdf && !e.unusable && hasOcr)
           ? '（连续失败 ' + ocrBreakerState(origin).fails + '/' + OCR_MAX_CONSECUTIVE_FAILS + ' 次）'
@@ -4365,12 +4973,13 @@ function buildPrevStepJudgment(runRaw, operations, resumeDone, parsed) {
 
 function hideBusyMaskTab(tabId) {
   if (tabId == null) return;
-  try { chrome.tabs.sendMessage(tabId, { cmd: 'setBusyMask', on: false }, () => void chrome.runtime.lastError); } catch (e) {}
+  try { void callBridge(tabId, 'MAIN', 'setBusyMask', { on: false }); } catch (e) {}
+  try { chrome.tabs.sendMessage(tabId, { cmd: 'abortRun' }, () => void chrome.runtime.lastError); } catch (e2) {}
 }
 function showBusyMaskTab(tabId, enabled) {
   if (tabId == null) return;
   if (enabled === false) return;
-  try { chrome.tabs.sendMessage(tabId, { cmd: 'setBusyMask', on: true }, () => void chrome.runtime.lastError); } catch (e) {}
+  try { void callBridge(tabId, 'MAIN', 'setBusyMask', { on: true }); } catch (e) {}
 }
 
 async function sendToContent(tabId, msg) {
@@ -4467,7 +5076,7 @@ async function waitForDomQuiet(tabId, cancelRef, ms, origin) {
   waitMs = clampInt(waitMs, 1000, 15000, DEFAULT_CONFIG.pageQuietMs);
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline && !(cancelRef && cancelRef.cancelled)) {
-    const probe = await sendToContentRetry(tabId, { cmd: 'probe' });
+    const probe = await callBridgeRetry(tabId, 'ISOLATED', 'probe', {});
     if (isProbeValid(probe)) {
       const key = [probe.domLen, probe.domDigest, probe.formDigest, probe.interactiveCount].join('|');
       if (key === previous) stableRounds++;
@@ -4492,7 +5101,7 @@ async function waitForSuggestSettle(tabId, cancelRef, targets, ms, origin) {
   waitMs = clampInt(waitMs, 0, 5000, DEFAULT_CONFIG.suggestWaitMs);
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline && !(cancelRef && cancelRef.cancelled)) {
-    last = await sendToContentRetry(tabId, { cmd: 'viewPrint', targets: targets || [] });
+    last = await callBridgeRetry(tabId, 'ISOLATED', 'viewPrint', { targets: targets || [] });
     const sig = (last && !last.__error && last.sig != null) ? String(last.sig) : '';
     if (sig === prev) stable += 1;
     else { stable = 0; prev = sig; }
@@ -4645,7 +5254,7 @@ async function ocrPageSelector(tabId, args, ctx) {
   if (isUserCancelled(null, cancelRef)) {
     return { ok: false, kind: 'query', cancelled: true, error: '已停止' };
   }
-  const cap = await sendToContentRetry(tabId, { cmd: 'captureImage', selector: selector });
+  const cap = await callBridgeRetry(tabId, 'MAIN', 'captureImage', { selector: selector });
   if (isUserCancelled(null, cancelRef)) {
     return { ok: false, kind: 'query', cancelled: true, error: '已停止' };
   }
@@ -4697,6 +5306,7 @@ async function ocrPageSelector(tabId, args, ctx) {
       return { ok: false, kind: 'query', cancelled: true, error: '已停止' };
     }
     ocrBreakerRecordFailure(origin);
+    diagFail('ocr', e);
     return { ok: false, kind: 'query', error: String(e && e.message || e) };
   }
 }
@@ -4828,15 +5438,97 @@ function mergePageOpResults(resp) {
   return [{ op: 'batch', value: resp.result }];
 }
 
-async function runPageOpsBatch(tabId, operations) {
-  const resp = await sendToContent(tabId, { cmd: 'runOps', operations: operations || [] });
-  if (resp && resp.__error) {
-    await new Promise((r) => setTimeout(r, 300));
-    const status = await getTabStatus(tabId);
-    if (status === 'loading') return { resp, navigated: true };
-    try { await inject(tabId); } catch (e) {}
+async function runPageOpsBatch(tabId, operations, ctx) {
+  const list = Array.isArray(operations) ? operations : [];
+  const flags = (ctx && ctx.flags) || WPA_CONTRACTS.DEFAULT_FLAGS;
+  const results = [];
+  let lastProbe = null;
+  let navigated = false;
+  let batch = [];
+  let batchWorld = null;
+
+  async function runChunk(world, chunk) {
+    if (!chunk.length) return { ok: true };
+    let resp;
+    if (world === 'upload') {
+      resp = await sendToContent(tabId, { cmd: 'runOps', operations: chunk });
+    } else {
+      resp = await callBridge(tabId, world, 'runOps', { operations: chunk });
+    }
+    if (resp && resp.__error) {
+      await new Promise((r) => setTimeout(r, 300));
+      const status = await getTabStatus(tabId);
+      if (status === 'loading') return { navigated: true, resp: resp };
+      try { await inject(tabId); } catch (e) {}
+      return { resp: resp, navigated: false, stop: true };
+    }
+    if (resp && resp.probe) lastProbe = resp.probe;
+    const part = mergePageOpResults(resp);
+    if (part) {
+      Array.prototype.push.apply(results, part);
+      for (let i = 0; i < part.length; i++) {
+        const row = part[i] || {};
+        const outcome = WPA_CONTRACTS.classifyOpOutcome(row.op, row.value, null);
+        if (WPA_CONTRACTS.getOp(row.op) && WPA_CONTRACTS.getOp(row.op).kind === 'fire' && outcome === 'unobservable') {
+          void journalWrite(tabId, { phase: 'unknown-fire', op: row.op });
+        }
+        void recordTelemetry({
+          op: row.op, world: world, kind: (WPA_CONTRACTS.getOp(row.op) || {}).kind,
+          outcome: outcome, generation: (snapState.get(tabId) || {}).generation
+        });
+      }
+    }
+    if (resp && resp.ok === false) return { resp: resp, navigated: false, stop: true };
+    return { ok: true, resp: resp };
   }
-  return { resp, navigated: false };
+
+  async function flush() {
+    if (!batch.length) return { ok: true };
+    const chunk = batch.slice();
+    const world = batchWorld;
+    batch = [];
+    batchWorld = null;
+    return runChunk(world, chunk);
+  }
+
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i] || {};
+    const op = String(item.op || '');
+    let world;
+    if (op === 'upload') world = 'upload';
+    else {
+      const w = WPA_CONTRACTS.resolveWorld(op, flags);
+      world = w === 'isolated' ? 'ISOLATED' : 'MAIN';
+    }
+    if (batchWorld && world !== batchWorld) {
+      const flushed = await flush();
+      if (flushed.navigated) return { resp: flushed.resp, navigated: true };
+      if (flushed.stop) {
+        return {
+          resp: {
+            ok: false,
+            error: flushed.resp && flushed.resp.error,
+            result: JSON.stringify({ kind: 'batch', results: results }),
+            probe: lastProbe
+          },
+          navigated: false
+        };
+      }
+    }
+    batchWorld = world;
+    batch.push(item);
+  }
+  const last = await flush();
+  if (last.navigated) return { resp: last.resp, navigated: true };
+  return {
+    resp: {
+      ok: !(last.resp && last.resp.ok === false),
+      error: last.resp && last.resp.error,
+      result: JSON.stringify({ kind: 'batch', results: results }),
+      probe: lastProbe || (last.resp && last.resp.probe)
+    },
+    navigated: navigated
+  };
 }
 
 // 导航安全的 runScript：不自动重试（避免导航后重复执行脚本）
@@ -4858,13 +5550,22 @@ async function runScriptSafe(tabId, script) {
 }
 
 async function runOperationsSafe(tabId, operations, ctx) {
-  const list = Array.isArray(operations) ? operations : [];
+  const checked = WPA_CONTRACTS.validateOperations(Array.isArray(operations) ? operations : []);
+  if (!checked.ok) {
+    return { resp: { ok: false, error: checked.error }, navigated: false };
+  }
+  const list = checked.operations;
+  const pre = WPA_CONTRACTS.preflightGeneration(list, snapState.get(tabId));
+  if (!pre.ok) {
+    return { resp: { ok: false, error: pre.error }, navigated: false };
+  }
+  void journalWrite(tabId, { phase: 'ops-intent', ops: list.map((x) => x && x.op) });
   function isBackgroundOp(op) {
     const o = String(op || '');
     return o === 'ocr' || o === 'ocrFill';
   }
   if (!list.some((item) => item && isBackgroundOp(item.op))) {
-    return runPageOpsBatch(tabId, list);
+    return runPageOpsBatch(tabId, list, ctx);
   }
 
   const results = [];
@@ -4893,7 +5594,7 @@ async function runOperationsSafe(tabId, operations, ctx) {
     if (!pageOps.length) return true;
     const batch = pageOps.slice();
     pageOps.length = 0;
-    const execution = await runPageOpsBatch(tabId, batch);
+    const execution = await runPageOpsBatch(tabId, batch, ctx);
     if (isUserCancelled(null, cancelRef)) return stoppedResult();
     if (execution.navigated) navigated = true;
     const resp = execution.resp;
@@ -5316,9 +6017,10 @@ const hydratedPanelTabs = new Set();
 const deferredTaskMessages = new Map();
 
 function broadcastUiConfig(cfg) {
-  const payload = { type: 'config', config: configPayload(cfg) };
-  panelPorts.forEach((p) => { post(p, payload); });
-  settingsPorts.forEach((p) => { post(p, payload); });
+  const panelPayload = { type: 'config', config: publicConfigPayload(cfg) };
+  const settingsPayload = { type: 'config', config: settingsConfigPayload(cfg) };
+  panelPorts.forEach((p) => { post(p, panelPayload); });
+  settingsPorts.forEach((p) => { post(p, settingsPayload); });
 }
 
 function postToTab(tabId, fallbackPort, obj) {
@@ -5352,6 +6054,8 @@ function stopActiveTask(tabId, opts) {
   if (tabId != null) {
     hideBusyMaskTab(tabId);
     try { chrome.tabs.sendMessage(tabId, { cmd: 'abortRun' }, () => void chrome.runtime.lastError); } catch (e) {}
+    try { void callBridge(tabId, 'MAIN', 'abort', {}); } catch (e2) {}
+    try { void callBridge(tabId, 'ISOLATED', 'abort', {}); } catch (e3) {}
   }
   return a;
 }
@@ -5600,7 +6304,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
     const snapMax = wantFull ? LAST_CHANCE_SNAPSHOT_MAX : SNAPSHOT_MAX_CHARS;
 
     // 快照与按需抽附件正文互不依赖，并行以免 OCR 额外拉长本步。
-    const snapP = sendToContentRetry(tabId, { cmd: 'snapshot', full: wantFull });
+    const snapP = takeSnapshot(tabId, wantFull);
     const pinSt = await pinAttachBodyIfNeeded();
     if (pinSt === 'cancelled') {
       return await notifyCancelled(postMsg, cancelRef, origin, messages);
@@ -5651,6 +6355,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
     };
     const contextMessages = messages.concat([snapshotUser]);
 
+    void journalWrite(tabId, { phase: 'llm-intent', step: i });
     let llmText;
     let llmTries = 0;
     const timeoutRetry = clampInt(config.llmTimeoutRetry, 0, 3, LLM_TEXT_TIMEOUT_RETRY);
@@ -5658,6 +6363,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
     for (;;) {
       try {
         llmText = await callLLM(contextMessages, 'text', apiReporter, cancelRef && cancelRef.signal, { origin: origin });
+        void journalWrite(tabId, { phase: 'llm-result', step: i });
         break;
       } catch (e) {
         if (isUserCancelled(e, cancelRef)) {
@@ -5854,7 +6560,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
       const hintTask = (resumeMeta && resumeMeta.originalTask) || task;
       const execution = await runOperationsSafe(tabId, attachTaskHintToOps(parsed.operations, hintTask, {
         blockHandoff: taskWantsFileObtain(hintTask) && !taskExplicitDesktopHandoff(hintTask)
-      }), { postMsg, cancelRef, origin });
+      }), { postMsg, cancelRef, origin, flags: flagsFromPage(config) });
       const { resp: runResp, navigated } = execution;
       if (cancelRef.cancelled || execution.cancelled) {
         return await notifyCancelled(postMsg, cancelRef, origin, messages);
@@ -5883,7 +6589,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
 
       // 探测操作后的页面信号
       let afterProbe = (runResp && !runResp.__error && runResp.probe) ? runResp.probe : null;
-      if (!afterProbe || maySuggest) afterProbe = await sendToContentRetry(tabId, { cmd: 'probe' });
+      if (!afterProbe || maySuggest) afterProbe = await callBridgeRetry(tabId, 'ISOLATED', 'probe', {});
       const report = computeChangeReport(beforeSignals, afterProbe);
       let cSummary = changeSummary(report);
       const urlChanged = !!(report && report.urlChanged);
@@ -5908,7 +6614,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
       }
 
       if ((maySuggest || opsIncludeMutation(parsed.operations)) && !navigated && !documentChanged) {
-        const freshView = await sendToContentRetry(tabId, { cmd: 'viewPrint', targets: thisTargets });
+        const freshView = await callBridgeRetry(tabId, 'ISOLATED', 'viewPrint', { targets: thisTargets });
         if (freshView && !freshView.__error) afterViewPrint = freshView;
       }
       const viewDiff = diffViewPrint(beforeSignals && beforeSignals.viewPrint, afterViewPrint && afterViewPrint.items);
@@ -5999,8 +6705,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
 
       if (report && report.statusFailure) {
         try {
-          const ctx = await sendToContentRetry(tabId, {
-            cmd: 'submitFailureContext',
+          const ctx = await callBridgeRetry(tabId, 'ISOLATED', 'submitFailureContext', {
             targets: formSessionTargets.concat(thisTargets)
           });
           if (ctx && !ctx.__error) {
@@ -6322,8 +7027,17 @@ chrome.runtime.onConnect.addListener((port) => {
   }
   if (port.name !== 'panel' && port.name !== 'settings') return;
   const isSettings = port.name === 'settings';
+  if (isSettings && !assertSettingsPort(port)) {
+    try { port.disconnect(); } catch (e) {}
+    return;
+  }
+  if (!isSettings && !assertPanelPort(port)) {
+    try { port.disconnect(); } catch (e) {}
+    return;
+  }
   const SETTINGS_CMDS = {
-    getConfig: true, saveConfig: true, testLLM: true, exportConfig: true, importConfig: true
+    getConfig: true, saveConfig: true, testLLM: true, exportConfig: true, importConfig: true,
+    exportDiag: true, clearDiag: true, diagFail: true
   };
   const tab = port.sender && port.sender.tab;
   const tabId = tab ? tab.id : null;
@@ -6338,8 +7052,9 @@ chrome.runtime.onConnect.addListener((port) => {
 
   (async () => {
     if (isSettings) {
+      diagHit('settings');
       const config = await getConfigMerged();
-      postMsg({ type: 'config', config: configPayload(config) });
+      postMsg({ type: 'config', config: settingsConfigPayload(config) });
       return;
     }
     if (tabId != null) await restorePendingState(tabId);
@@ -6362,7 +7077,7 @@ chrome.runtime.onConnect.addListener((port) => {
       postMsg({ type: 'taskState', running: true, text: '页面已跳转，正在继续原任务…' });
     }
     const config = await getConfigMerged();
-    postMsg({ type: 'config', config: configPayload(config), pageConfig: await getPageConfig(origin) });
+    postMsg({ type: 'config', config: publicConfigPayload(config), pageConfig: await getPageConfig(origin) });
   })();
 
   port.onMessage.addListener((msg) => {
@@ -6377,23 +7092,29 @@ chrome.runtime.onConnect.addListener((port) => {
       (async () => {
         const config = await getConfigMerged();
         const extra = isSettings ? {} : { pageConfig: await getPageConfig(origin) };
-        postMsg(Object.assign({ type: 'config', config: configPayload(config) }, extra));
+        const payload = isSettings ? settingsConfigPayload(config) : publicConfigPayload(config);
+        postMsg(Object.assign({ type: 'config', config: payload }, extra));
       })();
     } else if (cmd === 'saveConfig') {
-      (async () => {
+      if (!isSettings) return;
+      enqueueConfigWrite(async () => {
         const saved = await storageGet('assistantConfig');
         const base = saved.assistantConfig || {};
-        const next = Object.assign({}, base, msg.config || {});
+        const patch = msg.config && typeof msg.config === 'object' && !Array.isArray(msg.config) ? msg.config : {};
+        const next = Object.assign({}, base, patch);
+        Object.assign(next, applyRuntimeKnobs(next), applyUiKnobs(next), applyDiagKnobs(next), normalizePdfParseConfig(next));
+        next.maxSteps = clampInt(next.maxSteps, 1, 100, DEFAULT_CONFIG.maxSteps);
         const write = await storageSet({ assistantConfig: next });
         if (!write.ok) {
+          diagFail('config', { message: write.error || '保存失败' });
           postMsg({ type: 'configSaved', ok: false, error: write.error });
           return;
         }
-        ocrBreakerReset(origin); // 保存配置视为“修复后再试”信号，复位熔断
+        noteDiagCap(next);
+        ocrBreakerReset(origin);
         postMsg({ type: 'configSaved', ok: true });
-        // 保存后回推最新配置（含标签回退解析），供面板与全局配置页同步
         broadcastUiConfig(await getConfigMerged());
-      })();
+      });
     } else if (cmd === 'getPageConfig') {
       (async () => {
         postMsg({ type: 'pageConfig', config: await getPageConfig(origin) });
@@ -6416,8 +7137,7 @@ chrome.runtime.onConnect.addListener((port) => {
         postMsg({ type: 'pageConfigSaved', ok: true, config: page });
       })();
     } else if (cmd === 'selectTag') {
-      // 实时切换标签并持久化（面板下拉 change 时调用）
-      (async () => {
+      enqueueConfigWrite(async () => {
         const saved = await storageGet('assistantConfig');
         const base = saved.assistantConfig || {};
         const tag = { provider: msg.provider || '', model: msg.model || '' };
@@ -6428,7 +7148,7 @@ chrome.runtime.onConnect.addListener((port) => {
         else base.selectedTextTag = tag;
         await storageSet({ assistantConfig: base });
         postMsg({ type: 'tagSaved', ok: true, kind: msg.kind, tag: tag });
-      })();
+      });
     } else if (cmd === 'testLLM') {
       // 先保存面板发来的配置，再测试，避免“保存”与“测试”并发读到旧配置
       (async () => {
@@ -6487,24 +7207,85 @@ chrome.runtime.onConnect.addListener((port) => {
     } else if (cmd === 'exportConfig') {
       (async () => {
         try {
+          const includeKeys = msg.includeKeys === true;
           const cfg = await getConfigMerged();
-          postMsg({ type: 'configExport', json: JSON.stringify(exportPayload(cfg), null, 2) });
+          const json = JSON.stringify(exportPayload(cfg, { includeKeys: includeKeys }), null, 2);
+          postMsg({
+            type: 'configExport',
+            json: json,
+            filename: includeKeys ? 'assistant-config.SECRETS.json' : 'assistant-config.json',
+            masked: !includeKeys
+          });
         } catch (e) {
           postMsg({ type: 'status', text: '导出配置失败：' + String(e && e.message || e), kind: 'error' });
         }
       })();
     } else if (cmd === 'importConfig') {
+      enqueueConfigWrite(async () => {
+        diagHit('config');
+        try {
+          const raw = String(msg.raw || '');
+          if (raw.length > 2 * 1024 * 1024) {
+            diagFail('config', { message: '导入文件超过 2MB' });
+            postMsg({ type: 'configImported', ok: false, error: '导入文件超过 2MB' });
+            return;
+          }
+          let obj = null;
+          try { obj = JSON.parse(raw); } catch (e) { obj = null; }
+          const cur = await getConfigMerged();
+          const v = validateImportConfig(obj, cur);
+          if (!v.ok) {
+            diagFail('config', { message: v.error || '文件无效' });
+            postMsg({ type: 'configImported', ok: false, error: v.error || '文件无效' });
+            return;
+          }
+          const write = await storageSet({ assistantConfig: v.config });
+          if (!write.ok) {
+            diagFail('config', { message: write.error || '保存失败' });
+            postMsg({ type: 'configImported', ok: false, error: write.error || '保存失败' });
+            return;
+          }
+          noteDiagCap(v.config);
+          ocrBreakerReset(origin);
+          postMsg({ type: 'configImported', ok: true });
+          broadcastUiConfig(await getConfigMerged());
+        } catch (e) {
+          diagFail('config', e);
+          postMsg({ type: 'configImported', ok: false, error: String(e && e.message || e) });
+        }
+      });
+    } else if (cmd === 'exportDiag') {
+      if (!isSettings) return;
       (async () => {
-        let obj = null;
-        try { obj = JSON.parse(String(msg.raw || '')); } catch (e) { obj = null; }
-        const cur = await getConfigMerged();
-        const v = validateImportConfig(obj, cur);
-        if (!v.ok) { postMsg({ type: 'configImported', ok: false, error: v.error }); return; }
-        await storageSet({ assistantConfig: v.config });
-        ocrBreakerReset(origin); // 导入配置视为“修复后再试”信号，复位熔断
-        postMsg({ type: 'configImported', ok: true });
-        broadcastUiConfig(await getConfigMerged());
+        try {
+          const pack = await exportDiagForHours(msg.hours);
+          const hours = pack.hours;
+          postMsg({
+            type: 'diagExport',
+            json: JSON.stringify(pack, null, 2),
+            filename: 'wpa-diag-' + hours + 'h.json',
+            count: (pack.rows || []).length,
+            trailCount: (pack.trail || []).length,
+            hours: hours
+          });
+        } catch (e) {
+          diagFail('config', e);
+          postMsg({ type: 'status', text: '导出诊断记录失败：' + String(e && e.message || e), kind: 'error' });
+        }
       })();
+    } else if (cmd === 'clearDiag') {
+      if (!isSettings) return;
+      (async () => {
+        try {
+          await clearDiagStore();
+          postMsg({ type: 'diagCleared', ok: true });
+        } catch (e) {
+          diagFail('config', e);
+          postMsg({ type: 'diagCleared', ok: false, error: String(e && e.message || e) });
+        }
+      })();
+    } else if (cmd === 'diagFail') {
+      diagFail(isSettings ? 'settings' : 'panel', null, { code: 'Unhandled' });
     } else if (cmd === 'redactArchive') {
       (async () => {
         const hint = String(msg.hint || '').trim();
@@ -6704,6 +7485,70 @@ chrome.runtime.onConnect.addListener((port) => {
       const queued = deferredTaskMessages.get(tabId) || [];
       deferredTaskMessages.delete(tabId);
       for (const item of queued) postMsg(item);
+    } else if (cmd === 'panelStoreGet') {
+      if (isSettings) return;
+      (async () => {
+        const keys = Array.isArray(msg.keys)
+          ? msg.keys.filter((k) => WPA_CONTRACTS.panelStoreKeyAllowed(k, origin))
+          : [];
+        const got = await storageGet(keys);
+        const obj = {};
+        for (let i = 0; i < keys.length; i++) {
+          const k = keys[i];
+          if (k.indexOf('files:') === 0) obj[k] = await hydrateFileRows(origin, got[k]);
+          else if (k.indexOf('tr:') === 0) {
+            const v = got[k];
+            obj[k] = v && Array.isArray(v.items) ? v.items : v;
+          } else obj[k] = got[k];
+        }
+        postMsg({ type: 'panelStoreResult', id: msg.id, ok: true, obj: obj });
+      })();
+    } else if (cmd === 'panelStoreSet') {
+      if (isSettings) return;
+      (async () => {
+        const obj = msg.obj && typeof msg.obj === 'object' ? msg.obj : {};
+        const keys = Object.keys(obj);
+        for (let i = 0; i < keys.length; i++) {
+          if (!WPA_CONTRACTS.panelStoreKeyAllowed(keys[i], origin)) {
+            postMsg({ type: 'panelStoreResult', id: msg.id, ok: false, error: '存储键不允许' });
+            return;
+          }
+        }
+        let pressure = false;
+        const write = {};
+        for (let j = 0; j < keys.length; j++) {
+          const k = keys[j];
+          if (k.indexOf('files:') === 0) {
+            const r = await persistFileRows(origin, obj[k]);
+            pressure = pressure || !!r.pressure;
+            if (!r.ok) {
+              postMsg({ type: 'panelStoreResult', id: msg.id, ok: false, error: r.error, pressure: true });
+              return;
+            }
+          } else if (k.indexOf('tr:') === 0) {
+            const items = Array.isArray(obj[k]) ? obj[k] : [];
+            write[k] = { schemaVersion: 1, revision: Date.now(), items: items };
+          } else write[k] = obj[k];
+        }
+        if (Object.keys(write).length) {
+          const r = await storageSet(write);
+          if (!r.ok) {
+            postMsg({ type: 'panelStoreResult', id: msg.id, ok: false, error: r.error });
+            return;
+          }
+        }
+        postMsg({ type: 'panelStoreResult', id: msg.id, ok: true, pressure: pressure });
+      })();
+    } else if (cmd === 'copyText') {
+      (async () => {
+        const r = await copyTextOffscreen(String(msg.text || ''));
+        postMsg({ type: 'copyTextResult', id: msg.id, ok: !!r.ok, error: r.error || '' });
+      })();
+    } else if (cmd === 'downloadText') {
+      (async () => {
+        const r = await downloadTextAsFile(msg.text, msg.filename);
+        postMsg({ type: 'downloadTextResult', id: msg.id, ok: !!r.ok, error: r.error || '', cancelled: !!r.cancelled });
+      })();
     } else if (cmd === 'panelState') {
       if (msg.visible) { visibleTabs.add(tabId); } else { visibleTabs.delete(tabId); }
     } else if (cmd === 'prepareAttach') {
@@ -6768,7 +7613,7 @@ chrome.runtime.onConnect.addListener((port) => {
             : (pausedOrigins.get(tabId) || origin);
           const currentTask = activeTasks.get(tabId);
           if (currentTask && currentTask.cancelRef === cancelRef) currentTask.origin = taskOrigin;
-          const files = msg.files || [];
+          const files = await hydrateTaskFiles(taskOrigin, msg.files || []);
           const payloadChars = files.reduce((sum, f) => sum + String(f && f.dataUrl || '').length, 0);
           if (payloadChars > 24 * 1024 * 1024) {
             postMsg({ type: 'error', message: '附件消息过大，请将单个文件控制在 8MB、总大小控制在 16MB 以内' });
@@ -6829,6 +7674,7 @@ chrome.runtime.onConnect.addListener((port) => {
           if (isUserCancelled(e, cancelRef)) {
             await notifyCancelled(postMsg, cancelRef, origin, null);
           } else {
+            diagFail('unhandled', e);
             postMsg({ type: 'error', message: '任务异常终止：' + String(e && e.message || e) });
           }
         } finally {
@@ -6871,6 +7717,39 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   panelPorts.delete(tabId);
   hydratedPanelTabs.delete(tabId);
   deferredTaskMessages.delete(tabId);
+  bridgeKeys.delete(tabId);
+  snapState.delete(tabId);
   stopActiveTask(tabId, { closeOffscreen: false });
   activeTasks.delete(tabId);
 });
+
+async function bootKernel() {
+  try { await ensureStorageSchema(); } catch (e) {}
+  try { await lockTrustedStorage(); } catch (e) {}
+  try {
+    const cfg = await getConfigMerged();
+    noteDiagCap(cfg);
+  } catch (e) {}
+  try { await loadDiagStore(); } catch (e) {}
+  try {
+    if (chrome.alarms && chrome.alarms.create) chrome.alarms.create('wpa-gc', { periodInMinutes: 1 });
+  } catch (e) {}
+}
+
+try {
+  self.addEventListener('unhandledrejection', function (ev) {
+    diagFail('unhandled', ev && ev.reason, { code: 'Unhandled' });
+  });
+  self.addEventListener('error', function (ev) {
+    diagFail('unhandled', ev && (ev.error || ev.message), { code: 'Unhandled' });
+  });
+} catch (e) {}
+
+if (chrome.alarms && chrome.alarms.onAlarm) {
+  chrome.alarms.onAlarm.addListener((a) => {
+    if (a && a.name === 'wpa-gc') void maybeCloseOffscreen();
+  });
+}
+if (chrome.runtime && chrome.runtime.onStartup) chrome.runtime.onStartup.addListener(() => { void bootKernel(); });
+if (chrome.runtime && chrome.runtime.onInstalled) chrome.runtime.onInstalled.addListener(() => { void bootKernel(); });
+void bootKernel();

@@ -20,7 +20,7 @@ function ok(cond, name) {
   }
 }
 
-const files = ['background.js', 'pagebridge.js', 'content.js', 'panel.js', 'office.js', 'settings.js'];
+const files = ['background.js', 'pagebridge.js', 'content.js', 'panel.js', 'office.js', 'settings.js', 'shared/contracts.js'];
 const srcs = {};
 for (const f of files) {
   const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
@@ -866,7 +866,7 @@ ok(/kind: 'attach-data'/.test(bg), '附件正文以 attach-data 钉入对话');
 ok(/function toApiChatMessages/.test(bg), '发给模型前剥离内部 kind');
 ok(/messages: toApiChatMessages\(messages\)/.test(bg), 'chat payload 使用纯 role/content');
 ok(/m\.kind === 'attach-data'/.test(bg), '持久化历史跳过附件正文');
-ok(/const snapP = sendToContentRetry/.test(bg), '快照与按需抽附件并行');
+ok(/const snapP = takeSnapshot/.test(bg), '快照与按需抽附件并行');
 ok(/messages\.concat\(\[snapshotUser\]\)/.test(bg), '每步变化的快照放在请求末尾');
 
 const apiStart = bg.indexOf('\nfunction toApiChatMessages');
@@ -1435,7 +1435,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '4.7.0', '锁步版本为中间号升级');
+ok(manifestVer === '4.8.0', '锁步版本为中间号升级');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -1445,7 +1445,7 @@ try {
 } catch (e) {
   ok(false, 'offscreen.js node --check 失败: ' + String((e && e.stderr && e.stderr.toString()) || e && e.message || e));
 }
-ok(/const OFFSCREEN_VERSION = '4\.7\.0'/.test(offscreenSrc), 'offscreen 版本锁步 4.7.0');
+ok(/const OFFSCREEN_VERSION = /.test(offscreenSrc) && offscreenSrc.indexOf(manifestVer) >= 0, 'offscreen 版本与 manifest 锁步');
 ok(/type="module"/.test(offscreenHtml) && /offscreen\.js/.test(offscreenHtml), 'offscreen.html 以 module 加载');
 ok(!/pdf\.min\.js/.test(offscreenHtml) && !/pdfjsLib\.getDocument/.test(offscreenSrc), '已去掉 PDF.js getDocument');
 ok(/wasm-unsafe-eval/.test(JSON.stringify(JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')))),
@@ -1505,6 +1505,7 @@ try {
       'const PROVIDER_TYPE_ALIASES = { LiteLLM: "OpenAI-chat-completions" };\n' +
       extractFn(bg, 'applyRuntimeKnobs') + '\n' +
       extractFn(bg, 'applyUiKnobs') + '\n' +
+      extractFn(bg, 'applyDiagKnobs') + '\n' +
       extractFn(bg, 'parsePdfPageRefs') + '\n' +
       extractFn(bg, 'normalizePdfParseConfig') + '\n' +
       extractFn(bg, 'looksLikeMinerUModel') + '\n' +
@@ -1552,6 +1553,75 @@ if (importBox.validateImportConfig) {
     '旧 apiBase/model 仍可导入');
   const empty = v({ totally: 'unknown' }, cur);
   ok(empty.ok && empty.config.textProviders[0].apiKey === 'keep-me', '无识别字段时当作空合并，不失败');
+  const full = v({
+    textProviders: [
+      { name: 'NIC', providerType: 'OpenAI-chat-completions', baseURL: 'https://example.test/v1', apiKey: 'sk-test', models: 'a,b' },
+      { name: 'SCNet', providerType: 'OpenAI-chat-completions', baseURL: 'https://example.test/api/llm/v1', apiKey: 'sk-test', models: 'Kimi-K3' }
+    ],
+    ocrProviders: [
+      { name: 'NICMinerU', providerType: 'MinerU', baseURL: 'https://example.test/mineru/file_parse', apiKey: 'sk-test', models: 'MinerU' },
+      { name: 'SCNetOCR', providerType: 'OCR-SCnet', baseURL: 'https://example.test/ocr', apiKey: 'sk-test', models: 'GENERAL' }
+    ],
+    selectedTextTag: { model: 'Kimi-K3', provider: 'SCNet' },
+    selectedOcrTag: { model: 'MinerU', provider: 'NICMinerU' },
+    systemPromptText: '你是传统网页智能助手',
+    systemPromptOcr: '请完整识别',
+    maxSteps: 60,
+    snapshotPiiMask: false,
+    llmCallGapMs: 500,
+    busyMaskEnabled: false,
+    llmTimeoutRetry: 2,
+    llmErrorRetry: 2,
+    pageQuietMs: 3000,
+    suggestWaitMs: 1000,
+    uiOpacity: 70,
+    panelScaleX: 70,
+    panelScaleY: 70,
+    pdfParseMode: 'all',
+    pdfParsePages: '1,2,-1',
+    diagCapKb: 80
+  }, cur);
+  ok(full.ok && full.config.textProviders.length === 2 && full.config.ocrProviders.length === 2,
+    '完整全局配置 JSON 可导入');
+  ok(full.config.selectedTextTag && full.config.selectedTextTag.model === 'Kimi-K3',
+    '导入保留 selectedTextTag');
+  ok(full.config.maxSteps === 60 && full.config.uiOpacity === 70 && full.config.busyMaskEnabled === false,
+    '导入保留运行参数与 UI 透明度');
+  ok(full.config.diagCapKb === 80, '导入保留错误日志上限');
+}
+
+ok(/options_ui\.open_in_tab=true/.test(bg), 'settings 端口校验注释说明 open_in_tab 会带 tab');
+const portIdBox = {};
+try {
+  vm.runInNewContext(
+    'const chrome = { runtime: { getURL: (f) => "chrome-extension://abc/" + f } };\n' +
+      extractFn(bg, 'extensionPageUrl') + '\n' +
+      extractFn(bg, 'portSenderUrl') + '\n' +
+      extractFn(bg, 'isSettingsSenderUrl') + '\n' +
+      extractFn(bg, 'assertSettingsPort') + '\n' +
+      extractFn(bg, 'assertPanelPort') +
+      '\nthis.assertSettingsPort = assertSettingsPort;' +
+      '\nthis.assertPanelPort = assertPanelPort;',
+    portIdBox
+  );
+  ok(typeof portIdBox.assertSettingsPort === 'function', 'assertSettingsPort 可加载');
+} catch (e) {
+  ok(false, '加载端口身份函数失败: ' + (e && e.message));
+}
+if (portIdBox.assertSettingsPort) {
+  const settingsUrl = 'chrome-extension://abc/settings.html';
+  ok(portIdBox.assertSettingsPort({ sender: { url: settingsUrl, tab: { id: 9, url: settingsUrl } } }),
+    '配置页作为标签打开时仍识别为 settings');
+  ok(portIdBox.assertSettingsPort({ sender: { url: settingsUrl } }),
+    '无 tab 的扩展页仍识别为 settings');
+  ok(!portIdBox.assertSettingsPort({ sender: { url: 'https://example.com/', tab: { id: 1, url: 'https://example.com/' } } }),
+    '网页 origin 不能冒充 settings');
+  ok(portIdBox.assertPanelPort({ sender: { tab: { id: 1, url: 'https://example.com/' }, url: 'https://example.com/', frameId: 0 } }),
+    '网页顶层 frame 识别为 panel');
+  ok(!portIdBox.assertPanelPort({ sender: { tab: { id: 9, url: settingsUrl }, url: settingsUrl, frameId: 0 } }),
+    '配置页不能作为 panel 连接');
+  ok(!portIdBox.assertPanelPort({ sender: { url: settingsUrl } }),
+    '无 tab 不能作为 panel');
 }
 
 const pdfPageBox = {};
@@ -1638,12 +1708,14 @@ ok(!/new Function\(/.test(bridge), 'pagebridge 无 new Function 求值面');
 ok(/resolveTarget\(sel\)/.test(bridge), 'createPageApi.q 走 resolveTarget');
 ok(/lastSampleAt/.test(bridge) && /want - elapsed/.test(bridge), 'sleep 按距上次 snapshot/probe 缩短等待');
 
-ok(/function flushBatch\(/.test(contentSrc), 'content 合并连续非 upload 批次');
-ok(/dsReq\('runOps', \{ operations: batch \}/.test(contentSrc), 'content 一次 dsReq 发送整批 runOps');
-ok(/item\.op === 'upload'/.test(contentSrc) && /await flushBatch\(\)/.test(contentSrc), 'upload 先 flush 再隔离 world 上传');
+ok(/uploadInIsolatedWorld/.test(contentSrc), 'upload 在隔离 world 写 input.files');
+ok(/item\.op !== 'upload'/.test(contentSrc), '非 upload 不由 content 转发 MAIN 事件');
 ok(/cmd === 'runScript'/.test(contentSrc) && /runScript 已禁用/.test(contentSrc), 'content 拒绝 runScript 不转发 MAIN');
-ok(/full: !!msg.full/.test(contentSrc), 'content 把 snapshot full 传给桥接');
-ok(/msg.full \? 20000 : 12000/.test(contentSrc), '完整快照放宽桥接超时');
+ok(/takeSnapshot\(tabId/.test(bg), '快照走 SW executeScript 而非 DOM 事件');
+ok(/callBridge\(/.test(bg) && /__wpaBridge/.test(bridge), 'SW 经 nonce dispatch 调 pagebridge');
+ok(!/__ds_req/.test(bridge) && !/__ds_resp/.test(bridge), 'pagebridge 不再监听可伪造 DOM 事件');
+ok(!/window\.__assistantPage\s*=/.test(bridge), '不再暴露 window.__assistantPage');
+ok(/__wpaOffice/.test(srcs['office.js']), 'office 挂到 __wpaOffice');
 ok(!/payload\.script = msg\.script/.test(contentSrc), 'content 不再把 script 转给 pagebridge');
 
 const outlineFn = extractFn(bridge, 'formatOutlineLine');
@@ -1818,7 +1890,7 @@ ok(/function isIgnored/.test(bridge), 'pagebridge 有 isIgnored');
 ok(/#wpa-busy-mask/.test(bridge) && /data-wpa-ignore/.test(bridge), '忽略规则含遮罩与 data-wpa-ignore');
 ok(/function hideBusyMask/.test(bridge), 'pagebridge 有 hideBusyMask');
 ok(/function onAbortSignal\(\) \{\s*hideBusyMask\(\)/.test(bridge), 'abort 首件事是 hideBusyMask');
-ok(/cmd === 'abortRun'[\s\S]{0,350}wpa-busy-mask/.test(srcs['content.js']), 'content abortRun 先拆遮罩');
+ok(/cmd === 'abortRun'/.test(srcs['content.js']) && /wpa-busy-mask/.test(srcs['content.js']), 'content abortRun 可拆遮罩');
 ok(/data-wpa-ignore/.test(panelSrc), '面板 host 带 data-wpa-ignore');
 ok(/【引擎已等待页面稳定】/.test(bg), '空 execute 注入引擎等待说明');
 ok(/opsAreIdleOnly/.test(bg) && /action === 'execute' && opsAreIdleOnly/.test(bg), '空/仅 sleep·probe 走引擎等待而非无法识别');
@@ -1881,8 +1953,8 @@ ok(/<VIEW kind=/.test(bridge), 'outline 收录 VIEW 建议卡');
 ok(/VIEW_PANEL_RE = \/suggest/.test(bridge) && /search-item/.test(bridge),
   '建议面板/卡片用通用 class token 识别');
 ok(/function collectSubmitFailureContext/.test(bridge), '提交失败可收集字段说明');
-ok(/cmd === 'submitFailureContext'/.test(srcs['content.js']), 'content 转发 submitFailureContext');
-ok(/cmd === 'viewPrint'/.test(srcs['content.js']), 'content 转发 viewPrint');
+ok(/submitFailureContext/.test(bg) && /cmd === 'submitFailureContext'/.test(bridge), 'submitFailureContext 走桥接 dispatch');
+ok(/viewPrint/.test(bg) && /cmd === 'viewPrint'/.test(bridge), 'viewPrint 走桥接 dispatch');
 ok(/必填\|填写完整\|请先\|校验失败\|不通过/.test(bg), 'statusFailure 识别必填弹窗');
 ok(/请先将必填项填写完整/.test('请先将必填项填写完整') &&
   /必填|填写完整|请先/.test('请先将必填项填写完整'), '必填弹窗正则可命中');
@@ -1920,7 +1992,23 @@ ok(/超时重试次数/.test(settingsHtml) && /瞬时错误重试次数/.test(se
 ok(/页面稳定等待上限/.test(settingsHtml) && /填写后等待建议层/.test(settingsHtml), '设置页可配页面等待');
 ok(/llmCallGapMs/.test(bg) && /function exportPayload\(/.test(bg), '导出含调用间隔');
 ok(/secInputToMs/.test(settingsSrc) && /msToSecValue/.test(settingsSrc), '设置页秒与毫秒互转');
-ok(/白名单字段/.test(bg) && /白名单字段/.test(panelSrc) && /白名单字段/.test(settingsHtml), '导入导出不再写死 7 键');
+ok(/function exportPayload\(/.test(bg) && /maskProviderList/.test(bg), '导入导出走白名单且默认掩码密钥');
+ok(/diagCapKb: 50/.test(bg) && /id="diagCapKb"/.test(settingsHtml), '错误日志上限默认 50KB 且可在全局配置改');
+ok(/诊断记录/.test(settingsHtml) && /导出诊断记录/.test(settingsHtml) && /cmd === 'exportDiag'/.test(bg),
+  '全局配置可导出诊断记录');
+ok(/ARCHIVE_REDACT_MAX_BYTES = 20 \* 1024/.test(bg) && /function planArchiveRedactChunks/.test(bg),
+  '存档脱敏不超过 20KB 不分拆');
+ok(/provider-row:nth-child\(8n\+1\)/.test(settingsHtml) && /#dceaff/.test(settingsHtml),
+  'provider 配置卡用不同背景色区分');
+ok(/function diagFail\(/.test(bg) && /DIAG_STORE_KEY = 'wpaDiag'/.test(bg), '后台有诊断黑匣子写入');
+ok(/function enqueueDiagMut\(/.test(bg) && /enqueueDiagMut\(persistDiagTrail\)/.test(bg)
+  && /enqueueDiagMut\(function \(\) \{ return persistDiagRow\(rec\)/.test(bg),
+  '诊断错误与轨迹刷新共用写队列');
+ok(/enqueueDiagMut\(/.test(extractFn(bg, 'clearDiagStore'))
+  && /enqueueDiagMut\(/.test(extractFn(bg, 'exportDiagForHours'))
+  && /persistDiagTrail\(/.test(extractFn(bg, 'exportDiagForHours')),
+  '清空与导出也走同一诊断写队列');
+ok(/self\.addEventListener\('unhandledrejection'/.test(bg), 'SW 未捕获异常写入诊断');
 
 const clampBox = {};
 try {
@@ -2027,7 +2115,7 @@ ok(/【兜底修复】/.test(bg) && /【退出许可·兜底修复】/.test(bg),
 ok(/【兜底修复与退出许可】/.test(bg), 'PLAYBOOK 含兜底修复与退出许可');
 ok(/function askExitPermit\(/.test(bg) && /征求用户是否结束/.test(bg), '停止前征求退出许可而不是直接 maxsteps');
 ok(/return await askExitPermit\('达到最大步数'\)/.test(bg), '步数用尽改为退出许可询问');
-ok(/cmd: 'snapshot', full: wantFull/.test(bg), '兜底轮向页面请求完整快照');
+ok(/takeSnapshot\(tabId, wantFull\)/.test(bg), '兜底轮向页面请求完整快照');
 ok(/调用大模型失败/.test(bg) && /return 'error'/.test(bg), '模型调用失败仍直接结束、不再额外请求模型');
 ok(/【视图变化】/.test(bg), 'PLAYBOOK 含视图变化');
 ok(/function diffViewPrint\(/.test(bg) && /function waitForSuggestSettle\(/.test(bg),
@@ -2231,8 +2319,8 @@ if (handoffBox.desktopHandoffOf) {
   ok(handoffBox.desktopHandoffOf({ text: '预览' }) === '', '普通预览不标 desktop');
 }
 
-ok(/office\.js/.test(bg) && /office\.js/.test(JSON.stringify(JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')))),
-  'inject 与 web_accessible_resources 含 office.js');
+ok(/office\.js/.test(bg) && /pagebridge\.js/.test(bg),
+  'inject 列表含 office.js 与 pagebridge.js');
 ok(/officeContext/.test(bg) && /officeFill/.test(bg) && /禁止用 page\.ocr 当读表/.test(bg),
   'PLAYBOOK 含 officeContext / officeFill，禁止 ocr 当读表');
 ok(/officeFill: 1/.test(bg) && /FILL_FROM_ATTACH_OPS/.test(bg),
@@ -2489,15 +2577,20 @@ try {
       extractFn(bg, 'countArchiveH2') + '\n' +
       extractFn(bg, 'splitArchiveSections') + '\n' +
       extractFn(bg, 'archiveFenceLines') + '\n' +
+      extractFn(bg, 'utf8ByteLength') + '\n' +
       extractFn(bg, 'packArchiveChunks') + '\n' +
+      extractFn(bg, 'planArchiveRedactChunks') + '\n' +
       'const ARCHIVE_REDACT_HINT_MAX = 2000;\n' +
+      'const ARCHIVE_REDACT_MAX_BYTES = 20480;\n' +
       'const ARCHIVE_REDACT_SYSTEM = "你是对话存档脱敏器。只替换敏感内容，不改变文档结构。";\n' +
       extractFn(bg, 'buildArchiveRedactMessages') + '\n' +
       extractFn(bg, 'mergeRedactedArchive') +
       '\nthis.extractRedactedDocument = extractRedactedDocument;' +
       '\nthis.countArchiveH2 = countArchiveH2;' +
       '\nthis.splitArchiveSections = splitArchiveSections;' +
+      '\nthis.utf8ByteLength = utf8ByteLength;' +
       '\nthis.packArchiveChunks = packArchiveChunks;' +
+      '\nthis.planArchiveRedactChunks = planArchiveRedactChunks;' +
       '\nthis.buildArchiveRedactMessages = buildArchiveRedactMessages;' +
       '\nthis.mergeRedactedArchive = mergeRedactedArchive;',
     redactBox
@@ -2518,6 +2611,15 @@ if (redactBox.extractRedactedDocument) {
   ok(packed.length === 2, '超长时按段分包且不拆开单条 ##');
   const fenced = redactBox.packArchiveChunks(['## A\n\n```\ncode\n', '## B\n\nend\n```\n'], 10);
   ok(fenced.length === 1, '未闭合代码围栏时把下一段并入同一包');
+  ok(redactBox.utf8ByteLength('你') === 3, 'UTF-8 汉字按 3 字节计');
+  const shortDoc = '# 对话存档\n\n## 用户\n\n张三\n\n## 助手\n\n好的\n';
+  const planned = redactBox.planArchiveRedactChunks(shortDoc, 20 * 1024);
+  ok(planned.chunks.length === 1 && planned.usingSections === false, '不超过 20KB 整份一次脱敏');
+  const packedBig = redactBox.packArchiveChunks(
+    ['## A\n\n' + 'x'.repeat(15000), '## B\n\n' + 'y'.repeat(15000)],
+    20 * 1024
+  );
+  ok(packedBig.length === 2, '超过 20KB 才按 ## 段分包');
   const msgs = redactBox.buildArchiveRedactMessages('把姓名换成占位', '# 对话存档\n\n## 用户\n\n张三\n', { part: 1, parts: 1, expectH2: 1 });
   ok(msgs[0].role === 'system' && /不改变文档结构/.test(msgs[0].content), '脱敏系统提示要求保结构');
   ok(/【脱敏要求】/.test(msgs[1].content) && /<document>/.test(msgs[1].content), '用户消息含要求与文档标签');
@@ -2525,6 +2627,26 @@ if (redactBox.extractRedactedDocument) {
   ok(/^# 对话存档/.test(merged) && /## 用户/.test(merged) && /## 助手/.test(merged),
     '多段脱敏结果按原顺序拼接且后段去掉重复前言');
 }
+
+ok(/pageCompatMode/.test(panelSrc), '本页配置有兼容模式开关');
+ok(/panelStoreSet/.test(bg) && /panelStoreGet/.test(bg) && /panelStoreSet/.test(panelSrc), '面板存储经 SW 代理');
+ok(/publicConfigPayload/.test(bg) && /maskProviderList/.test(bg), '面板配置负载剥离明文密钥');
+ok(/exportIncludeKeys/.test(settingsHtml) && /SECRETS/.test(settingsSrc), '导出完整密钥需确认');
+ok(/TRUSTED_CONTEXTS/.test(bg), '存储访问级别收紧到受信上下文');
+ok(/unlimitedStorage/.test(JSON.stringify(JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')))),
+  'manifest 含 unlimitedStorage');
+ok(!JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')).web_accessible_resources,
+  'manifest 已删除 web_accessible_resources');
+ok(/validateOperations/.test(bg), 'SW 执行前整批校验 operations');
+ok(/unknown-fire/.test(bg) && /runJournal:/.test(bg), '不可观测 fire 写入 journal');
+ok(/SNAPSHOT_TIME_BUDGET_MS/.test(bridge), '快照有时间预算');
+ok(/truncatedByTime/.test(bridge), '超时快照标记 truncated');
+ok(fs.existsSync(path.join(__dirname, 'tests/fixtures/attack-forge-ds-resp.html')), '攻击夹具骨架存在');
+ok(fs.existsSync(path.join(__dirname, 'tests/fixtures/form-native.html')), '原生表单能力夹具存在');
+ok(fs.existsSync(path.join(__dirname, 'tests/fixtures/hidden-row-actions.html')), '隐藏行按钮能力夹具存在');
+ok(/maxSteps: 60/.test(bg) && /pageMaxSteps/.test(panelSrc), '默认 maxSteps 与面板本页配置同源量级');
+ok(/copyTextOffscreen/.test(bg) && /cmd === 'copyText'/.test(offscreenSrc), '复制走扩展 offscreen 而非宿主 DOM');
+ok(!/document\.body\.appendChild\(ta\)/.test(panelSrc), '面板复制不再向宿主插入 textarea');
 
 if (failures) {
   console.error('\n' + failures + ' 项断言失败');

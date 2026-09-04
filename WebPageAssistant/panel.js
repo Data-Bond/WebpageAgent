@@ -1645,6 +1645,13 @@
     pagePiiRow.appendChild(pageSnapshotPiiMask);
     pagePiiRow.appendChild(document.createTextNode('快照脱敏（邮箱 / 手机 / 证件号；默认关）'));
     pageRunCard.appendChild(pagePiiRow);
+    const pageCompatMode = mk('input');
+    pageCompatMode.id = 'pageCompatMode';
+    pageCompatMode.type = 'checkbox';
+    const pageCompatRow = mk('label', 'settings-check-row');
+    pageCompatRow.appendChild(pageCompatMode);
+    pageCompatRow.appendChild(document.createTextNode('兼容模式（本站变更操作走 MAIN，不自动换世界）'));
+    pageRunCard.appendChild(pageCompatRow);
     const pageRunActions = mk('div', 'settings-actions');
     const pageRunSaveBtn = mk('button', 'btn primary', { type: 'button', textContent: '保存本页运行参数' });
     const pageRunStatus = mk('div', 'settings-status');
@@ -1896,7 +1903,7 @@
       pageMaxSteps, pageLlmCallGapSec, pageLlmTimeoutRetry, pageLlmErrorRetry,
       pagePageQuietSec, pageSuggestWaitSec,
       pagePdfParseAll, pagePdfParsePagesMode, pagePdfParsePages, pagePdfParsePagesWrap, pagePdfParseAllHint,
-      pageBusyMaskEnabled, pageSnapshotPiiMask, pageRunSaveBtn, pageRunStatus,
+      pageBusyMaskEnabled, pageSnapshotPiiMask, pageCompatMode, pageRunSaveBtn, pageRunStatus,
       skillLibrary, skillSearch, skillFilterAll, skillFilterMatch, skillList,
       importSkillsBtn, exportSelectedBtn, exportAllBtn, importSkillsInput, skillLibStatus,
       saveSkillModal, saveSkillName, saveSkillUrl, saveSkillMatch,
@@ -1916,32 +1923,36 @@
   const els = buildDOM();
 
   // ============ 存储 helpers ============
-  function storeSet(obj) {
+  let storeSeq = 1;
+  const storeWait = new Map();
+  let persistGen = 0;
+  let connectGen = 0;
+
+  function storeRpc(cmd, extra) {
+    const id = 's' + (storeSeq++);
     return new Promise((resolve) => {
+      if (!port || portDead) {
+        resolve(cmd === 'panelStoreGet' ? { ok: false, obj: {} } : { ok: false });
+        return;
+      }
+      storeWait.set(id, resolve);
       try {
-        chrome.storage.local.set(obj, () => {
-          const err = chrome.runtime.lastError;
-          if (err) {
-            console.warn('storage.local 写入失败:', err.message);
-            setConnBanner('本地存储失败：' + err.message + '（请清理对话或附件）', 'error');
-            resolve(false);
-          } else {
-            resolve(true);
-          }
-        });
+        port.postMessage(Object.assign({ cmd: cmd, id: id }, extra || {}));
       } catch (e) {
-        resolve(false);
+        storeWait.delete(id);
+        resolve({ ok: false, error: String(e && e.message || e) });
       }
     });
   }
-  function storeGet(keys) {
-    return new Promise((resolve) => {
-      try {
-        chrome.storage.local.get(keys, (obj) => { void chrome.runtime.lastError; resolve(obj || {}); });
-      } catch (e) {
-        resolve({});
-      }
+
+  function storeSet(obj) {
+    return storeRpc('panelStoreSet', { obj: obj }).then((r) => {
+      if (r && r.pressure) setConnBanner('本地存储接近上限，附件正文可能未写入（刷新后需重加）', 'error');
+      return !!(r && r.ok);
     });
+  }
+  function storeGet(keys) {
+    return storeRpc('panelStoreGet', { keys: keys }).then((r) => (r && r.obj) || {});
   }
 
   function trKey() { return 'tr:' + origin; }
@@ -2068,18 +2079,8 @@
     }
   }
 
-  function copyViaTextarea(text) {
-    const ta = document.createElement('textarea');
-    ta.value = String(text || '');
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.left = '-9999px';
-    document.body.appendChild(ta);
-    ta.select();
-    let ok = false;
-    try { ok = document.execCommand('copy'); } catch (e) {}
-    document.body.removeChild(ta);
-    return ok;
+  function copyViaTextarea() {
+    return false;
   }
 
   function copyTextToClipboard(text, btn) {
@@ -2094,11 +2095,15 @@
     function ok() { mark('已复制'); }
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
       navigator.clipboard.writeText(s).then(ok, function () {
-        if (copyViaTextarea(s)) ok(); else fail();
+        storeRpc('copyText', { text: s }).then(function (r) {
+          if (r && r.ok) ok(); else fail();
+        });
       });
       return;
     }
-    if (copyViaTextarea(s)) ok(); else fail();
+    storeRpc('copyText', { text: s }).then(function (r) {
+      if (r && r.ok) ok(); else fail();
+    });
   }
 
   function renderAssistantBubble(text, output) {
@@ -2385,7 +2390,9 @@
   // ============ 渲染持久化的会话 ============
   async function loadPersisted() {
     if (!origin) return;
+    const g = ++persistGen;
     const res = await storeGet([trKey(), fileKey()]);
+    if (g !== persistGen) return;
     const savedTr = res[trKey()];
     const savedFiles = res[fileKey()];
 
@@ -3146,7 +3153,8 @@
       pdfParseMode: src.pdfParseMode === 'pages' ? 'pages' : 'all',
       pdfParsePages: String(src.pdfParsePages == null ? '1,2,-1' : src.pdfParsePages),
       busyMaskEnabled: src.busyMaskEnabled === true,
-      snapshotPiiMask: src.snapshotPiiMask === true
+      snapshotPiiMask: src.snapshotPiiMask === true,
+      compatMode: src.compatMode === true
     };
   }
 
@@ -3165,6 +3173,7 @@
     syncPagePdfParseUi();
     if (els.pageBusyMaskEnabled) els.pageBusyMaskEnabled.checked = src.busyMaskEnabled === true;
     if (els.pageSnapshotPiiMask) els.pageSnapshotPiiMask.checked = src.snapshotPiiMask === true;
+    if (els.pageCompatMode) els.pageCompatMode.checked = src.compatMode === true;
   }
 
   function collectPageRuntimeConfig() {
@@ -3178,7 +3187,8 @@
       pdfParseMode: (els.pagePdfParsePagesMode && els.pagePdfParsePagesMode.checked) ? 'pages' : 'all',
       pdfParsePages: String(els.pagePdfParsePages && els.pagePdfParsePages.value || '').trim() || '1,2,-1',
       busyMaskEnabled: !!(els.pageBusyMaskEnabled && els.pageBusyMaskEnabled.checked),
-      snapshotPiiMask: !!(els.pageSnapshotPiiMask && els.pageSnapshotPiiMask.checked)
+      snapshotPiiMask: !!(els.pageSnapshotPiiMask && els.pageSnapshotPiiMask.checked),
+      compatMode: !!(els.pageCompatMode && els.pageCompatMode.checked)
     };
   }
 
@@ -3395,20 +3405,10 @@
   // 导出：后台 exportPayload 返回白名单字段 JSON（含 apiKey 明文，重装免重配）；面板仅用 Blob+<a download> 落盘。
   // 导入：面板原样把文件文本交给后台 importConfig → validateImportConfig 校验/合并 → 回推 configImported + 新 config。
   function downloadTextFile(text, filename, mime) {
-    try {
-      const blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 1000);
-    } catch (e) {
-      addBubble('error', '下载失败：' + String(e && e.message || e));
-    }
+    storeRpc('downloadText', { text: text, filename: filename }).then((r) => {
+      if (r && r.ok) return;
+      addBubble('error', '下载失败：' + ((r && r.error) || '请在设置页保存'));
+    });
   }
 
   function downloadJsonText(json, filename) {
@@ -4009,15 +4009,28 @@
 
   function connectPort() {
     if (panelDisposed) return false;
+    connectGen += 1;
+    const gen = connectGen;
     try {
-      port = chrome.runtime.connect({ name: 'panel' });
+      const thisPort = chrome.runtime.connect({ name: 'panel' });
+      port = thisPort;
       portDead = false;
       port.onMessage.addListener((msg) => {
+        if (gen !== connectGen || port !== thisPort) return;
         if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'panelStoreResult' || msg.type === 'copyTextResult' || msg.type === 'downloadTextResult') {
+          const wait = storeWait.get(msg.id);
+          if (wait) {
+            storeWait.delete(msg.id);
+            wait(msg);
+          }
+          return;
+        }
         dispatch(msg.type, msg);
       });
       port.onDisconnect.addListener(() => {
         void chrome.runtime.lastError;
+        if (gen !== connectGen || port !== thisPort) return;
         runningBeforeDisconnect = running;
         portDead = true;
         setRunning(false);

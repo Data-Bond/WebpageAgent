@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "网页智能助手",
-    "version": "4.7.0",
+    "version": "4.8.0",
   "description": "通过大模型自动操作当前网页：理解页面、填写表单、点击、上传已附加文件等。",
   "minimum_chrome_version": "109",
-  "permissions": ["activeTab", "scripting", "storage", "tabs", "offscreen", "downloads"],
+  "permissions": ["activeTab", "scripting", "storage", "tabs", "offscreen", "downloads", "unlimitedStorage", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js" },
   "action": {
@@ -16,8 +16,5 @@
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
-  },
-  "web_accessible_resources": [
-      { "resources": ["pagebridge.js", "office.js"], "matches": ["<all_urls>"] }
-  ]
+  }
 }

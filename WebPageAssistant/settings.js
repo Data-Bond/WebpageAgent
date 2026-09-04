@@ -25,6 +25,7 @@
 
   let port = null;
   let currentConfig = null;
+  let diagExportTimer = null;
 
   function $(id) { return document.getElementById(id); }
 
@@ -208,6 +209,7 @@
       uiOpacity: clampInt($('uiOpacity').value, 20, 100, 100),
       panelScaleX: clampInt($('panelScaleX').value, 30, 100, 70),
       panelScaleY: clampInt($('panelScaleY').value, 30, 100, 70),
+      diagCapKb: clampInt($('diagCapKb').value, 10, 200, 50),
       selectedTextTag: currentConfig ? currentConfig.selectedTextTag : null,
       selectedOcrTag: currentConfig ? currentConfig.selectedOcrTag : null
     };
@@ -252,6 +254,7 @@
     $('uiOpacity').value = String(clampInt(cfg.uiOpacity, 20, 100, 100));
     $('panelScaleX').value = String(clampInt(cfg.panelScaleX, 30, 100, 70));
     $('panelScaleY').value = String(clampInt(cfg.panelScaleY, 30, 100, 70));
+    if ($('diagCapKb')) $('diagCapKb').value = String(clampInt(cfg.diagCapKb, 10, 200, 50));
     syncOpacityLabel();
   }
 
@@ -296,12 +299,32 @@
       else if (type === 'configSaved') setStatus(msg.ok ? '已保存 ✓' : ('保存失败' + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
       else if (type === 'configExport') {
         if (typeof msg.json === 'string') {
-          downloadTextFile(msg.json, 'assistant-config.json', 'application/json');
-          setStatus('已导出配置 JSON ✓（含完整 provider/密钥/提示词，可重装后导入恢复）', 'ok');
+          const name = msg.filename || (msg.masked === false ? 'assistant-config.SECRETS.json' : 'assistant-config.json');
+          downloadTextFile(msg.json, name, 'application/json');
+          setStatus(msg.masked === false
+            ? '已导出配置 JSON（含完整密钥）✓'
+            : '已导出配置 JSON ✓（密钥已掩码）', 'ok');
         }
       } else if (type === 'configImported') {
         if (msg.ok) setStatus('已导入并保存配置 ✓', 'ok');
         else setStatus('导入配置失败：' + (msg.error || '文件无效'), 'err');
+      } else if (type === 'diagExport') {
+        if (diagExportTimer) { clearTimeout(diagExportTimer); diagExportTimer = null; }
+        if (typeof msg.json === 'string') {
+          downloadTextFile(msg.json, msg.filename || 'wpa-diag.json', 'application/json');
+        }
+        const errN = Number(msg.count) || 0;
+        const trailN = Number(msg.trailCount) || 0;
+        const hours = Number(msg.hours) || 24;
+        if (errN === 0 && trailN === 0) {
+          setStatus('近 ' + hours + ' 小时没有错误，也还没有活动轨迹。已下载空诊断文件。', 'ok');
+        } else if (errN === 0) {
+          setStatus('近 ' + hours + ' 小时没有错误；已导出 ' + trailN + ' 条活动轨迹。', 'ok');
+        } else {
+          setStatus('已导出 ' + errN + ' 条错误、' + trailN + ' 条活动轨迹。', 'ok');
+        }
+      } else if (type === 'diagCleared') {
+        setStatus(msg.ok ? '已清空错误记录 ✓' : ('清空失败' + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
       } else if (type === 'testResult') {
         setStatus(msg.message != null ? String(msg.message) : (msg.ok ? '连接成功' : '连接失败'), msg.ok ? 'ok' : 'err');
       } else if (type === 'status' && msg.kind === 'error') {
@@ -333,7 +356,11 @@
       setStatus('测试中…');
       send('testLLM', { config: collectConfig() });
     });
-    $('downloadConfigBtn').addEventListener('click', () => send('exportConfig'));
+    $('downloadConfigBtn').addEventListener('click', () => {
+      const includeKeys = !!($('exportIncludeKeys') && $('exportIncludeKeys').checked);
+      if (includeKeys && !window.confirm('将导出完整 API 密钥。确认继续？')) return;
+      send('exportConfig', { includeKeys: includeKeys });
+    });
     $('uploadConfigBtn').addEventListener('click', () => $('uploadConfigInput').click());
     $('uploadConfigInput').addEventListener('change', async () => {
       const file = $('uploadConfigInput').files && $('uploadConfigInput').files[0];
@@ -344,7 +371,27 @@
         setStatus('读取文件失败：' + String(e && e.message || e), 'err');
         return;
       }
-      send('importConfig', { raw: String(text) });
+      if (send('importConfig', { raw: String(text) })) setStatus('正在导入…');
+    });
+    $('exportDiagBtn').addEventListener('click', () => {
+      const hours = clampInt($('diagHours').value, 1, 24, 24);
+      if (!send('exportDiag', { hours: hours })) return;
+      setStatus('正在导出诊断记录…');
+      if (diagExportTimer) clearTimeout(diagExportTimer);
+      diagExportTimer = setTimeout(() => {
+        diagExportTimer = null;
+        setStatus('导出超时：后台未响应。请到 chrome://extensions 重新加载插件后再试。', 'err');
+      }, 8000);
+    });
+    $('clearDiagBtn').addEventListener('click', () => {
+      if (!window.confirm('清空本机保存的错误与活动轨迹？不含配置与对话。')) return;
+      if (send('clearDiag')) setStatus('正在清空…');
+    });
+    window.addEventListener('error', () => {
+      try { if (port) port.postMessage({ cmd: 'diagFail' }); } catch (e) {}
+    });
+    window.addEventListener('unhandledrejection', () => {
+      try { if (port) port.postMessage({ cmd: 'diagFail' }); } catch (e) {}
     });
   }
 

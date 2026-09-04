@@ -1,12 +1,12 @@
 // content.js — 运行在隔离 world
-// 与 MAIN world 的 pagebridge.js 通过 DOM CustomEvent 通信（__ds_req / __ds_resp）。
-// 持有用户附加文件（base64 dataUrl），并处理来自 background 的命令。
+// 持有用户附加文件（base64 dataUrl）。页面操作由 SW executeScript 调用 pagebridge dispatch。
+// 上传必须留在隔离 world，MAIN 永不碰附件字节。
 
 (function () {
   'use strict';
 
   // 必须与 manifest.json 的 version、pagebridge.js 的 BRIDGE_VERSION 相同。
-  var CONTENT_VERSION = '4.7.0';
+  var CONTENT_VERSION = '4.8.0';
   if (window.__dsContentLoaded === CONTENT_VERSION) return;
   try {
     if (typeof window.__dsContentDispose === 'function') window.__dsContentDispose();
@@ -14,40 +14,10 @@
 
   var fileStore = new Map();
 
-  function dsReq(cmd, payload, timeoutMs) {
-    var ms = timeoutMs || 12000;
-    return new Promise(function (resolve) {
-      var id = '__ds' + Math.random().toString(36).slice(2) + Date.now();
-      var timer = setTimeout(function () { cleanup(); resolve(null); }, ms);
-      function handler(e) {
-        if (e.detail && e.detail.id === id) { cleanup(); resolve(e.detail); }
-      }
-      function onAbort() {
-        cleanup();
-        resolve({ id: id, ok: false, data: { ok: false, error: '已停止' } });
-      }
-      function cleanup() {
-        clearTimeout(timer);
-        document.removeEventListener('__ds_resp', handler);
-        document.removeEventListener('__ds_abort', onAbort);
-      }
-      document.addEventListener('__ds_resp', handler);
-      document.addEventListener('__ds_abort', onAbort);
-      document.dispatchEvent(new CustomEvent('__ds_req', { detail: { id: id, cmd: cmd, payload: payload } }));
-    });
-  }
-
-  function dsRespond(id, data, ok) {
-    document.dispatchEvent(new CustomEvent('__ds_resp', {
-      detail: { id: id, ok: ok !== false, data: data }
-    }));
-  }
-
   function safeAll(root, selector) {
     try { return Array.from(root.querySelectorAll(selector)); } catch (e) { return []; }
   }
 
-  // 与 MAIN world 的深层 selector 语法一致，仅用于在隔离 world 安全设置文件。
   function queryDeep(selector) {
     var shadowSep = ' >>> ';
     var frameSep = ' >>frame>> ';
@@ -217,154 +187,75 @@
     if (list.length === 0) throw new Error('结构化操作列表为空');
     if (list.length > 20) throw new Error('单次结构化操作超过 20 个，请拆分后执行并逐步验证');
     var results = [];
-    var lastProbe = null;
-    var batch = [];
-    async function flushBatch() {
-      if (!batch.length) return;
-      var res = await dsReq('runOps', { operations: batch }, 300000);
-      var data = res && res.data;
-      batch = [];
-      if (!res || res.ok === false || !data || data.ok === false) {
-        throw new Error((data && data.error) || '结构化操作桥接失败');
-      }
-      lastProbe = data.probe || lastProbe;
-      var parsed = null;
-      try { parsed = JSON.parse(data.result); } catch (e) {}
-      if (parsed && Array.isArray(parsed.results)) results = results.concat(parsed.results);
-    }
     for (var i = 0; i < list.length; i++) {
       var item = list[i] || {};
-      if (item.op === 'upload') {
-        await flushBatch();
-        var args = Array.isArray(item.args) ? item.args : [];
-        results.push({ op: 'upload', value: await uploadInIsolatedWorld(args[0], args[1]) });
-        continue;
+      if (item.op !== 'upload') {
+        throw new Error('隔离 world 仅执行 upload，其它 op 由 SW executeScript 调度: ' + item.op);
       }
-      batch.push(item);
+      var args = Array.isArray(item.args) ? item.args : [];
+      results.push({ op: 'upload', value: await uploadInIsolatedWorld(args[0], args[1]) });
     }
-    await flushBatch();
-    return { ok: true, result: JSON.stringify({ kind: 'batch', results: results }), probe: lastProbe };
+    return { ok: true, result: JSON.stringify({ kind: 'batch', results: results }) };
   }
 
-  // MAIN world 不得读取附件内容；上传由隔离 world 的 runStructuredOps 完成。
-  function onReq(e) {
-    var detail = e.detail;
-    if (!detail || !detail.id) return;
-    var id = detail.id;
-    var cmd = detail.cmd;
-    if (cmd === 'getFile' || cmd === 'getFileName') {
-      dsRespond(id, null, false);
-    }
+  function hideBusyMask() {
+    try {
+      var mask = document.getElementById('wpa-busy-mask');
+      if (mask) {
+        mask.style.display = 'none';
+        mask.setAttribute('hidden', '');
+      }
+    } catch (eMask) {}
   }
-
-  function ensureBridge() {
-    if (!window.__dsContentBridgeBound) {
-      document.addEventListener('__ds_req', onReq, true);
-      window.__dsContentBridgeBound = true;
-    }
-  }
-  ensureBridge();
 
   function onRuntimeMessage(msg, sender, sendResponse) {
-      if (!msg || !msg.cmd) return;
-      var cmd = msg.cmd;
-      if (cmd === 'processPdf' || cmd === 'pdfFirstPageToPng') return;
-      if (cmd === 'abortRun') {
-        try {
-          var mask = document.getElementById('wpa-busy-mask');
-          if (mask) {
-            mask.style.display = 'none';
-            mask.setAttribute('hidden', '');
-          }
-        } catch (eMask) {}
-        document.dispatchEvent(new CustomEvent('__ds_abort'));
-        sendResponse({ ok: true });
-        return;
+    if (!msg || !msg.cmd) return;
+    var cmd = msg.cmd;
+    if (cmd === 'processPdf' || cmd === 'pdfFirstPageToPng') return;
+    if (cmd === 'abortRun') {
+      hideBusyMask();
+      sendResponse({ ok: true });
+      return;
+    }
+    if (cmd === 'setFiles') {
+      fileStore.clear();
+      var files = msg.files || [];
+      for (var i = 0; i < files.length; i++) {
+        var f = files[i];
+        fileStore.set(f.key, { name: f.name, type: f.type, dataUrl: f.dataUrl });
       }
-      if (cmd === 'setBusyMask') {
-        dsReq('setBusyMask', { on: !!msg.on }, 4000).then(function () {
-          sendResponse({ ok: true });
-        });
-        return true;
-      }
-
-      if (cmd === 'setFiles') {
-        // 每次发送都整体替换，保证 popup 中已移除的文件不再可被上传
-        fileStore.clear();
-        var files = msg.files || [];
-        for (var i = 0; i < files.length; i++) {
-          var f = files[i];
-          fileStore.set(f.key, { name: f.name, type: f.type, dataUrl: f.dataUrl });
-        }
-        sendResponse({ ok: true, count: files.length });
-        return;
-
-      } else if (cmd === 'getFilesInfo') {
-        var list = [];
-        fileStore.forEach(function (v, key) {
-          list.push({ key: key, name: v.name, type: v.type, sizeHint: v.dataUrl ? v.dataUrl.length : 0 });
-        });
-        sendResponse({ ok: true, files: list });
-        return;
-
-      } else if (cmd === 'runOps') {
-        runStructuredOps(msg.operations).then(function (data) {
-          sendResponse(data);
-        }).catch(function (e) {
-          sendResponse({ ok: false, error: String(e && e.message || e) });
-        });
-        return true;
-
-      } else if (cmd === 'captureImage') {
-        dsReq('captureImage', { selector: msg.selector || '' }, 20000).then(function (res) {
-          var data = res && res.data;
-          if (res && res.ok !== false && data && typeof data === 'object') {
-            sendResponse(data);
-          } else {
-            var errMsg = '';
-            if (data && typeof data === 'object' && data.error) errMsg = data.error;
-            else errMsg = String(data || '截取页面图片失败');
-            sendResponse({ ok: false, error: errMsg || '截取页面图片失败' });
-          }
-        });
-        return true;
-
-      } else if (cmd === 'runScript') {
-        sendResponse({ ok: false, error: 'runScript 已禁用' });
-        return;
-
-      } else if (cmd === 'snapshot' || cmd === 'probe' || cmd === 'submitFailureContext' || cmd === 'viewPrint') {
-        var payload = {};
-        if (cmd === 'submitFailureContext' || cmd === 'viewPrint') payload = { targets: msg.targets || [] };
-        else if (cmd === 'snapshot') payload = { full: !!msg.full };
-        var timeout = cmd === 'probe' ? 6000 : (cmd === 'snapshot' && msg.full ? 20000 : 12000);
-        dsReq(cmd, payload, timeout).then(function (res) {
-          // res = {id, ok, data}. data 可能是 snapshot 对象 或 runScript 结果
-          // 对于 runScript 失败，data = {ok:false, error:"..."} ，需要展平 error 字段。
-          var data = res && res.data;
-          if (res && res.ok !== false) {
-            sendResponse(data || { ok: true, result: 'null' });
-          } else {
-            var errMsg = '';
-            if (data && typeof data === 'object' && 'error' in data) errMsg = data.error;
-            else errMsg = String(data || '');
-            sendResponse({ ok: false, error: errMsg || '桥接失败' });
-          }
-        });
-        return true;
-      }
+      sendResponse({ ok: true, count: files.length });
+      return;
+    }
+    if (cmd === 'getFilesInfo') {
+      var list = [];
+      fileStore.forEach(function (v, key) {
+        list.push({ key: key, name: v.name, type: v.type, sizeHint: v.dataUrl ? v.dataUrl.length : 0 });
+      });
+      sendResponse({ ok: true, files: list });
+      return;
+    }
+    if (cmd === 'runOps') {
+      runStructuredOps(msg.operations).then(function (data) {
+        sendResponse(data);
+      }).catch(function (e) {
+        sendResponse({ ok: false, error: String(e && e.message || e) });
+      });
+      return true;
+    }
+    if (cmd === 'runScript') {
+      sendResponse({ ok: false, error: 'runScript 已禁用' });
+      return;
+    }
   }
 
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener(onRuntimeMessage);
   }
   window.__dsContentDispose = function () {
-    try { document.removeEventListener('__ds_req', onReq, true); } catch (e) {}
     try {
       if (chrome && chrome.runtime && chrome.runtime.onMessage) chrome.runtime.onMessage.removeListener(onRuntimeMessage);
     } catch (e) {}
-    window.__dsContentBridgeBound = false;
   };
-  // 仅在 DOM bridge 与 runtime listener 都已完成安装后标记 ready。
   window.__dsContentLoaded = CONTENT_VERSION;
 })();

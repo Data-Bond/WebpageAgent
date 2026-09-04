@@ -3,7 +3,7 @@
 // PDFium WASM 以 ES module 加载；库单例活在本 offscreen 文档寿命内。
 import { PDFiumLibrary } from './vendor/pdfium/index.esm.browser.js';
 
-const OFFSCREEN_VERSION = '4.7.0';
+const OFFSCREEN_VERSION = '4.8.0';
 
 const MAX_TEXT_CHARS = 150000;
 const MIN_USEFUL_CHARS = 40;
@@ -345,8 +345,30 @@ function bindPort(port) {
       cancelledJobs.add(msg.id);
       return;
     }
-    if (msg.cmd === 'processPdf' || msg.cmd === 'pdfFirstPageToPng') {
-      handleProcess(msg.jobId, null, port, msg.id, msg.pageSpec);
+    if (msg.cmd === 'copyText') {
+      const text = String(msg.text || '');
+      const id = msg.id;
+      (async () => {
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            port.postMessage({ id: id, ok: true });
+            return;
+          }
+        } catch (e) {}
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          const ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+          port.postMessage({ id: id, ok: !!ok, error: ok ? '' : 'execCommand copy failed' });
+        } catch (e2) {
+          port.postMessage({ id: id, ok: false, error: String(e2 && e2.message || e2) });
+        }
+      })();
+      return;
     }
   });
 }

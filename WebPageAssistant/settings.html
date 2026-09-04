@@ -161,15 +161,55 @@
     }
     .status.ok { color: #1f7a4d; }
     .status.err { color: #b42318; }
-    .provider-list { display: flex; flex-direction: column; gap: 8px; }
+    .provider-list { display: flex; flex-direction: column; gap: 10px; }
     .provider-row {
       display: flex;
       flex-direction: column;
       gap: 6px;
-      padding: 10px;
-      border: 1px solid #e8ebf5;
-      border-radius: 10px;
-      background: #fafbff;
+      padding: 12px 12px 12px 14px;
+      border: 1px solid #d8dbe7;
+      border-left-width: 7px;
+      border-radius: 12px;
+    }
+    .provider-list .provider-row:nth-child(8n+1) {
+      background: #dceaff;
+      border-color: #9bb8f0;
+      border-left-color: #2f6bff;
+    }
+    .provider-list .provider-row:nth-child(8n+2) {
+      background: #d8f4e8;
+      border-color: #8fd0b0;
+      border-left-color: #1a9a62;
+    }
+    .provider-list .provider-row:nth-child(8n+3) {
+      background: #fff1cc;
+      border-color: #e8c56a;
+      border-left-color: #d97706;
+    }
+    .provider-list .provider-row:nth-child(8n+4) {
+      background: #eadfff;
+      border-color: #c4a8f0;
+      border-left-color: #7a4ad6;
+    }
+    .provider-list .provider-row:nth-child(8n+5) {
+      background: #ffd9e4;
+      border-color: #f0a3b8;
+      border-left-color: #d63d6e;
+    }
+    .provider-list .provider-row:nth-child(8n+6) {
+      background: #d5f3fb;
+      border-color: #8ed0e3;
+      border-left-color: #0e8aa8;
+    }
+    .provider-list .provider-row:nth-child(8n+7) {
+      background: #e8f5c8;
+      border-color: #b5d46a;
+      border-left-color: #5b8c12;
+    }
+    .provider-list .provider-row:nth-child(8n+8) {
+      background: #ffe0cc;
+      border-color: #f0b089;
+      border-left-color: #c45c26;
     }
     .provider-field {
       display: flex;
@@ -204,11 +244,37 @@
 
     <div class="card">
       <div class="heading">配置导入 / 导出</div>
-      <div class="hint">导出当前配置为 JSON 备份，或上传 JSON 恢复配置（重装插件后无需重填 API）。导出含白名单字段（含运行参数）。</div>
+      <div class="hint">默认导出掩码密钥。勾选并确认后才导出完整密钥（文件名含 SECRETS）。导入时 ******** 表示沿用已有密钥。</div>
       <div class="io-bar">
         <button type="button" class="btn" id="downloadConfigBtn">⬇ 下载配置</button>
         <button type="button" class="btn" id="uploadConfigBtn">⬆ 上传配置</button>
+        <label class="hint" style="display:flex;align-items:center;gap:6px;">
+          <input type="checkbox" id="exportIncludeKeys"> 导出完整密钥
+        </label>
         <input id="uploadConfigInput" type="file" accept=".json,application/json" hidden>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="heading">诊断记录</div>
+      <div class="hint">记录功能探针（含成功路径的活动轨迹）与错误类，不含 API 密钥、提示词、页面内容或附件。无错误时导出仍会下载文件并写明「没有错误」。保留最近 24 小时，并受上限约束。</div>
+      <label class="field">
+        错误日志上限（KB）
+        <input id="diagCapKb" type="number" min="10" max="200" step="1" value="50">
+      </label>
+      <div class="hint">默认 50KB，可填 10–200。改后请点页面底部「保存」。超出上限时丢掉最旧记录。</div>
+      <div class="row-2">
+        <label class="field">导出最近
+          <select id="diagHours">
+            <option value="1">1 小时</option>
+            <option value="6">6 小时</option>
+            <option value="24" selected>24 小时</option>
+          </select>
+        </label>
+      </div>
+      <div class="io-bar">
+        <button type="button" class="btn" id="exportDiagBtn">⬇ 导出诊断记录</button>
+        <button type="button" class="btn danger" id="clearDiagBtn">清空诊断记录</button>
       </div>
     </div>
 
