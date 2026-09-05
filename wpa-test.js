@@ -20,7 +20,7 @@ function ok(cond, name) {
   }
 }
 
-const files = ['background.js', 'pagebridge.js', 'content.js', 'panel.js', 'office.js', 'settings.js', 'shared/contracts.js'];
+const files = ['background.js', 'pagebridge.js', 'content.js', 'panel.js', 'office.js', 'settings.js', 'shared/contracts.js', 'shared/pdfPages.js'];
 const srcs = {};
 for (const f of files) {
   const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
@@ -38,6 +38,7 @@ const bridge = srcs['pagebridge.js'];
 const panelSrc = srcs['panel.js'] || '';
 const settingsSrc = srcs['settings.js'] || '';
 const settingsHtml = fs.readFileSync(path.join(ROOT, 'settings.html'), 'utf8');
+const manifestSrc = fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8');
 const usageBox = {};
 try {
   vm.runInNewContext(
@@ -93,7 +94,11 @@ ok(!/存为 WEB-SKILL/.test(panelSrc), '不再使用「存为 WEB-SKILL」');
 ok(!/WEB-SKILL 库/.test(panelSrc), '不再使用「WEB-SKILL 库」');
 ok(/header-action/.test(panelSrc), '标题栏文本按钮样式统一');
 ok(!/｜ 已注入/.test(panelSrc), '不再展示页面 URL｜已注入 条');
-ok(/textContent: 'Webpage Agent'/.test(panelSrc), '标题为 Webpage Agent');
+ok(/网页智能体助手/.test(panelSrc) && /textContent: 'Webpage Agent'/.test(panelSrc),
+  '面板 iframe 标题为网页智能体助手，角标英文为 Webpage Agent');
+ok(/你是网页智能体助手/.test(bg) && /传统网页智能体助手/.test(bg),
+  '系统提示词产品名为网页智能体助手');
+ok(/"name": "网页智能体助手"/.test(manifestSrc), '扩展名为网页智能体助手');
 ok(/headerRight\.appendChild\(settingsBtn\)[\s\S]*headerRight\.appendChild\(zoomBtn\)[\s\S]*headerRight\.appendChild\(closeBtn\)/.test(panelSrc), '缩放按钮在配置按钮右边、关闭按钮左边');
 ok(/headerMain\.appendChild\(title\)[\s\S]*headerBrand\.appendChild\(buildBadge\)[\s\S]*headerBrand\.appendChild\(connLampWrap\)[\s\S]*headerMain\.appendChild\(headerBrand\)[\s\S]*headerLeft\.appendChild\(headerMain\)/.test(panelSrc), '版本号写在 Webpage Agent 下面，已连接跟版本同行');
 ok(/flex-direction: column/.test((panelSrc.match(/\.header-main \{[\s\S]*?\n    \}/) || [''])[0]), '品牌区纵向叠放名称与版本');
@@ -1452,7 +1457,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '4.10.0', '锁步版本为次版本升级');
+ok(manifestVer === '5.0.1', '锁步版本为 5.0.1');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -1463,6 +1468,12 @@ try {
   ok(false, 'offscreen.js node --check 失败: ' + String((e && e.stderr && e.stderr.toString()) || e && e.message || e));
 }
 ok(/const OFFSCREEN_VERSION = /.test(offscreenSrc) && offscreenSrc.indexOf(manifestVer) >= 0, 'offscreen 版本与 manifest 锁步');
+ok(/truncatedByMaxChars/.test(offscreenSrc) && /skippedPages/.test(offscreenSrc),
+  'offscreen 在文本上限处记录未再 OCR 的页');
+ok(/pdfTextCapFromSpec/.test(offscreenSrc) && /pageSpec && pageSpec.maxChars/.test(offscreenSrc),
+  'offscreen 文本层上限取自 pageSpec.maxChars');
+ok(!/\bMAX_TEXT_CHARS\b/.test(offscreenSrc), 'offscreen 不再硬编码 MAX_TEXT_CHARS');
+ok(/shared\/pdfPages\.js/.test(offscreenHtml), 'offscreen 文档加载共享页码模块');
 ok(/type="module"/.test(offscreenHtml) && /offscreen\.js/.test(offscreenHtml), 'offscreen.html 以 module 加载');
 ok(!/pdf\.min\.js/.test(offscreenHtml) && !/pdfjsLib\.getDocument/.test(offscreenSrc), '已去掉 PDF.js getDocument');
 ok(/wasm-unsafe-eval/.test(JSON.stringify(JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')))),
@@ -1498,32 +1509,53 @@ ok(/'LiteLLM': 'OpenAI-chat-completions'|LiteLLM: 'OpenAI-chat-completions'/.tes
   'LiteLLM 别名指向 OpenAI-chat-completions');
 ok(!/MAX_RENDER_PAGES/.test(offscreenSrc) && !/MAX_TEXT_PAGES/.test(offscreenSrc),
   'offscreen 不再硬编码 8/30 页上限');
-ok(/pageSpec/.test(offscreenSrc) && /function resolvePdfPageList\(/.test(offscreenSrc),
-  'offscreen 按 pageSpec 选页');
+ok(/importScripts\('shared\/pdfPages\.js'\)/.test(bg), 'SW 加载 shared/pdfPages.js');
+ok(/pageSpec/.test(offscreenSrc) && /WPA_PDF_PAGES\.resolvePdfPagePlan/.test(offscreenSrc),
+  'offscreen 按 pageSpec 选页且走共享页码去重');
 ok(/pageSpec: spec/.test(bg) && /pdfPageSpecFromConfig/.test(bg),
   'processPdf 把配置页码传给 offscreen');
 ok(/pdf:' \+ pdfPageSpecKey\(cfg\)/.test(bg), '附件缓存 key 含 PDF 页范围');
 ok(/按配置仅解析第 /.test(bg), '选页模式覆盖说明按配置页码');
-ok(/pdfParseMode/.test(bg) && /pdfParsePages/.test(bg), '配置含 pdfParseMode/pdfParsePages');
+ok(/pdfParseMode/.test(bg) && /pdfParsePages/.test(bg) && /pdfTextMaxChars/.test(bg),
+  '配置含 pdfParseMode/pdfParsePages/pdfTextMaxChars');
+ok(/pdfParsePages: '1,2,3,-2,-1'/.test(bg) && /pdfTextMaxChars: 150000/.test(bg),
+  '默认页码 1,2,3,-2,-1 且文本层上限 15 万字');
 ok(/解析全部 PDF 页/.test(settingsHtml) && /按页码标号来解析/.test(settingsHtml),
   '设置页可选手解析全部或按页码');
-ok(/placeholder="例如 1,2,-1"/.test(settingsHtml), '页码填空处给出示例');
+ok(/placeholder="例如 1,2,3,-2,-1"/.test(settingsHtml), '页码填空处给出示例');
 ok(/倒数第一页/.test(settingsHtml) && /「-1」表示最后一页/.test(settingsHtml),
   '提示 -1 表示最后一页（倒数第一页）');
-ok(/'pdfParseMode' in obj/.test(bg) && /'pdfParsePages' in obj/.test(bg), '导入校验识别 PDF 解析字段');
+ok(/id="pdfTextMaxChars"/.test(settingsHtml) && /PDF 文本层上限（字）/.test(settingsHtml),
+  '全局配置可改 PDF 文本层上限');
+ok(/不是发给大模型的整段提示词/.test(settingsHtml) && /不是多附件合计或对话历史/.test(settingsHtml),
+  '提示文本层上限不是整段提示词或附件合计');
+ok(/MinerU/.test(settingsHtml) && /不受上方页码配置约束/.test(settingsHtml) && /也不受「PDF 文本层上限」约束/.test(settingsHtml),
+  '提示 MinerU 不受页码与文本层上限约束');
+ok(/pdfTextMaxChars/.test(settingsSrc) && /clampInt\(\$\('pdfTextMaxChars'\)\.value, 10000, 500000, 150000\)/.test(settingsSrc),
+  '设置页收集并钳制 pdfTextMaxChars');
+ok(/placeholder = '例如 1,2,3,-2,-1'/.test(panelSrc) && /不受本页页码配置约束/.test(panelSrc) && /也不受全局配置里的「PDF 文本层上限」约束/.test(panelSrc),
+  '本页配置同步默认页码并提示 MinerU 不受页码与文本层上限约束');
+ok(/spec\.maxChars/.test(bg) && /clampPdfTextMaxChars\(pageSpec && pageSpec.maxChars\)/.test(bg),
+  '发给 offscreen 的 pageSpec 含钳制后的 maxChars');
+ok(/'pdfParseMode' in obj/.test(bg) && /'pdfParsePages' in obj/.test(bg) && /importClamped\('pdfTextMaxChars'/.test(bg),
+  '导入校验识别 PDF 解析字段与文本层上限');
 
-const importBox = {};
+const WPA_PDF_PAGES = require(path.join(ROOT, 'shared/pdfPages.js'));
+
+const importBox = { WPA_PDF_PAGES: WPA_PDF_PAGES };
 try {
   vm.runInNewContext(
     extractFn(bg, 'clampInt') + '\n' +
-      'const DEFAULT_CONFIG = { maxSteps: 15, snapshotPiiMask: false, llmCallGapMs: 500, busyMaskEnabled: true, llmTimeoutRetry: 1, llmErrorRetry: 2, pageQuietMs: 4000, suggestWaitMs: 1400, pdfParseMode: "all", pdfParsePages: "1,2,-1", uiOpacity: 100, panelScaleX: 70, panelScaleY: 70, systemPromptText: "t", systemPromptOcr: "o" };\n' +
+      'const DEFAULT_CONFIG = { maxSteps: 15, snapshotPiiMask: false, llmCallGapMs: 500, busyMaskEnabled: true, llmTimeoutRetry: 1, llmErrorRetry: 2, pageQuietMs: 4000, suggestWaitMs: 1400, pdfParseMode: "all", pdfParsePages: "1,2,3,-2,-1", pdfTextMaxChars: 150000, uiOpacity: 100, panelScaleX: 70, panelScaleY: 70, systemPromptText: "t", systemPromptOcr: "o" };\n' +
       'const TEXT_PROVIDER_TYPES = [{ id: "OpenAI-chat-completions" }];\n' +
       'const OCR_PROVIDER_TYPES = [{ id: "OpenAI-chat-completions-image_url" }, { id: "OCR-SCnet" }, { id: "MinerU" }];\n' +
       'const PROVIDER_TYPE_ALIASES = { LiteLLM: "OpenAI-chat-completions" };\n' +
+      'var clampPdfTextMaxChars = this.WPA_PDF_PAGES.clampPdfTextMaxChars;\n' +
       extractFn(bg, 'applyRuntimeKnobs') + '\n' +
       extractFn(bg, 'applyUiKnobs') + '\n' +
       extractFn(bg, 'applyDiagKnobs') + '\n' +
-      extractFn(bg, 'parsePdfPageRefs') + '\n' +
+      extractFn(bg, 'applyPdfTextCap') + '\n' +
+      'var parsePdfPageRefs = this.WPA_PDF_PAGES.parsePdfPageRefs;\n' +
       extractFn(bg, 'normalizePdfParseConfig') + '\n' +
       extractFn(bg, 'looksLikeMinerUModel') + '\n' +
       extractFn(bg, 'mineruHintFrom') + '\n' +
@@ -1581,7 +1613,7 @@ if (importBox.validateImportConfig) {
     ],
     selectedTextTag: { model: 'Kimi-K3', provider: 'SCNet' },
     selectedOcrTag: { model: 'MinerU', provider: 'NICMinerU' },
-    systemPromptText: '你是传统网页智能助手',
+    systemPromptText: '你是传统网页智能体助手',
     systemPromptOcr: '请完整识别',
     maxSteps: 60,
     snapshotPiiMask: false,
@@ -1595,7 +1627,8 @@ if (importBox.validateImportConfig) {
     panelScaleX: 70,
     panelScaleY: 70,
     pdfParseMode: 'all',
-    pdfParsePages: '1,2,-1',
+    pdfParsePages: '1,2,3,-2,-1',
+    pdfTextMaxChars: 20000,
     diagCapKb: 80
   }, cur);
   ok(full.ok && full.config.textProviders.length === 2 && full.config.ocrProviders.length === 2,
@@ -1604,7 +1637,9 @@ if (importBox.validateImportConfig) {
     '导入保留 selectedTextTag');
   ok(full.config.maxSteps === 60 && full.config.uiOpacity === 70 && full.config.busyMaskEnabled === false,
     '导入保留运行参数与 UI 透明度');
-  ok(full.config.diagCapKb === 80, '导入保留错误日志上限');
+  ok(full.config.diagCapKb === 80, '导入保留诊断探针日志上限');
+  ok(full.config.pdfParsePages === '1,2,3,-2,-1' && full.config.pdfTextMaxChars === 20000,
+    '导入保留 PDF 页码与文本层上限');
 }
 
 ok(/options_ui\.open_in_tab=true/.test(bg), 'settings 端口校验注释说明 open_in_tab 会带 tab');
@@ -1641,18 +1676,21 @@ if (portIdBox.assertSettingsPort) {
     '无 tab 不能作为 panel');
 }
 
-const pdfPageBox = {};
+const pdfPageBox = { WPA_PDF_PAGES: WPA_PDF_PAGES };
 try {
   vm.runInNewContext(
-    extractFn(bg, 'parsePdfPageRefs') + '\n' +
-      extractFn(bg, 'resolvePdfPageList') + '\n' +
-      'const DEFAULT_CONFIG = { pdfParseMode: "all", pdfParsePages: "1,2,-1" };\n' +
+      'var parsePdfPageRefs = this.WPA_PDF_PAGES.parsePdfPageRefs;\n' +
+      'var resolvePdfPageList = this.WPA_PDF_PAGES.resolvePdfPageList;\n' +
+      'var resolvePdfPagePlan = this.WPA_PDF_PAGES.resolvePdfPagePlan;\n' +
+      'var clampPdfTextMaxChars = this.WPA_PDF_PAGES.clampPdfTextMaxChars;\n' +
+      'const DEFAULT_CONFIG = { pdfParseMode: "all", pdfParsePages: "1,2,3,-2,-1", pdfTextMaxChars: 150000 };\n' +
       extractFn(bg, 'normalizePdfParseConfig') + '\n' +
       extractFn(bg, 'pdfPageSpecFromConfig') + '\n' +
       extractFn(bg, 'pdfPageSpecKey') + '\n' +
       extractFn(bg, 'pdfCoverageNotes') +
       '\nthis.parsePdfPageRefs = parsePdfPageRefs;' +
       '\nthis.resolvePdfPageList = resolvePdfPageList;' +
+      '\nthis.resolvePdfPagePlan = resolvePdfPagePlan;' +
       '\nthis.pdfPageSpecFromConfig = pdfPageSpecFromConfig;' +
       '\nthis.pdfPageSpecKey = pdfPageSpecKey;' +
       '\nthis.pdfCoverageNotes = pdfCoverageNotes;',
@@ -1681,15 +1719,34 @@ if (pdfPageBox.parsePdfPageRefs) {
     '去重（含负数落到同一页）');
   ok(pdfPageBox.resolvePdfPageList(3, { mode: 'pages', refs: [99] }).length === 0,
     '全部越界则无页');
+  ok(pdfPageBox.resolvePdfPageList(10, { mode: 'pages', refs: [1, 2, 3, -2, -1] }).join(',') === '1,2,3,9,10',
+    '十页 PDF 上 1,2,3,-2,-1 互不重叠');
+  ok(pdfPageBox.resolvePdfPageList(3, { mode: 'pages', refs: [1, 2, 3, -2, -1] }).join(',') === '1,2,3',
+    '三页 PDF 上 -2/-1 与 2/3 重叠则只留一页');
+  const plan3 = pdfPageBox.resolvePdfPagePlan(3, { mode: 'pages', refs: [1, 2, 3, -2, -1] });
+  ok(plan3.collapsed.length === 2 && plan3.collapsed[0].page === 2 && plan3.collapsed[0].refs.join(',') === '2,-2',
+    '重叠页记录原始标号 2 与 -2');
+  ok(plan3.collapsed[1].page === 3 && plan3.collapsed[1].refs.join(',') === '3,-1',
+    '重叠页记录原始标号 3 与 -1');
   const specPages = pdfPageBox.pdfPageSpecFromConfig({ pdfParseMode: 'pages', pdfParsePages: '1,2,-1' });
-  ok(specPages.mode === 'pages' && specPages.refs.join(',') === '1,2,-1', '配置转 pageSpec');
+  ok(specPages.mode === 'pages' && specPages.refs.join(',') === '1,2,-1' && specPages.maxChars === 150000,
+    '配置转 pageSpec 并带默认文本层上限');
   ok(pdfPageBox.pdfPageSpecFromConfig({ pdfParseMode: 'pages', pdfParsePages: 'nope' }).mode === 'all',
     '无效页码回退为全部页');
   ok(pdfPageBox.pdfPageSpecFromConfig({ pdfParseMode: 'all', pdfParsePages: '1,2,-1' }).mode === 'all',
     'all 模式忽略页码串');
-  ok(pdfPageBox.pdfPageSpecKey({ pdfParseMode: 'pages', pdfParsePages: '1,2,-1' }) === 'pages:1,2,-1',
-    '缓存 key 含页码');
-  ok(pdfPageBox.pdfPageSpecKey({ pdfParseMode: 'all' }) === 'all', 'all 模式缓存 key');
+  ok(pdfPageBox.pdfPageSpecFromConfig({ pdfParseMode: 'all', pdfTextMaxChars: 20000 }).maxChars === 20000,
+    'pageSpec 带上配置的文本层上限');
+  ok(pdfPageBox.pdfPageSpecKey({ pdfParseMode: 'pages', pdfParsePages: '1,2,-1' }) === 'pages:1,2,-1:cap150000',
+    '缓存 key 含页码与文本层上限');
+  ok(pdfPageBox.pdfPageSpecKey({ pdfParseMode: 'all' }) === 'all:cap150000', 'all 模式缓存 key 含默认上限');
+  ok(pdfPageBox.pdfPageSpecKey({ pdfParseMode: 'all', pdfTextMaxChars: 20000 }) === 'all:cap20000',
+    '文本层上限变化会使缓存 key 不同');
+  ok(WPA_PDF_PAGES.clampPdfTextMaxChars(undefined) === 150000 &&
+    WPA_PDF_PAGES.clampPdfTextMaxChars(1) === 10000 &&
+    WPA_PDF_PAGES.clampPdfTextMaxChars(999999) === 500000 &&
+    WPA_PDF_PAGES.clampPdfTextMaxChars(20000) === 20000,
+    '文本层上限钳制在 1 万～50 万，默认 15 万');
   const notes = pdfPageBox.pdfCoverageNotes(
     { numPages: 12, scannedPages: 2, pageList: [1, 12], missingPageCount: 1 },
     { mode: 'pages', refs: [1, -1] },
@@ -1697,6 +1754,35 @@ if (pdfPageBox.parsePdfPageRefs) {
   );
   ok(notes.join('').indexOf('按配置仅解析第 1、12 页') >= 0, '覆盖说明列出所选页');
   ok(notes.join('').indexOf('仅 OCR') < 0, '选页模式不再写仅 OCR 前 N 个');
+  const overlapNotes = pdfPageBox.pdfCoverageNotes(
+    {
+      numPages: 3, scannedPages: 3, pageList: [1, 2, 3], missingPageCount: 0,
+      collapsed: [{ page: 2, refs: [2, -2] }, { page: 3, refs: [3, -1] }]
+    },
+    { mode: 'pages', refs: [1, 2, 3, -2, -1] },
+    0
+  );
+  ok(overlapNotes.join('').indexOf('均指向第 2 页') >= 0 && overlapNotes.join('').indexOf('已去重') >= 0,
+    '覆盖说明写出正负数指向同一页并去重');
+  const capNotes = pdfPageBox.pdfCoverageNotes(
+    {
+      numPages: 10, scannedPages: 2, pageList: [1, 2, 3, 4], missingPageCount: 0,
+      truncatedByMaxChars: true, skippedPages: [3, 4]
+    },
+    { mode: 'pages', refs: [1, 2, 3, 4] },
+    0
+  );
+  ok(capNotes.join('').indexOf('提取文本已达上限') >= 0 && capNotes.join('').indexOf('未再解析或 OCR 第 3、4 页') >= 0,
+    '文本上限打断时提示后续所选页不再 OCR');
+  const capNotesNum = pdfPageBox.pdfCoverageNotes(
+    {
+      numPages: 10, scannedPages: 2, pageList: [1, 2, 3, 4], missingPageCount: 0,
+      truncatedByMaxChars: true, skippedPages: [3, 4]
+    },
+    { mode: 'pages', refs: [1, 2, 3, 4], maxChars: 20000 },
+    0
+  );
+  ok(capNotesNum.join('').indexOf('（20000 字）') >= 0, '文本上限提示带上配置的字数');
 }
 ok(/【本步序号】/.test(bg), 'PLAYBOOK 含【本步序号】');
 ok(/禁止跨轮复用/.test(bg), 'PLAYBOOK 禁止跨轮复用 idx');
@@ -2058,7 +2144,8 @@ ok(/页面稳定等待上限/.test(settingsHtml) && /填写后等待建议层/.t
 ok(/llmCallGapMs/.test(bg) && /function exportPayload\(/.test(bg), '导出含调用间隔');
 ok(/secInputToMs/.test(settingsSrc) && /msToSecValue/.test(settingsSrc), '设置页秒与毫秒互转');
 ok(/function exportPayload\(/.test(bg) && /maskProviderList/.test(bg), '导入导出走白名单且默认掩码密钥');
-ok(/diagCapKb: 50/.test(bg) && /id="diagCapKb"/.test(settingsHtml), '错误日志上限默认 50KB 且可在全局配置改');
+ok(/diagCapKb: 50/.test(bg) && /id="diagCapKb"/.test(settingsHtml) && /诊断探针日志的上限/.test(settingsHtml),
+  '诊断探针日志上限默认 50KB 且可在全局配置改');
 ok(/诊断记录/.test(settingsHtml) && /导出诊断记录/.test(settingsHtml) && /cmd === 'exportDiag'/.test(bg),
   '全局配置可导出诊断记录');
 ok(/ARCHIVE_REDACT_MAX_BYTES = 20 \* 1024/.test(bg) && /function planArchiveRedactChunks/.test(bg),

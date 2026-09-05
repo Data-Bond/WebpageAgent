@@ -202,7 +202,8 @@
       pageQuietMs: secInputToMs($('pageQuietSec'), 1000, 15000, 3000),
       suggestWaitMs: secInputToMs($('suggestWaitSec'), 0, 5000, 1000),
       pdfParseMode: $('pdfParsePagesMode').checked ? 'pages' : 'all',
-      pdfParsePages: String($('pdfParsePages').value || '').trim() || '1,2,-1',
+      pdfParsePages: String($('pdfParsePages').value || '').trim() || '1,2,3,-2,-1',
+      pdfTextMaxChars: clampInt($('pdfTextMaxChars').value, 10000, 500000, 150000),
       busyMaskEnabled: !!$('busyMaskEnabled').checked,
       snapshotPiiMask: !!$('snapshotPiiMask').checked,
       archiveRedactHint: String($('archiveRedactHint').value || '').slice(0, 2000),
@@ -240,8 +241,9 @@
     const mode = cfg.pdfParseMode === 'pages' ? 'pages' : 'all';
     $('pdfParseAll').checked = mode === 'all';
     $('pdfParsePagesMode').checked = mode === 'pages';
-    $('pdfParsePages').value = cfg.pdfParsePages != null ? String(cfg.pdfParsePages) : '1,2,-1';
+    $('pdfParsePages').value = cfg.pdfParsePages != null ? String(cfg.pdfParsePages) : '1,2,3,-2,-1';
     syncPdfParseUi();
+    if ($('pdfTextMaxChars')) $('pdfTextMaxChars').value = String(clampInt(cfg.pdfTextMaxChars, 10000, 500000, 150000));
     $('busyMaskEnabled').checked = cfg.busyMaskEnabled === true;
     $('snapshotPiiMask').checked = cfg.snapshotPiiMask === true;
     const hintEl = $('archiveRedactHint');

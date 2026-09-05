@@ -2,6 +2,10 @@
 'use strict';
 
 importScripts('shared/contracts.js');
+importScripts('shared/pdfPages.js');
+
+const parsePdfPageRefs = WPA_PDF_PAGES.parsePdfPageRefs;
+const clampPdfTextMaxChars = WPA_PDF_PAGES.clampPdfTextMaxChars;
 
 const DEFAULT_SYSTEM_PROMPT_OCR =
   "请完整识别并提取这张图片中的所有文字内容，保持原始排版格式，直接输出识别结果，不要添加任何额外说明。";
@@ -23,7 +27,7 @@ const DEFAULT_CONFIG = {
   selectedTextTag: null,
   selectedOcrTag: null,
   systemPromptText:
-    "你是'传统网页智能助手'，一个自主控制浏览器网页的智能体。用户已在一个网页系统上登录，你要根据用户用自然语言提出的任务，自动在当前页面完成一系列操作（读取信息、填写表单、选择下拉框、点击按钮、上传用户已附加的文件等），全程不需要用户再手动操作网页。\n\n每次你会得到：【页面快照】(当前可见的交互元素及选择器，含页面主标题 heading、当前激活菜单 activeMenu)、【执行结果】(上一步脚本运行结果)、【变化报告】(上一步操作后页面的可观测变化对比)。\n\n【核心原则：预测-验证，禁止空转】\n1) 每个动作只做一次。执行前先想好预期效果。\n2) 动作后，阅读下一轮工具结果中的【变化报告】来验证：\n   - 导航/页面切换：看 urlChanged、headingChanged、activeMenuChanged。\n   - 值变化（表单填写等）：用 page.getText(选择器) 查询，或看下一轮快照中对应元素的 value 字段。\n   - 元素出现/消失：看 countDelta 或用 page.waitFor 等待。\n3) 严禁重复执行已经执行过且页面无变化的动作。如果 helper 已返回 verified=true，或【变化报告】为「助手已确认生效」，该步已成功，不要再勾选或换选择器重试。仅当没有 verified=true 且变化报告为\"页面无变化\"时，才说明操作未生效或效果不可观测——不要重复同一操作，改用 page.waitFor 等待异步加载、或 page.probe()/page.getText 主动查询验证。\n4) 如果某操作的预期效果不可观测（expect 为\"不可观测\"）且变化报告为空：不要重复该操作，先继续执行后续其它步骤，把多个步骤的预期结果合并后再一并验证。\n5) 当没有其它可合并验证的步骤时，输出 {\"action\":\"ask\",\"question\":\"...\"} 向用户说明哪些操作已完成但效果未确认，询问是否成功、是否需要重做。\n\n【导航类操作】点击菜单/链接后，页面可能是异步加载。请在脚本中用 await page.waitFor(选择器或函数, {timeout:5000}) 等待目标页面内容出现后再 return，不要点击后立即 return true 假设成功。\n\n【页面跳转】当你的脚本触发了整页跳转（如点击链接导致页面重载），脚本执行可能因页面重载而中断——这是正常的，引擎会自动等待新页面加载完成后再给你下一轮快照。如果你的操作目标是跳转到新页面，请在点击后用 await page.waitFor 等待目标内容出现；若页面重载导致脚本中断，无需担心，下一轮快照会反映新页面状态。\n\n用户可能一次输入多条指令（每行一条），引擎会逐条执行并在指令间自动等待页面稳定。你只需专注完成当前指令即可。\n\n你必须严格只输出一个 JSON 对象，不要输出任何其他文字。三种输出格式：\n1) 需要执行操作时：{\"action\":\"plan\",\"summary\":\"这一步的意图说明\",\"expect\":\"预期的可观测变化，如'页面跳转到成果反馈'或'姓名字段填为张三'；若不可观测则填'不可观测'\",\"script\":\"/* 在异步函数体内执行的 JS，可使用下列助手，执行完 return 一个 JSON 可序列化结果 */\"}\n可用的 page 助手方法：page.q(选择器)、page.qa(选择器数组)、page.setVal(选择器,值)、page.click(选择器)、page.select(选择器,值或文本)、page.upload(选择器,文件key)、page.getText(选择器)、page.sleep(毫秒)、page.waitFor(选择器或函数,{poll,timeout})（轮询等待条件满足，超时抛错）、page.probe()（返回{url,title,heading,activeMenu,interactiveCount,domLen,formDigest}轻量页面信号）、page.ocr(选择器)（把页面 img/canvas/BASE64 图送给 OCR 模型，返回{ok,text}；一般图片用它）、page.ocrFill(图选择器或\"captcha\",输入框选择器,提交按钮选择器?)（验证码专用：一次完成截图识别填写并可选提交，禁止拆成 ocr+setVal+click，禁止让用户看图）、page.optionTexts(max)（返回当前可见下拉选项数组 [{t,v,s}]，最多 max 条默认200；轮询等待异步渲染，用于读取已展开的自定义下拉框选项）、page.selectOption(触发器selector,文本,{timeout})（一站式服务自定义下拉：自动展开/搜索/匹配/点击/验证，返回 {ok,via,text,value,verified}；歧义或未命中抛错并附候选，选择自定义下拉项务必用它）、page.clickOptionByText(文本,{timeout})（在下拉已展开时按 精确>前缀>包含 点击唯一最优可见选项）、page.findOption(文本,{timeout})（按文本查找可见下拉选项，返回 {selector,text,value} 或 null，不点击）、page.setChecked(选择器或{text:'文本'},true/false)（幂等勾选/取消复选/单选框：先读当前状态，已是目标状态则不点击，返回 {ok,changed,checked,verified}；勾选类操作必须用它，禁止对复选框 label 直接 page.click——label 点击是 toggle，会把已勾选项点成取消）、page.optionSelector()（返回下拉选项候选 CSS 选择器，可配合 page.qa 自行遍历）。选择器应尽量使用快照中给出的唯一选择器。快照中的元素带有 unique(选择器是否唯一)、disabled(禁用的元素不可操作)、readOnly(只读输入框，多为自定义下拉/日期选择器的触发器，可点击展开，不要因只读而避开)、contentEditable(是否可编辑富文本，可用 setVal 填充)；tag=SELECT 的元素额外带 options(候选预览 [{v,t,s}]，s=1 为当前选中) 与 selectedText(当前选中文本) 字段，可据 options 的精确 v/t 直接 page.select、active(是否为当前激活的菜单项)、cls(类名)、dataAct(data-file-act/data-act 等操作语义，如 delete/cancel/order/upload)、icon(图标类名，如 icon-trash=删除、icon-x/icon-close=关闭/取消、icon-plus=新增)、box(复选/单选框标记，值为 'checkbox' 或 'radio')、checked(该复选/单选框当前是否已勾选，勾选类操作前先读它，已是目标状态就不要再点) 字段；许多按钮是无文字的图标按钮(用 span/i/div + 图标类或 data-act 实现)，请结合 dataAct、icon、cls、aria-label、label、text 综合判断其用途（如 dataAct=\"delete\" 或 icon=\"icon-trash\" 即为删除按钮，用 page.click(其 selector) 操作）。hidden=true 表示该操作控件默认不可见（需悬浮所在行才显示，如文件行的删除/排序按钮），但 page.click 对隐藏元素同样会派发完整鼠标事件序列（mouseover→pointerdown/mousedown→pointerup/mouseup→click，且向祖先冒泡），可直接点击。点击自定义下拉框展开选项等只改局部 DOM 的操作，【变化报告】中的 DOM 长度差(domChanged)会记录变化——不要因 interactiveCount 不变就视为无效而重复执行同一展开操作。若 unique 为 false，请结合 label 或 text 用更具体的选择器（如 nth-of-type）来定位唯一元素；不要操作 disabled 为 true 的元素。上传文件用 page.upload('<选择器>','<文件key>')。\n\n【自定义下拉框/选择器】下拉项的选择流程以系统消息末尾的【运行时手册】为唯一准绳（原生 SELECT 用 page.select；其余一律 page.selectOption，歧义/未命中按其错误提示处理）。\n2) 需要向用户确认或缺少信息时：{\"action\":\"ask\",\"question\":\"要问用户的问题\"}\n3) 任务已完成时：{\"action\":\"done\",\"summary\":\"向用户汇报最终结果\"}\n如果上一步返回了错误，请根据错误修正脚本重试，避免死循环。当前指令写明的步骤全部成功后立刻输出 done；不要根据页面上还看得到的按钮继续猜测。",
+    "你是'传统网页智能体助手'，一个自主控制浏览器网页的智能体。用户已在一个网页系统上登录，你要根据用户用自然语言提出的任务，自动在当前页面完成一系列操作（读取信息、填写表单、选择下拉框、点击按钮、上传用户已附加的文件等），全程不需要用户再手动操作网页。\n\n每次你会得到：【页面快照】(当前可见的交互元素及选择器，含页面主标题 heading、当前激活菜单 activeMenu)、【执行结果】(上一步脚本运行结果)、【变化报告】(上一步操作后页面的可观测变化对比)。\n\n【核心原则：预测-验证，禁止空转】\n1) 每个动作只做一次。执行前先想好预期效果。\n2) 动作后，阅读下一轮工具结果中的【变化报告】来验证：\n   - 导航/页面切换：看 urlChanged、headingChanged、activeMenuChanged。\n   - 值变化（表单填写等）：用 page.getText(选择器) 查询，或看下一轮快照中对应元素的 value 字段。\n   - 元素出现/消失：看 countDelta 或用 page.waitFor 等待。\n3) 严禁重复执行已经执行过且页面无变化的动作。如果 helper 已返回 verified=true，或【变化报告】为「助手已确认生效」，该步已成功，不要再勾选或换选择器重试。仅当没有 verified=true 且变化报告为\"页面无变化\"时，才说明操作未生效或效果不可观测——不要重复同一操作，改用 page.waitFor 等待异步加载、或 page.probe()/page.getText 主动查询验证。\n4) 如果某操作的预期效果不可观测（expect 为\"不可观测\"）且变化报告为空：不要重复该操作，先继续执行后续其它步骤，把多个步骤的预期结果合并后再一并验证。\n5) 当没有其它可合并验证的步骤时，输出 {\"action\":\"ask\",\"question\":\"...\"} 向用户说明哪些操作已完成但效果未确认，询问是否成功、是否需要重做。\n\n【导航类操作】点击菜单/链接后，页面可能是异步加载。请在脚本中用 await page.waitFor(选择器或函数, {timeout:5000}) 等待目标页面内容出现后再 return，不要点击后立即 return true 假设成功。\n\n【页面跳转】当你的脚本触发了整页跳转（如点击链接导致页面重载），脚本执行可能因页面重载而中断——这是正常的，引擎会自动等待新页面加载完成后再给你下一轮快照。如果你的操作目标是跳转到新页面，请在点击后用 await page.waitFor 等待目标内容出现；若页面重载导致脚本中断，无需担心，下一轮快照会反映新页面状态。\n\n用户可能一次输入多条指令（每行一条），引擎会逐条执行并在指令间自动等待页面稳定。你只需专注完成当前指令即可。\n\n你必须严格只输出一个 JSON 对象，不要输出任何其他文字。三种输出格式：\n1) 需要执行操作时：{\"action\":\"plan\",\"summary\":\"这一步的意图说明\",\"expect\":\"预期的可观测变化，如'页面跳转到成果反馈'或'姓名字段填为张三'；若不可观测则填'不可观测'\",\"script\":\"/* 在异步函数体内执行的 JS，可使用下列助手，执行完 return 一个 JSON 可序列化结果 */\"}\n可用的 page 助手方法：page.q(选择器)、page.qa(选择器数组)、page.setVal(选择器,值)、page.click(选择器)、page.select(选择器,值或文本)、page.upload(选择器,文件key)、page.getText(选择器)、page.sleep(毫秒)、page.waitFor(选择器或函数,{poll,timeout})（轮询等待条件满足，超时抛错）、page.probe()（返回{url,title,heading,activeMenu,interactiveCount,domLen,formDigest}轻量页面信号）、page.ocr(选择器)（把页面 img/canvas/BASE64 图送给 OCR 模型，返回{ok,text}；一般图片用它）、page.ocrFill(图选择器或\"captcha\",输入框选择器,提交按钮选择器?)（验证码专用：一次完成截图识别填写并可选提交，禁止拆成 ocr+setVal+click，禁止让用户看图）、page.optionTexts(max)（返回当前可见下拉选项数组 [{t,v,s}]，最多 max 条默认200；轮询等待异步渲染，用于读取已展开的自定义下拉框选项）、page.selectOption(触发器selector,文本,{timeout})（一站式服务自定义下拉：自动展开/搜索/匹配/点击/验证，返回 {ok,via,text,value,verified}；歧义或未命中抛错并附候选，选择自定义下拉项务必用它）、page.clickOptionByText(文本,{timeout})（在下拉已展开时按 精确>前缀>包含 点击唯一最优可见选项）、page.findOption(文本,{timeout})（按文本查找可见下拉选项，返回 {selector,text,value} 或 null，不点击）、page.setChecked(选择器或{text:'文本'},true/false)（幂等勾选/取消复选/单选框：先读当前状态，已是目标状态则不点击，返回 {ok,changed,checked,verified}；勾选类操作必须用它，禁止对复选框 label 直接 page.click——label 点击是 toggle，会把已勾选项点成取消）、page.optionSelector()（返回下拉选项候选 CSS 选择器，可配合 page.qa 自行遍历）。选择器应尽量使用快照中给出的唯一选择器。快照中的元素带有 unique(选择器是否唯一)、disabled(禁用的元素不可操作)、readOnly(只读输入框，多为自定义下拉/日期选择器的触发器，可点击展开，不要因只读而避开)、contentEditable(是否可编辑富文本，可用 setVal 填充)；tag=SELECT 的元素额外带 options(候选预览 [{v,t,s}]，s=1 为当前选中) 与 selectedText(当前选中文本) 字段，可据 options 的精确 v/t 直接 page.select、active(是否为当前激活的菜单项)、cls(类名)、dataAct(data-file-act/data-act 等操作语义，如 delete/cancel/order/upload)、icon(图标类名，如 icon-trash=删除、icon-x/icon-close=关闭/取消、icon-plus=新增)、box(复选/单选框标记，值为 'checkbox' 或 'radio')、checked(该复选/单选框当前是否已勾选，勾选类操作前先读它，已是目标状态就不要再点) 字段；许多按钮是无文字的图标按钮(用 span/i/div + 图标类或 data-act 实现)，请结合 dataAct、icon、cls、aria-label、label、text 综合判断其用途（如 dataAct=\"delete\" 或 icon=\"icon-trash\" 即为删除按钮，用 page.click(其 selector) 操作）。hidden=true 表示该操作控件默认不可见（需悬浮所在行才显示，如文件行的删除/排序按钮），但 page.click 对隐藏元素同样会派发完整鼠标事件序列（mouseover→pointerdown/mousedown→pointerup/mouseup→click，且向祖先冒泡），可直接点击。点击自定义下拉框展开选项等只改局部 DOM 的操作，【变化报告】中的 DOM 长度差(domChanged)会记录变化——不要因 interactiveCount 不变就视为无效而重复执行同一展开操作。若 unique 为 false，请结合 label 或 text 用更具体的选择器（如 nth-of-type）来定位唯一元素；不要操作 disabled 为 true 的元素。上传文件用 page.upload('<选择器>','<文件key>')。\n\n【自定义下拉框/选择器】下拉项的选择流程以系统消息末尾的【运行时手册】为唯一准绳（原生 SELECT 用 page.select；其余一律 page.selectOption，歧义/未命中按其错误提示处理）。\n2) 需要向用户确认或缺少信息时：{\"action\":\"ask\",\"question\":\"要问用户的问题\"}\n3) 任务已完成时：{\"action\":\"done\",\"summary\":\"向用户汇报最终结果\"}\n如果上一步返回了错误，请根据错误修正脚本重试，避免死循环。当前指令写明的步骤全部成功后立刻输出 done；不要根据页面上还看得到的按钮继续猜测。",
   systemPromptOcr: DEFAULT_SYSTEM_PROMPT_OCR,
   maxSteps: 60,
   snapshotPiiMask: false,
@@ -34,7 +38,8 @@ const DEFAULT_CONFIG = {
   pageQuietMs: 3000,
   suggestWaitMs: 1000,
   pdfParseMode: 'all',
-  pdfParsePages: '1,2,-1',
+  pdfParsePages: '1,2,3,-2,-1',
+  pdfTextMaxChars: 150000,
   uiOpacity: 100,
   panelScaleX: 70,
   panelScaleY: 70,
@@ -143,62 +148,6 @@ const PROVIDER_TYPE_ALIASES = {
   'mineru-parse': 'MinerU'
 };
 
-function parsePdfPageRefs(raw) {
-  const s = String(raw || '').trim();
-  if (!s) return [];
-  const parts = s.split(/[,，、;；\s]+/).filter(Boolean);
-  const out = [];
-  const seen = Object.create(null);
-  function add(n) {
-    if (!Number.isInteger(n) || n === 0) return;
-    if (seen[n]) return;
-    seen[n] = true;
-    out.push(n);
-  }
-  for (let i = 0; i < parts.length; i++) {
-    const tok = parts[i];
-    const range = tok.match(/^(-?\d+)\s*[-~～]\s*(-?\d+)$/);
-    if (range) {
-      const a = parseInt(range[1], 10);
-      const b = parseInt(range[2], 10);
-      if (a > 0 && b > 0) {
-        const lo = Math.min(a, b);
-        const hi = Math.max(a, b);
-        const cap = Math.min(hi, lo + 499);
-        for (let n = lo; n <= cap; n++) add(n);
-      }
-      continue;
-    }
-    if (!/^-?\d+$/.test(tok)) continue;
-    add(parseInt(tok, 10));
-  }
-  return out;
-}
-
-function resolvePdfPageList(numPages, spec) {
-  const total = Math.max(0, Number(numPages) || 0);
-  if (!total) return [];
-  const mode = spec && spec.mode === 'pages' ? 'pages' : 'all';
-  if (mode !== 'pages') {
-    const all = [];
-    for (let n = 1; n <= total; n++) all.push(n);
-    return all;
-  }
-  const refs = Array.isArray(spec.refs) ? spec.refs : [];
-  const out = [];
-  const seen = Object.create(null);
-  for (let i = 0; i < refs.length; i++) {
-    let n = Number(refs[i]);
-    if (!Number.isInteger(n) || n === 0) continue;
-    if (n < 0) n = total + n + 1;
-    if (n < 1 || n > total || seen[n]) continue;
-    seen[n] = true;
-    out.push(n);
-  }
-  out.sort(function (a, b) { return a - b; });
-  return out;
-}
-
 function normalizePdfParseConfig(cfg) {
   const src = cfg || {};
   const mode = String(src.pdfParseMode || '') === 'pages' ? 'pages' : 'all';
@@ -210,18 +159,24 @@ function normalizePdfParseConfig(cfg) {
   return { pdfParseMode: mode, pdfParsePages: pages };
 }
 
+function applyPdfTextCap(cfg) {
+  return { pdfTextMaxChars: clampPdfTextMaxChars(cfg && cfg.pdfTextMaxChars) };
+}
+
 function pdfPageSpecFromConfig(cfg) {
   const n = normalizePdfParseConfig(cfg);
-  if (n.pdfParseMode !== 'pages') return { mode: 'all' };
+  const maxChars = clampPdfTextMaxChars(cfg && cfg.pdfTextMaxChars);
+  if (n.pdfParseMode !== 'pages') return { mode: 'all', maxChars: maxChars };
   const refs = parsePdfPageRefs(n.pdfParsePages);
-  if (!refs.length) return { mode: 'all' };
-  return { mode: 'pages', refs: refs };
+  if (!refs.length) return { mode: 'all', maxChars: maxChars };
+  return { mode: 'pages', refs: refs, maxChars: maxChars };
 }
 
 function pdfPageSpecKey(cfg) {
   const spec = pdfPageSpecFromConfig(cfg);
-  if (spec.mode !== 'pages') return 'all';
-  return 'pages:' + spec.refs.join(',');
+  const cap = spec.maxChars;
+  if (spec.mode !== 'pages') return 'all:cap' + cap;
+  return 'pages:' + spec.refs.join(',') + ':cap' + cap;
 }
 
 function providerTypeList(kind) {
@@ -315,7 +270,7 @@ const RUNTIME_PLAYBOOK =
   PLAYBOOK_END;
 
 const MODERN_SYSTEM_PROMPT =
-  "你是网页智能助手，根据用户当前指令在已打开的网页上操作。每轮只输出一个 JSON。action 只能是 execute、ask 或 done。执行操作用 {\"action\":\"execute\",\"summary\":\"...\",\"expect\":\"...\",\"operations\":[{\"op\":\"助手名\",\"args\":[...]}]}。禁止输出 plan/script，禁止编造快照里没有的 CSS。同一表单内多个独立字段的 setVal 必须放在同一次 execute，填完再 click 提交。具体助手与验证规则以【运行时手册】为准。";
+  "你是网页智能体助手，根据用户当前指令在已打开的网页上操作。每轮只输出一个 JSON。action 只能是 execute、ask 或 done。执行操作用 {\"action\":\"execute\",\"summary\":\"...\",\"expect\":\"...\",\"operations\":[{\"op\":\"助手名\",\"args\":[...]}]}。禁止输出 plan/script，禁止编造快照里没有的 CSS。同一表单内多个独立字段的 setVal 必须放在同一次 execute，填完再 click 提交。具体助手与验证规则以【运行时手册】为准。";
 
 function withRuntimePlaybook(content) {
   let sys = String(content || '');
@@ -890,7 +845,7 @@ async function getConfigMerged(origin) {
     archiveRedactHint: typeof cfg.archiveRedactHint === 'string'
       ? cfg.archiveRedactHint.slice(0, 2000)
       : DEFAULT_CONFIG.archiveRedactHint
-  }, applyRuntimeKnobs(cfg), applyUiKnobs(cfg), applyDiagKnobs(cfg), normalizePdfParseConfig(cfg));
+  }, applyRuntimeKnobs(cfg), applyUiKnobs(cfg), applyDiagKnobs(cfg), normalizePdfParseConfig(cfg), applyPdfTextCap(cfg));
   noteDiagCap(merged);
   if (origin) {
     const page = await getPageConfig(origin);
@@ -951,6 +906,7 @@ function configPayload(cfg) {
     suggestWaitMs: cfg.suggestWaitMs,
     pdfParseMode: cfg.pdfParseMode === 'pages' ? 'pages' : 'all',
     pdfParsePages: String(cfg.pdfParsePages == null ? DEFAULT_CONFIG.pdfParsePages : cfg.pdfParsePages),
+    pdfTextMaxChars: clampPdfTextMaxChars(cfg.pdfTextMaxChars),
     uiOpacity: cfg.uiOpacity,
     panelScaleX: cfg.panelScaleX,
     panelScaleY: cfg.panelScaleY,
@@ -984,7 +940,7 @@ function exportPayload(cfg, opts) {
     archiveRedactHint: typeof cfg.archiveRedactHint === 'string'
       ? cfg.archiveRedactHint.slice(0, 2000)
       : DEFAULT_CONFIG.archiveRedactHint
-  }, knobs, applyUiKnobs(cfg), applyDiagKnobs(cfg), normalizePdfParseConfig(cfg));
+  }, knobs, applyUiKnobs(cfg), applyDiagKnobs(cfg), normalizePdfParseConfig(cfg), applyPdfTextCap(cfg));
 }
 
 // 导入侧把常见别名摊成 normalizeProvider 认识的字段；对不上的键丢掉。
@@ -1070,6 +1026,7 @@ function validateImportConfig(obj, current) {
     suggestWaitMs: cur.suggestWaitMs != null ? cur.suggestWaitMs : DEFAULT_CONFIG.suggestWaitMs,
     pdfParseMode: cur.pdfParseMode === 'pages' ? 'pages' : 'all',
     pdfParsePages: cur.pdfParsePages != null ? String(cur.pdfParsePages) : DEFAULT_CONFIG.pdfParsePages,
+    pdfTextMaxChars: cur.pdfTextMaxChars != null ? cur.pdfTextMaxChars : DEFAULT_CONFIG.pdfTextMaxChars,
     archiveRedactHint: typeof cur.archiveRedactHint === 'string'
       ? cur.archiveRedactHint
       : (typeof DEFAULT_CONFIG.archiveRedactHint === 'string' ? DEFAULT_CONFIG.archiveRedactHint : '')
@@ -1117,6 +1074,7 @@ function validateImportConfig(obj, current) {
   importClamped('panelScaleX', 30, 100, DEFAULT_CONFIG.panelScaleX);
   importClamped('panelScaleY', 30, 100, DEFAULT_CONFIG.panelScaleY);
   importClamped('diagCapKb', 10, 200, DEFAULT_CONFIG.diagCapKb);
+  importClamped('pdfTextMaxChars', 10000, 500000, DEFAULT_CONFIG.pdfTextMaxChars);
   if ('busyMaskEnabled' in obj) {
     merged.busyMaskEnabled = obj.busyMaskEnabled === true;
   }
@@ -1135,7 +1093,7 @@ function validateImportConfig(obj, current) {
   if ('archiveRedactHint' in obj && typeof obj.archiveRedactHint === 'string') {
     merged.archiveRedactHint = obj.archiveRedactHint.slice(0, 2000);
   }
-  Object.assign(merged, applyRuntimeKnobs(merged), applyUiKnobs(merged), applyDiagKnobs(merged), normalizePdfParseConfig(merged));
+  Object.assign(merged, applyRuntimeKnobs(merged), applyUiKnobs(merged), applyDiagKnobs(merged), normalizePdfParseConfig(merged), applyPdfTextCap(merged));
 
   return { ok: true, config: merged };
 }
@@ -3024,7 +2982,15 @@ async function processPdfOnce(dataUrl, cancelRef, pageSpec) {
   const id = 'pdf' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   offscreenRetain(id);
   const jobId = id;
-  const spec = pageSpec && pageSpec.mode === 'pages' ? pageSpec : { mode: 'all' };
+  const spec = {
+    mode: (pageSpec && pageSpec.mode === 'pages') ? 'pages' : 'all',
+    maxChars: clampPdfTextMaxChars(pageSpec && pageSpec.maxChars)
+  };
+  if (spec.mode === 'pages' && pageSpec && Array.isArray(pageSpec.refs) && pageSpec.refs.length) {
+    spec.refs = pageSpec.refs;
+  } else {
+    spec.mode = 'all';
+  }
   const bytes = await dataUrlToUint8(dataUrl);
   if (!bytes.length) throw new Error('PDF 数据为空');
   await pdfJobPut(jobId, bytes);
@@ -3047,7 +3013,10 @@ async function processPdfOnce(dataUrl, cancelRef, pageSpec) {
             numPages: msg.numPages || 0,
             missingPageCount: msg.missingPageCount || 0,
             scannedPages: msg.scannedPages || 0,
-            pageList: Array.isArray(msg.pageList) ? msg.pageList : []
+            pageList: Array.isArray(msg.pageList) ? msg.pageList : [],
+            collapsed: Array.isArray(msg.collapsed) ? msg.collapsed : [],
+            truncatedByMaxChars: !!msg.truncatedByMaxChars,
+            skippedPages: Array.isArray(msg.skippedPages) ? msg.skippedPages : []
           });
         } else {
           reject(new Error(msg.error || 'PDF 处理失败'));
@@ -4139,7 +4108,12 @@ function pdfCoverageNotes(extracted, spec, imagesLen) {
   const pageList = Array.isArray(extracted && extracted.pageList) ? extracted.pageList : [];
   if (spec && spec.mode === 'pages' && pageList.length) {
     notes.push('按配置仅解析第 ' + pageList.join('、') + ' 页（共 ' + extracted.numPages + ' 页，本地解析非 MinerU）');
-  } else if (extracted && extracted.numPages > extracted.scannedPages) {
+  }
+  const collapseNote = WPA_PDF_PAGES.formatPdfPageCollapseNote(extracted && extracted.collapsed);
+  if (collapseNote) notes.push(collapseNote);
+  if (extracted && extracted.truncatedByMaxChars) {
+    notes.push(WPA_PDF_PAGES.formatPdfTextCapNote(extracted.skippedPages, spec && spec.maxChars));
+  } else if (!(spec && spec.mode === 'pages') && extracted && extracted.numPages > extracted.scannedPages) {
     notes.push('PDF 共 ' + extracted.numPages + ' 页，本地文本提取仅处理前 ' + extracted.scannedPages + ' 页');
   }
   if (!(spec && spec.mode === 'pages') && extracted && extracted.missingPageCount > imagesLen) {
@@ -4189,6 +4163,16 @@ async function runPdfOrImageParse(f, kind, ctx) {
     const coverageNote = coverageNotes.length ? '【注意：' + coverageNotes.join('；') + '】\n' : '';
     const bodyText = isUsefulPdfText(extracted && extracted.text) ? extracted.text : '';
     const localText = bodyText ? (coverageNote + bodyText) : '';
+    const collapseNote = WPA_PDF_PAGES.formatPdfPageCollapseNote(extracted && extracted.collapsed);
+    if (collapseNote) {
+      postMsg({ type: 'status', text: '【注意】' + collapseNote + '：' + f.name });
+    }
+    if (extracted && extracted.truncatedByMaxChars) {
+      postMsg({
+        type: 'status',
+        text: '【注意】' + WPA_PDF_PAGES.formatPdfTextCapNote(extracted.skippedPages, pageSpec && pageSpec.maxChars) + '：' + f.name
+      });
+    }
     if (localText) {
       postMsg({ type: 'status', text: 'PDF 文本层提取成功：' + f.name + '（' + localText.length + ' 字）' });
     }
@@ -7113,7 +7097,7 @@ chrome.runtime.onConnect.addListener((port) => {
         const base = saved.assistantConfig || {};
         const patch = msg.config && typeof msg.config === 'object' && !Array.isArray(msg.config) ? msg.config : {};
         const next = Object.assign({}, base, patch);
-        Object.assign(next, applyRuntimeKnobs(next), applyUiKnobs(next), applyDiagKnobs(next), normalizePdfParseConfig(next));
+        Object.assign(next, applyRuntimeKnobs(next), applyUiKnobs(next), applyDiagKnobs(next), normalizePdfParseConfig(next), applyPdfTextCap(next));
         next.maxSteps = clampInt(next.maxSteps, 1, 100, DEFAULT_CONFIG.maxSteps);
         const write = await storageSet({ assistantConfig: next });
         if (!write.ok) {

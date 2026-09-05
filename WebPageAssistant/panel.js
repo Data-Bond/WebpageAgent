@@ -1352,7 +1352,7 @@
     iframe.id = '__ai-assistant-root';
     iframe.setAttribute('data-wpa-ignore', '1');
     iframe.setAttribute('tabindex', '-1');
-    iframe.setAttribute('title', '网页智能助手');
+    iframe.setAttribute('title', '网页智能体助手');
     iframe.setAttribute('allowtransparency', 'true');
     // 默认即为 about:blank；不要赋 src，否则 load 会清空已写入的面板文档。
     iframe.style.cssText = 'position:fixed;top:20px;right:20px;z-index:2147483647;width:' +
@@ -1650,7 +1650,7 @@
     pageRunRow.appendChild(mkFieldLabel('页面稳定等待上限（秒）', pagePageQuietSec));
     pageRunRow.appendChild(mkFieldLabel('填写后等待建议层（秒）', pageSuggestWaitSec));
     pageRunCard.appendChild(pageRunRow);
-    pageRunCard.appendChild(mk('div', 'pdf-parse-label', { textContent: 'PDF 解析范围（本地 PDFium；MinerU 仍提交整份）' }));
+    pageRunCard.appendChild(mk('div', 'pdf-parse-label', { textContent: 'PDF 解析范围' }));
     const pagePdfParseAll = mk('input');
     pagePdfParseAll.id = 'pagePdfParseAll';
     pagePdfParseAll.type = 'radio';
@@ -1675,17 +1675,20 @@
     const pagePdfParsePages = mk('input');
     pagePdfParsePages.id = 'pagePdfParsePages';
     pagePdfParsePages.type = 'text';
-    pagePdfParsePages.placeholder = '例如 1,2,-1';
+    pagePdfParsePages.placeholder = '例如 1,2,3,-2,-1';
     pagePdfParsePages.title = '多个页码用逗号分隔；负数表示从末尾倒数，-1 为最后一页（倒数第一页）';
     pagePdfParsePagesWrap.appendChild(mkFieldLabel('页码', pagePdfParsePages));
     pagePdfParsePagesWrap.appendChild(mk('div', 'pdf-parse-hint', {
-      textContent: '「-1」表示最后一页，也称为倒数第一页。可填多个数字（如 1,2,-1），OCR 也只识别这些页。'
+      textContent: '「-1」表示最后一页。默认 1,2,3,-2,-1；正数与负数若指向同一页，只解析一次、不重复 OCR。'
     }));
     pageRunCard.appendChild(pagePdfParsePagesWrap);
     const pagePdfParseAllHint = mk('div', 'pdf-parse-hint');
     pagePdfParseAllHint.id = 'pagePdfParseAllHint';
     pagePdfParseAllHint.textContent = '解析全部页会对每一页做文本提取，无文本层的页会渲染后 OCR，大文件可能较慢。';
     pageRunCard.appendChild(pagePdfParseAllHint);
+    pageRunCard.appendChild(mk('div', 'pdf-parse-hint', {
+      textContent: 'OCR 的 providerType 为 MinerU 时，始终把整份 PDF 交给 MinerU 做 OCR：不受本页页码配置约束，也不受全局配置里的「PDF 文本层上限」约束。本地 PDFium（文本层抽取与按页渲染 OCR）仍同时受这两项约束。文本层上限只在全局配置页调节。'
+    }));
     const pageBusyMaskEnabled = mk('input');
     pageBusyMaskEnabled.id = 'pageBusyMaskEnabled';
     pageBusyMaskEnabled.type = 'checkbox';
@@ -3209,7 +3212,7 @@
       pageQuietMs: clampInt(src.pageQuietMs, 1000, 15000, 3000),
       suggestWaitMs: clampInt(src.suggestWaitMs, 0, 5000, 1000),
       pdfParseMode: src.pdfParseMode === 'pages' ? 'pages' : 'all',
-      pdfParsePages: String(src.pdfParsePages == null ? '1,2,-1' : src.pdfParsePages),
+      pdfParsePages: String(src.pdfParsePages == null ? '1,2,3,-2,-1' : src.pdfParsePages),
       busyMaskEnabled: src.busyMaskEnabled === true,
       snapshotPiiMask: src.snapshotPiiMask === true,
       compatMode: src.compatMode === true
@@ -3227,7 +3230,7 @@
     const mode = src.pdfParseMode === 'pages' ? 'pages' : 'all';
     if (els.pagePdfParseAll) els.pagePdfParseAll.checked = mode === 'all';
     if (els.pagePdfParsePagesMode) els.pagePdfParsePagesMode.checked = mode === 'pages';
-    if (els.pagePdfParsePages) els.pagePdfParsePages.value = src.pdfParsePages != null ? String(src.pdfParsePages) : '1,2,-1';
+    if (els.pagePdfParsePages) els.pagePdfParsePages.value = src.pdfParsePages != null ? String(src.pdfParsePages) : '1,2,3,-2,-1';
     syncPagePdfParseUi();
     if (els.pageBusyMaskEnabled) els.pageBusyMaskEnabled.checked = src.busyMaskEnabled === true;
     if (els.pageSnapshotPiiMask) els.pageSnapshotPiiMask.checked = src.snapshotPiiMask === true;
@@ -3243,7 +3246,7 @@
       pageQuietMs: secInputToMs(els.pagePageQuietSec, 1000, 15000, 3000),
       suggestWaitMs: secInputToMs(els.pageSuggestWaitSec, 0, 5000, 1000),
       pdfParseMode: (els.pagePdfParsePagesMode && els.pagePdfParsePagesMode.checked) ? 'pages' : 'all',
-      pdfParsePages: String(els.pagePdfParsePages && els.pagePdfParsePages.value || '').trim() || '1,2,-1',
+      pdfParsePages: String(els.pagePdfParsePages && els.pagePdfParsePages.value || '').trim() || '1,2,3,-2,-1',
       busyMaskEnabled: !!(els.pageBusyMaskEnabled && els.pageBusyMaskEnabled.checked),
       snapshotPiiMask: !!(els.pageSnapshotPiiMask && els.pageSnapshotPiiMask.checked),
       compatMode: !!(els.pageCompatMode && els.pageCompatMode.checked)

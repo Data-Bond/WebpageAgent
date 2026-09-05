@@ -3,9 +3,8 @@
 // PDFium WASM 以 ES module 加载；库单例活在本 offscreen 文档寿命内。
 import { PDFiumLibrary } from './vendor/pdfium/index.esm.browser.js';
 
-const OFFSCREEN_VERSION = '4.10.0';
+const OFFSCREEN_VERSION = '5.0.1';
 
-const MAX_TEXT_CHARS = 150000;
 const MIN_USEFUL_CHARS = 40;
 const OCR_DPI = 120;
 const OCR_MAX_W = 1240;
@@ -163,46 +162,50 @@ function computeRenderScale(pointW, pointH) {
   return Math.min(ocrScale, WASM_HARD_PX / Math.max(w, h));
 }
 
+function pdfTextCapFromSpec(pageSpec) {
+  if (globalThis.WPA_PDF_PAGES && typeof globalThis.WPA_PDF_PAGES.clampPdfTextMaxChars === 'function') {
+    return globalThis.WPA_PDF_PAGES.clampPdfTextMaxChars(pageSpec && pageSpec.maxChars);
+  }
+  const n = Number(pageSpec && pageSpec.maxChars);
+  if (!Number.isFinite(n)) return 150000;
+  const i = Math.round(n);
+  if (i < 10000) return 10000;
+  if (i > 500000) return 500000;
+  return i;
+}
+
 function normalizeIncomingPageSpec(raw) {
-  if (!raw || typeof raw !== 'object') return { mode: 'all' };
+  const maxChars = pdfTextCapFromSpec(raw);
+  if (!raw || typeof raw !== 'object') return { mode: 'all', maxChars: maxChars };
   if (raw.mode === 'pages' && Array.isArray(raw.refs) && raw.refs.length) {
     const refs = [];
     for (let i = 0; i < raw.refs.length; i++) {
       const n = Number(raw.refs[i]);
       if (Number.isInteger(n) && n !== 0) refs.push(n);
     }
-    if (refs.length) return { mode: 'pages', refs: refs };
+    if (refs.length) return { mode: 'pages', refs: refs, maxChars: maxChars };
   }
-  return { mode: 'all' };
+  return { mode: 'all', maxChars: maxChars };
 }
 
 function resolvePdfPageList(numPages, spec) {
-  const total = Math.max(0, Number(numPages) || 0);
-  if (!total) return [];
-  const mode = spec && spec.mode === 'pages' ? 'pages' : 'all';
-  if (mode !== 'pages') {
-    const all = [];
-    for (let n = 1; n <= total; n++) all.push(n);
-    return all;
+  if (globalThis.WPA_PDF_PAGES && typeof globalThis.WPA_PDF_PAGES.resolvePdfPageList === 'function') {
+    return globalThis.WPA_PDF_PAGES.resolvePdfPageList(numPages, spec);
   }
-  const refs = Array.isArray(spec.refs) ? spec.refs : [];
-  const out = [];
-  const seen = Object.create(null);
-  for (let i = 0; i < refs.length; i++) {
-    let n = Number(refs[i]);
-    if (!Number.isInteger(n) || n === 0) continue;
-    if (n < 0) n = total + n + 1;
-    if (n < 1 || n > total || seen[n]) continue;
-    seen[n] = true;
-    out.push(n);
+  return [];
+}
+
+function resolvePdfPagePlan(numPages, spec) {
+  if (globalThis.WPA_PDF_PAGES && typeof globalThis.WPA_PDF_PAGES.resolvePdfPagePlan === 'function') {
+    return globalThis.WPA_PDF_PAGES.resolvePdfPagePlan(numPages, spec);
   }
-  out.sort(function (a, b) { return a - b; });
-  return out;
+  return { pages: resolvePdfPageList(numPages, spec), collapsed: [] };
 }
 
 async function extractText(doc, id, pageSpec) {
   const numPages = doc.getPageCount() || 0;
-  const wanted = resolvePdfPageList(numPages, pageSpec);
+  const plan = resolvePdfPagePlan(numPages, pageSpec);
+  const wanted = plan.pages;
   if (!wanted.length) {
     throw new Error(numPages ? ('按页码未命中任何页面（共 ' + numPages + ' 页）') : 'PDF 无页面');
   }
@@ -211,6 +214,9 @@ async function extractText(doc, id, pageSpec) {
   let missingPageCount = 0;
   let chars = 0;
   let scannedPages = 0;
+  let truncatedByMaxChars = false;
+  let skippedPages = [];
+  const maxChars = pdfTextCapFromSpec(pageSpec);
   for (let i = 0; i < wanted.length; i++) {
     const n = wanted[i];
     checkCancelled(id);
@@ -221,7 +227,11 @@ async function extractText(doc, id, pageSpec) {
       if (isUsefulText(t)) {
         parts.push(numPages > 1 || wanted.length > 1 ? ('----- 第 ' + n + ' 页 -----\n' + t.trim()) : t.trim());
         chars += t.length;
-        if (chars >= MAX_TEXT_CHARS) break;
+        if (chars >= maxChars) {
+          truncatedByMaxChars = true;
+          skippedPages = wanted.slice(i + 1);
+          break;
+        }
       } else {
         missingPageCount++;
         missingPages.push(n);
@@ -232,13 +242,16 @@ async function extractText(doc, id, pageSpec) {
     }
   }
   let text = parts.join('\n\n');
-  if (text.length > MAX_TEXT_CHARS) text = text.slice(0, MAX_TEXT_CHARS);
+  if (text.length > maxChars) text = text.slice(0, maxChars);
   return {
     text: text,
     missingPages: missingPages,
     missingPageCount: missingPageCount,
     scannedPages: scannedPages,
-    pageList: wanted
+    pageList: wanted,
+    collapsed: plan.collapsed || [],
+    truncatedByMaxChars: truncatedByMaxChars,
+    skippedPages: skippedPages
   };
 }
 
@@ -290,7 +303,10 @@ async function processPdf(jobId, id, pageSpec) {
       numPages: document.getPageCount() || 0,
       missingPageCount: extracted.missingPageCount || 0,
       scannedPages: extracted.scannedPages || 0,
-      pageList: extracted.pageList || []
+      pageList: extracted.pageList || [],
+      collapsed: extracted.collapsed || [],
+      truncatedByMaxChars: !!extracted.truncatedByMaxChars,
+      skippedPages: extracted.skippedPages || []
     };
   } finally {
     // CHECKPOINT: document.destroy()（FPDF_CloseDocument + 释放 WASM 内 PDF 副本）
@@ -321,7 +337,10 @@ function handleProcess(jobId, sendResponse, port, id, pageSpec) {
       numPages: result.numPages || 0,
       missingPageCount: result.missingPageCount || 0,
       scannedPages: result.scannedPages || 0,
-      pageList: result.pageList || []
+      pageList: result.pageList || [],
+      collapsed: result.collapsed || [],
+      truncatedByMaxChars: !!result.truncatedByMaxChars,
+      skippedPages: result.skippedPages || []
     }))
     .catch((e) => reply(sendResponse, port, id, {
       ok: false,
