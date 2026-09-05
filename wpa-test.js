@@ -1457,7 +1457,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.0.1', '锁步版本为 5.0.1');
+ok(manifestVer === '5.0.2', '锁步版本为 5.0.2');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -1518,6 +1518,24 @@ ok(/pdf:' \+ pdfPageSpecKey\(cfg\)/.test(bg), '附件缓存 key 含 PDF 页范�
 ok(/按配置仅解析第 /.test(bg), '选页模式覆盖说明按配置页码');
 ok(/pdfParseMode/.test(bg) && /pdfParsePages/.test(bg) && /pdfTextMaxChars/.test(bg),
   '配置含 pdfParseMode/pdfParsePages/pdfTextMaxChars');
+ok(/ocrCacheMaxChars: 500000/.test(bg) && /attachContextMaxChars: 150000/.test(bg),
+  'OCR 缓存默认 50 万字、多附件正文合计默认 15 万字');
+ok(/id="ocrCacheMaxChars"/.test(settingsHtml) && /每个站点 OCR 缓存总字数/.test(settingsHtml),
+  '全局配置可改每个站点 OCR 缓存总字数');
+ok(/条数最多 50 条/.test(settingsHtml) && /OCR_CACHE_MAX_ENTRIES = 50/.test(bg),
+  'OCR 缓存条数上限 50 且配置页有提示');
+ok(/id="attachContextMaxChars"/.test(settingsHtml) && /发给文本模型的多附件正文合计字数/.test(settingsHtml),
+  '全局配置可改发给文本模型的多附件正文合计');
+ok(/不是发给模型的提示词/.test(settingsHtml) && /不是单份附件上限/.test(settingsHtml),
+  '提示 OCR 缓存不是提示词也不是单份上限');
+ok(/不是 PDF 文本层/.test(settingsHtml) && /不是 OCR 缓存/.test(settingsHtml),
+  '提示多附件合计不是文本层也不是 OCR 缓存');
+ok(/ocrCacheMaxChars/.test(settingsSrc) && /attachContextMaxChars/.test(settingsSrc),
+  '设置页收集 OCR 缓存与多附件合计上限');
+ok(/config\.attachContextMaxChars/.test(bg) && /ctx\.cfg && ctx\.cfg\.ocrCacheMaxChars/.test(bg),
+  '运行时按配置钳制多附件合计与 OCR 缓存总字数');
+ok(/clampInt\(maxChars, 50000, 2000000/.test(extractFn(bg, 'writeOcrCache')),
+  'OCR 缓存写入按配置字数淘汰');
 ok(/pdfParsePages: '1,2,3,-2,-1'/.test(bg) && /pdfTextMaxChars: 150000/.test(bg),
   '默认页码 1,2,3,-2,-1 且文本层上限 15 万字');
 ok(/解析全部 PDF 页/.test(settingsHtml) && /按页码标号来解析/.test(settingsHtml),
@@ -1537,8 +1555,9 @@ ok(/placeholder = '例如 1,2,3,-2,-1'/.test(panelSrc) && /不受本页页码配
   '本页配置同步默认页码并提示 MinerU 不受页码与文本层上限约束');
 ok(/spec\.maxChars/.test(bg) && /clampPdfTextMaxChars\(pageSpec && pageSpec.maxChars\)/.test(bg),
   '发给 offscreen 的 pageSpec 含钳制后的 maxChars');
-ok(/'pdfParseMode' in obj/.test(bg) && /'pdfParsePages' in obj/.test(bg) && /importClamped\('pdfTextMaxChars'/.test(bg),
-  '导入校验识别 PDF 解析字段与文本层上限');
+ok(/'pdfParseMode' in obj/.test(bg) && /'pdfParsePages' in obj/.test(bg) && /importClamped\('pdfTextMaxChars'/.test(bg) &&
+  /importClamped\('ocrCacheMaxChars'/.test(bg) && /importClamped\('attachContextMaxChars'/.test(bg),
+  '导入校验识别 PDF 解析字段与附件正文预算');
 
 const WPA_PDF_PAGES = require(path.join(ROOT, 'shared/pdfPages.js'));
 
@@ -1546,7 +1565,7 @@ const importBox = { WPA_PDF_PAGES: WPA_PDF_PAGES };
 try {
   vm.runInNewContext(
     extractFn(bg, 'clampInt') + '\n' +
-      'const DEFAULT_CONFIG = { maxSteps: 15, snapshotPiiMask: false, llmCallGapMs: 500, busyMaskEnabled: true, llmTimeoutRetry: 1, llmErrorRetry: 2, pageQuietMs: 4000, suggestWaitMs: 1400, pdfParseMode: "all", pdfParsePages: "1,2,3,-2,-1", pdfTextMaxChars: 150000, uiOpacity: 100, panelScaleX: 70, panelScaleY: 70, systemPromptText: "t", systemPromptOcr: "o" };\n' +
+      'const DEFAULT_CONFIG = { maxSteps: 15, snapshotPiiMask: false, llmCallGapMs: 500, busyMaskEnabled: true, llmTimeoutRetry: 1, llmErrorRetry: 2, pageQuietMs: 4000, suggestWaitMs: 1400, pdfParseMode: "all", pdfParsePages: "1,2,3,-2,-1", pdfTextMaxChars: 150000, ocrCacheMaxChars: 500000, attachContextMaxChars: 150000, uiOpacity: 100, panelScaleX: 70, panelScaleY: 70, systemPromptText: "t", systemPromptOcr: "o" };\n' +
       'const TEXT_PROVIDER_TYPES = [{ id: "OpenAI-chat-completions" }];\n' +
       'const OCR_PROVIDER_TYPES = [{ id: "OpenAI-chat-completions-image_url" }, { id: "OCR-SCnet" }, { id: "MinerU" }];\n' +
       'const PROVIDER_TYPE_ALIASES = { LiteLLM: "OpenAI-chat-completions" };\n' +
@@ -1555,6 +1574,7 @@ try {
       extractFn(bg, 'applyUiKnobs') + '\n' +
       extractFn(bg, 'applyDiagKnobs') + '\n' +
       extractFn(bg, 'applyPdfTextCap') + '\n' +
+      extractFn(bg, 'applyAttachBudgetKnobs') + '\n' +
       'var parsePdfPageRefs = this.WPA_PDF_PAGES.parsePdfPageRefs;\n' +
       extractFn(bg, 'normalizePdfParseConfig') + '\n' +
       extractFn(bg, 'looksLikeMinerUModel') + '\n' +
@@ -1629,6 +1649,8 @@ if (importBox.validateImportConfig) {
     pdfParseMode: 'all',
     pdfParsePages: '1,2,3,-2,-1',
     pdfTextMaxChars: 20000,
+    ocrCacheMaxChars: 800000,
+    attachContextMaxChars: 120000,
     diagCapKb: 80
   }, cur);
   ok(full.ok && full.config.textProviders.length === 2 && full.config.ocrProviders.length === 2,
@@ -1640,6 +1662,8 @@ if (importBox.validateImportConfig) {
   ok(full.config.diagCapKb === 80, '导入保留诊断探针日志上限');
   ok(full.config.pdfParsePages === '1,2,3,-2,-1' && full.config.pdfTextMaxChars === 20000,
     '导入保留 PDF 页码与文本层上限');
+  ok(full.config.ocrCacheMaxChars === 800000 && full.config.attachContextMaxChars === 120000,
+    '导入保留 OCR 缓存与多附件正文合计上限');
 }
 
 ok(/options_ui\.open_in_tab=true/.test(bg), 'settings 端口校验注释说明 open_in_tab 会带 tab');

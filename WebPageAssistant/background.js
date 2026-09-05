@@ -40,6 +40,8 @@ const DEFAULT_CONFIG = {
   pdfParseMode: 'all',
   pdfParsePages: '1,2,3,-2,-1',
   pdfTextMaxChars: 150000,
+  ocrCacheMaxChars: 500000,
+  attachContextMaxChars: 150000,
   uiOpacity: 100,
   panelScaleX: 70,
   panelScaleY: 70,
@@ -161,6 +163,14 @@ function normalizePdfParseConfig(cfg) {
 
 function applyPdfTextCap(cfg) {
   return { pdfTextMaxChars: clampPdfTextMaxChars(cfg && cfg.pdfTextMaxChars) };
+}
+
+function applyAttachBudgetKnobs(cfg) {
+  const src = cfg || {};
+  return {
+    ocrCacheMaxChars: clampInt(src.ocrCacheMaxChars, 50000, 2000000, DEFAULT_CONFIG.ocrCacheMaxChars),
+    attachContextMaxChars: clampInt(src.attachContextMaxChars, 10000, 500000, DEFAULT_CONFIG.attachContextMaxChars)
+  };
 }
 
 function pdfPageSpecFromConfig(cfg) {
@@ -845,7 +855,7 @@ async function getConfigMerged(origin) {
     archiveRedactHint: typeof cfg.archiveRedactHint === 'string'
       ? cfg.archiveRedactHint.slice(0, 2000)
       : DEFAULT_CONFIG.archiveRedactHint
-  }, applyRuntimeKnobs(cfg), applyUiKnobs(cfg), applyDiagKnobs(cfg), normalizePdfParseConfig(cfg), applyPdfTextCap(cfg));
+  }, applyRuntimeKnobs(cfg), applyUiKnobs(cfg), applyDiagKnobs(cfg), normalizePdfParseConfig(cfg), applyPdfTextCap(cfg), applyAttachBudgetKnobs(cfg));
   noteDiagCap(merged);
   if (origin) {
     const page = await getPageConfig(origin);
@@ -907,6 +917,8 @@ function configPayload(cfg) {
     pdfParseMode: cfg.pdfParseMode === 'pages' ? 'pages' : 'all',
     pdfParsePages: String(cfg.pdfParsePages == null ? DEFAULT_CONFIG.pdfParsePages : cfg.pdfParsePages),
     pdfTextMaxChars: clampPdfTextMaxChars(cfg.pdfTextMaxChars),
+    ocrCacheMaxChars: clampInt(cfg.ocrCacheMaxChars, 50000, 2000000, DEFAULT_CONFIG.ocrCacheMaxChars),
+    attachContextMaxChars: clampInt(cfg.attachContextMaxChars, 10000, 500000, DEFAULT_CONFIG.attachContextMaxChars),
     uiOpacity: cfg.uiOpacity,
     panelScaleX: cfg.panelScaleX,
     panelScaleY: cfg.panelScaleY,
@@ -940,7 +952,7 @@ function exportPayload(cfg, opts) {
     archiveRedactHint: typeof cfg.archiveRedactHint === 'string'
       ? cfg.archiveRedactHint.slice(0, 2000)
       : DEFAULT_CONFIG.archiveRedactHint
-  }, knobs, applyUiKnobs(cfg), applyDiagKnobs(cfg), normalizePdfParseConfig(cfg), applyPdfTextCap(cfg));
+  }, knobs, applyUiKnobs(cfg), applyDiagKnobs(cfg), normalizePdfParseConfig(cfg), applyPdfTextCap(cfg), applyAttachBudgetKnobs(cfg));
 }
 
 // 导入侧把常见别名摊成 normalizeProvider 认识的字段；对不上的键丢掉。
@@ -1027,6 +1039,8 @@ function validateImportConfig(obj, current) {
     pdfParseMode: cur.pdfParseMode === 'pages' ? 'pages' : 'all',
     pdfParsePages: cur.pdfParsePages != null ? String(cur.pdfParsePages) : DEFAULT_CONFIG.pdfParsePages,
     pdfTextMaxChars: cur.pdfTextMaxChars != null ? cur.pdfTextMaxChars : DEFAULT_CONFIG.pdfTextMaxChars,
+    ocrCacheMaxChars: cur.ocrCacheMaxChars != null ? cur.ocrCacheMaxChars : DEFAULT_CONFIG.ocrCacheMaxChars,
+    attachContextMaxChars: cur.attachContextMaxChars != null ? cur.attachContextMaxChars : DEFAULT_CONFIG.attachContextMaxChars,
     archiveRedactHint: typeof cur.archiveRedactHint === 'string'
       ? cur.archiveRedactHint
       : (typeof DEFAULT_CONFIG.archiveRedactHint === 'string' ? DEFAULT_CONFIG.archiveRedactHint : '')
@@ -1075,6 +1089,8 @@ function validateImportConfig(obj, current) {
   importClamped('panelScaleY', 30, 100, DEFAULT_CONFIG.panelScaleY);
   importClamped('diagCapKb', 10, 200, DEFAULT_CONFIG.diagCapKb);
   importClamped('pdfTextMaxChars', 10000, 500000, DEFAULT_CONFIG.pdfTextMaxChars);
+  importClamped('ocrCacheMaxChars', 50000, 2000000, DEFAULT_CONFIG.ocrCacheMaxChars);
+  importClamped('attachContextMaxChars', 10000, 500000, DEFAULT_CONFIG.attachContextMaxChars);
   if ('busyMaskEnabled' in obj) {
     merged.busyMaskEnabled = obj.busyMaskEnabled === true;
   }
@@ -1093,7 +1109,7 @@ function validateImportConfig(obj, current) {
   if ('archiveRedactHint' in obj && typeof obj.archiveRedactHint === 'string') {
     merged.archiveRedactHint = obj.archiveRedactHint.slice(0, 2000);
   }
-  Object.assign(merged, applyRuntimeKnobs(merged), applyUiKnobs(merged), applyDiagKnobs(merged), normalizePdfParseConfig(merged), applyPdfTextCap(merged));
+  Object.assign(merged, applyRuntimeKnobs(merged), applyUiKnobs(merged), applyDiagKnobs(merged), normalizePdfParseConfig(merged), applyPdfTextCap(merged), applyAttachBudgetKnobs(merged));
 
   return { ok: true, config: merged };
 }
@@ -3208,9 +3224,9 @@ function shortHash(value) {
 
 // OCR/PDF 解析结果持久化缓存：origin → Map(contentHash+variant → { text, names })。
 // 读时兼容旧字符串；写入带 names 侧车。键不含文件名；同字节改名/重加可复用。
-// 容量控制：每 origin 最多 20 条 / 总字符 ≤ 400K，超出按写入先后 FIFO 淘汰。
-const OCR_CACHE_MAX_ENTRIES = 20;
-const OCR_CACHE_MAX_CHARS = 400000;
+// 容量控制：每 origin 最多 50 条 / 总字符可配（默认 50 万），超出按写入先后 FIFO 淘汰。
+const OCR_CACHE_MAX_ENTRIES = 50;
+const OCR_CACHE_MAX_CHARS = 500000;
 
 function normalizeOcrCacheEntry(v) {
   if (v && typeof v === 'object' && !Array.isArray(v) && v.text != null) {
@@ -3252,7 +3268,7 @@ async function ocrCacheGet(origin) {
 // 读-改-写：写入时重读 storage，降低不同标签页并发同 origin 时的覆盖概率
 const ocrCacheWriteQueues = new Map();
 
-async function writeOcrCache(origin, attachKey, text, names) {
+async function writeOcrCache(origin, attachKey, text, names, maxChars) {
   const obj = await ocrCacheGet(origin);
   const prev = normalizeOcrCacheEntry(obj[attachKey]);
   obj[attachKey] = {
@@ -3262,17 +3278,18 @@ async function writeOcrCache(origin, attachKey, text, names) {
   const keys = Object.keys(obj);
   let total = 0;
   for (const k of keys) total += ocrCacheEntryChars(obj[k]);
+  const cap = clampInt(maxChars, 50000, 2000000, OCR_CACHE_MAX_CHARS);
   // 按插入序淘汰最旧条目，直到满足条数与体积双上限
-  while (keys.length && (keys.length > OCR_CACHE_MAX_ENTRIES || total > OCR_CACHE_MAX_CHARS)) {
+  while (keys.length && (keys.length > OCR_CACHE_MAX_ENTRIES || total > cap)) {
     total -= ocrCacheEntryChars(obj[keys[0]]);
     delete obj[keys.shift()];
   }
   await storageSet({ ['ocr:' + origin]: obj });
 }
 
-function ocrCacheSet(origin, attachKey, text, names) {
+function ocrCacheSet(origin, attachKey, text, names, maxChars) {
   const previous = ocrCacheWriteQueues.get(origin) || Promise.resolve();
-  const current = previous.then(() => writeOcrCache(origin, attachKey, text, names));
+  const current = previous.then(() => writeOcrCache(origin, attachKey, text, names, maxChars));
   const queued = current.catch(() => {});
   ocrCacheWriteQueues.set(origin, queued);
   return current.finally(() => {
@@ -4273,7 +4290,7 @@ async function ensureAttachText(f, kind, ctx) {
     const rec = normalizeOcrCacheEntry(cacheObj[cacheKey]);
     const names = mergeAttachNames(rec.names, fileNamesOf(f));
     if (names.join('\0') !== (rec.names || []).join('\0')) {
-      await ocrCacheSet(ctx.origin, cacheKey, rec.text, names);
+      await ocrCacheSet(ctx.origin, cacheKey, rec.text, names, ctx.cfg && ctx.cfg.ocrCacheMaxChars);
     }
     return rec.text;
   }
@@ -4282,7 +4299,7 @@ async function ensureAttachText(f, kind, ctx) {
     return await job;
   }
   job = runPdfOrImageParse(f, kind, ctx).then(async function (text) {
-    if (text) await ocrCacheSet(ctx.origin, cacheKey, text, fileNamesOf(f));
+    if (text) await ocrCacheSet(ctx.origin, cacheKey, text, fileNamesOf(f), ctx.cfg && ctx.cfg.ocrCacheMaxChars);
     return text;
   }).finally(function () {
     attachParseJobs.delete(cacheKey);
@@ -6217,7 +6234,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
       return { text: text, preferred: !!(id && preferredSet.has(id)) };
     }).filter(function (b) { return !!b.text; });
     if (blocks.length) {
-      const limited = limitAttachmentContext(blocks, ATTACHMENT_CONTEXT_MAX_CHARS);
+      const limited = limitAttachmentContext(blocks, config.attachContextMaxChars || ATTACHMENT_CONTEXT_MAX_CHARS);
       messages.push({
         role: 'user',
         kind: 'attach-data',
@@ -7097,7 +7114,7 @@ chrome.runtime.onConnect.addListener((port) => {
         const base = saved.assistantConfig || {};
         const patch = msg.config && typeof msg.config === 'object' && !Array.isArray(msg.config) ? msg.config : {};
         const next = Object.assign({}, base, patch);
-        Object.assign(next, applyRuntimeKnobs(next), applyUiKnobs(next), applyDiagKnobs(next), normalizePdfParseConfig(next), applyPdfTextCap(next));
+        Object.assign(next, applyRuntimeKnobs(next), applyUiKnobs(next), applyDiagKnobs(next), normalizePdfParseConfig(next), applyPdfTextCap(next), applyAttachBudgetKnobs(next));
         next.maxSteps = clampInt(next.maxSteps, 1, 100, DEFAULT_CONFIG.maxSteps);
         const write = await storageSet({ assistantConfig: next });
         if (!write.ok) {
