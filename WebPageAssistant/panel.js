@@ -1,4 +1,5 @@
-// panel.js — 持久化聊天面板（隔离 world content script，Shadow DOM 注入）
+// panel.js — 持久化聊天面板（隔离 world content script）
+// 页面挂 about:blank iframe 壳，UI 在 iframe 内 closed Shadow，避免编辑器页面抢走按键。
 // 由 background 通过 chrome.scripting.executeScript({ files:['panel.js'], world:'ISOLATED' }) 注入。
 // 与 content.js 共存于同一隔离 world；不使用/不覆盖它声明的全局（__dsContentLoaded 等）。
 
@@ -38,18 +39,13 @@
       --wpa-scale-x: 0.7;
       --wpa-scale-y: 0.7;
       --wpa-header-h: 56px;
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      z-index: 2147483647;
-      width: 520px;
-      height: 560px;
-      max-height: calc(100vh - 40px);
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
       display: flex;
       flex-direction: column;
       background: rgba(244, 246, 251, var(--wpa-alpha));
-      border-radius: 14px;
-      box-shadow: 0 12px 40px rgba(20, 30, 70, 0.28);
       overflow: hidden;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
       color: #23283a;
@@ -57,9 +53,7 @@
       line-height: 1.5;
     }
     :host.expanded {
-      width: min(calc(100vw * var(--wpa-scale-x)), calc(100vw - 16px));
-      height: min(calc(100vh * var(--wpa-scale-y)), calc(100vh - 16px));
-      max-height: calc(100vh - 16px);
+      /* 几何在页面 iframe 上由 applyPanelSize 设像素 */
     }
     :host([hidden]) {
       display: none !important;
@@ -1339,23 +1333,84 @@
   const MAX_SINGLE_FILE_BYTES = 8 * 1024 * 1024;
   const MAX_RUNTIME_FILES_BYTES = 16 * 1024 * 1024;
 
-  // ============ DOM 构建（shadow root） ============
-  const host = document.createElement('div');
-  host.id = '__ai-assistant-root';
+  // ============ DOM 构建（页面 iframe 壳 + iframe 内 closed shadow） ============
+  const pageWindow = window;
+  const pageDocument = document;
+  const SHELL_DEFAULT_WIDTH = '520px';
+  const SHELL_DEFAULT_HEIGHT = '560px';
+  const SHELL_DEFAULT_MAX_HEIGHT = 'calc(100vh - 40px)';
+
+  // iframe 行内 style 的 display 会压过 UA 的 [hidden]{display:none}（无 !important）。
+  function setShellVisible(iframe, on) {
+    if (!iframe) return;
+    iframe.hidden = !on;
+    iframe.style.display = on ? 'block' : 'none';
+  }
+
+  function mountShell() {
+    const iframe = pageDocument.createElement('iframe');
+    iframe.id = '__ai-assistant-root';
+    iframe.setAttribute('data-wpa-ignore', '1');
+    iframe.setAttribute('tabindex', '-1');
+    iframe.setAttribute('title', '网页智能助手');
+    iframe.setAttribute('allowtransparency', 'true');
+    // 默认即为 about:blank；不要赋 src，否则 load 会清空已写入的面板文档。
+    iframe.style.cssText = 'position:fixed;top:20px;right:20px;z-index:2147483647;width:' +
+      SHELL_DEFAULT_WIDTH + ';height:' + SHELL_DEFAULT_HEIGHT + ';max-height:' + SHELL_DEFAULT_MAX_HEIGHT +
+      ';border:0;border-radius:14px;box-shadow:0 12px 40px rgba(20,30,70,0.28);overflow:hidden;background:transparent;color-scheme:light;';
+    setShellVisible(iframe, false);
+    const parent = pageDocument.body || pageDocument.documentElement;
+    parent.appendChild(iframe);
+    return iframe;
+  }
+
+  function documentForShell(iframe) {
+    let idoc = null;
+    try { idoc = iframe.contentDocument; } catch (e) { idoc = null; }
+    if (!idoc) return null;
+    try {
+      if (!idoc.body) {
+        idoc.open();
+        idoc.write('<!DOCTYPE html><html><head></head><body></body></html>');
+        idoc.close();
+        idoc = iframe.contentDocument;
+      }
+      if (idoc.documentElement) {
+        idoc.documentElement.style.cssText = 'width:100%;height:100%;margin:0;background:transparent;';
+      }
+      if (idoc.body) {
+        idoc.body.style.cssText = 'width:100%;height:100%;margin:0;padding:0;overflow:hidden;background:transparent;';
+      }
+    } catch (e2) {}
+    return idoc;
+  }
+
+  const shell = mountShell();
+  const panelDoc = documentForShell(shell);
+  if (!panelDoc) {
+    try { if (shell.parentNode) shell.parentNode.removeChild(shell); } catch (e) {}
+    window.__assistantPanelInjected = false;
+    try { delete window.__assistantPanelVersion; } catch (e2) { window.__assistantPanelVersion = undefined; }
+    return;
+  }
+
+  const host = panelDoc.createElement('div');
+  host.id = 'wpa-panel-host';
   host.setAttribute('data-wpa-ignore', '1');
   const shadow = host.attachShadow({ mode: 'closed' });
-  const sheet = new CSSStyleSheet();
   try {
+    const sheet = new CSSStyleSheet();
     sheet.replaceSync(CSS_STRING);
     shadow.adoptedStyleSheets = [sheet];
   } catch (e) {
-    const styleEl = document.createElement('style');
+    const styleEl = panelDoc.createElement('style');
     styleEl.textContent = CSS_STRING;
     shadow.appendChild(styleEl);
   }
+  try { panelDoc.body.appendChild(host); } catch (eHost) {}
 
   function mk(tag, className, props) {
-    const el = document.createElement(tag);
+    const el = panelDoc.createElement(tag);
     if (className) el.className = className;
     if (props) {
       for (const k in props) {
@@ -1569,7 +1624,7 @@
     }
     function mkFieldLabel(text, input) {
       const label = mk('label');
-      label.appendChild(document.createTextNode(text));
+      label.appendChild(panelDoc.createTextNode(text));
       label.appendChild(input);
       return label;
     }
@@ -1604,7 +1659,7 @@
     pagePdfParseAll.checked = true;
     const pagePdfParseAllRow = mk('label', 'settings-check-row');
     pagePdfParseAllRow.appendChild(pagePdfParseAll);
-    pagePdfParseAllRow.appendChild(document.createTextNode('解析全部 PDF 页'));
+    pagePdfParseAllRow.appendChild(panelDoc.createTextNode('解析全部 PDF 页'));
     pageRunCard.appendChild(pagePdfParseAllRow);
     const pagePdfParsePagesMode = mk('input');
     pagePdfParsePagesMode.id = 'pagePdfParsePagesMode';
@@ -1613,7 +1668,7 @@
     pagePdfParsePagesMode.value = 'pages';
     const pagePdfParsePagesModeRow = mk('label', 'settings-check-row');
     pagePdfParsePagesModeRow.appendChild(pagePdfParsePagesMode);
-    pagePdfParsePagesModeRow.appendChild(document.createTextNode('按页码标号来解析'));
+    pagePdfParsePagesModeRow.appendChild(panelDoc.createTextNode('按页码标号来解析'));
     pageRunCard.appendChild(pagePdfParsePagesModeRow);
     const pagePdfParsePagesWrap = mk('div', 'pdf-parse-pages-wrap');
     pagePdfParsePagesWrap.hidden = true;
@@ -1636,21 +1691,21 @@
     pageBusyMaskEnabled.type = 'checkbox';
     const pageBusyRow = mk('label', 'settings-check-row');
     pageBusyRow.appendChild(pageBusyMaskEnabled);
-    pageBusyRow.appendChild(document.createTextNode('操作时显示半透明遮罩'));
+    pageBusyRow.appendChild(panelDoc.createTextNode('操作时显示半透明遮罩'));
     pageRunCard.appendChild(pageBusyRow);
     const pageSnapshotPiiMask = mk('input');
     pageSnapshotPiiMask.id = 'pageSnapshotPiiMask';
     pageSnapshotPiiMask.type = 'checkbox';
     const pagePiiRow = mk('label', 'settings-check-row');
     pagePiiRow.appendChild(pageSnapshotPiiMask);
-    pagePiiRow.appendChild(document.createTextNode('快照脱敏（邮箱 / 手机 / 证件号；默认关）'));
+    pagePiiRow.appendChild(panelDoc.createTextNode('快照脱敏（邮箱 / 手机 / 证件号；默认关）'));
     pageRunCard.appendChild(pagePiiRow);
     const pageCompatMode = mk('input');
     pageCompatMode.id = 'pageCompatMode';
     pageCompatMode.type = 'checkbox';
     const pageCompatRow = mk('label', 'settings-check-row');
     pageCompatRow.appendChild(pageCompatMode);
-    pageCompatRow.appendChild(document.createTextNode('兼容模式（本站变更操作走 MAIN，不自动换世界）'));
+    pageCompatRow.appendChild(panelDoc.createTextNode('兼容模式（本站变更操作走 MAIN，不自动换世界）'));
     pageRunCard.appendChild(pageCompatRow);
     const pageRunActions = mk('div', 'settings-actions');
     const pageRunSaveBtn = mk('button', 'btn primary', { type: 'button', textContent: '保存本页运行参数' });
@@ -1694,7 +1749,7 @@
 
     const mkLabel = (text, input) => {
       const label = mk('label');
-      label.appendChild(document.createTextNode(text));
+      label.appendChild(panelDoc.createTextNode(text));
       label.appendChild(input);
       return label;
     };
@@ -1720,7 +1775,7 @@
     const saveSkillNeedRow = mk('label', 'modal-check');
     const saveSkillNeedsInput = mk('input', null, { type: 'checkbox' });
     saveSkillNeedRow.appendChild(saveSkillNeedsInput);
-    saveSkillNeedRow.appendChild(document.createTextNode('需要个性化数据或参数'));
+    saveSkillNeedRow.appendChild(panelDoc.createTextNode('需要个性化数据或参数'));
     saveSkillDialog.appendChild(saveSkillNeedRow);
     const saveSkillHint = mk('input', null, { type: 'text', placeholder: '例如：请替换姓名、工号后再发送', maxLength: 500 });
     saveSkillDialog.appendChild(mkLabel('参数说明（可选）', saveSkillHint));
@@ -1800,7 +1855,7 @@
       textContent: '可先用大模型按指令脱敏，满意后再保存本文档。脱敏可多次迭代。'
     }));
     const archiveRedactLabel = mk('label');
-    archiveRedactLabel.appendChild(document.createTextNode('传送给大模型的用户脱敏指令'));
+    archiveRedactLabel.appendChild(panelDoc.createTextNode('传送给大模型的用户脱敏指令'));
     const archiveRedactInput = mk('textarea', 'archive-redact-input', {
       rows: 5,
       maxLength: 2000,
@@ -1809,7 +1864,7 @@
     archiveRedactLabel.appendChild(archiveRedactInput);
     archiveSaveDialog.appendChild(archiveRedactLabel);
     const archiveDocLabel = mk('label');
-    archiveDocLabel.appendChild(document.createTextNode('对话历史内容文本'));
+    archiveDocLabel.appendChild(panelDoc.createTextNode('对话历史内容文本'));
     const archiveDocInput = mk('textarea', 'archive-doc-input', {
       rows: 10,
       placeholder: '将保存的对话文本'
@@ -1817,7 +1872,7 @@
     archiveDocLabel.appendChild(archiveDocInput);
     archiveSaveDialog.appendChild(archiveDocLabel);
     const archiveModelRow = mk('label', 'archive-model-row');
-    archiveModelRow.appendChild(document.createTextNode('文本模型'));
+    archiveModelRow.appendChild(panelDoc.createTextNode('文本模型'));
     const archiveModelSelect = mk('select', 'tag-select');
     archiveModelRow.appendChild(archiveModelSelect);
     archiveSaveDialog.appendChild(archiveModelRow);
@@ -2646,16 +2701,43 @@
     handleFiles(images, { fromPaste: true });
   }
 
-  // ============ 拖拽 ============
+  // ============ 拖拽（页面 window 跟踪，指针移出 iframe 仍有效） ============
   function initDrag() {
     let drag = null;
+    function onPageMove(e) {
+      if (!drag) return;
+      const dx = e.clientX - drag.startX;
+      const dy = e.clientY - drag.startY;
+      drag.moved = true;
+      if (shell.style.right && shell.style.right !== 'auto') {
+        shell.style.right = 'auto';
+      }
+      let left = drag.origLeft + dx;
+      let top = drag.origTop + dy;
+      const vw = pageWindow.innerWidth;
+      const vh = pageWindow.innerHeight;
+      const pw = shell.offsetWidth || 520;
+      const ph = shell.offsetHeight || 560;
+      left = Math.max(-20, Math.min(vw - pw + 20, left));
+      top = Math.max(-20, Math.min(vh - ph + 20, top));
+      shell.style.left = left + 'px';
+      shell.style.top = top + 'px';
+    }
+    function endDrag() {
+      if (!drag) return;
+      els.header.classList.remove('dragging');
+      drag = null;
+      pageWindow.removeEventListener('pointermove', onPageMove, true);
+      pageWindow.removeEventListener('pointerup', endDrag, true);
+      pageWindow.removeEventListener('pointercancel', endDrag, true);
+    }
     els.header.addEventListener('pointerdown', (e) => {
       // 点到按钮内文字节点时 e.target 不是元素：用 contains，避免拖拽吞掉缩放 click。
       if (els.zoomBtn && els.zoomBtn.contains(e.target)) return;
       const t = e.target && e.target.nodeType === 3 ? e.target.parentElement : e.target;
       if (e.target === els.settingsBtn || e.target === els.closeBtn || e.target === els.clearBtn) return;
       if (t && t.closest && (t.closest('.header-right') || t.closest('.zoom-btn'))) return;
-      const rect = host.getBoundingClientRect();
+      const rect = shell.getBoundingClientRect();
       drag = {
         startX: e.clientX,
         startY: e.clientY,
@@ -2664,36 +2746,11 @@
         moved: false
       };
       els.header.classList.add('dragging');
-      els.header.setPointerCapture && els.header.setPointerCapture(e.pointerId);
+      pageWindow.addEventListener('pointermove', onPageMove, true);
+      pageWindow.addEventListener('pointerup', endDrag, true);
+      pageWindow.addEventListener('pointercancel', endDrag, true);
       e.preventDefault();
     });
-    els.header.addEventListener('pointermove', (e) => {
-      if (!drag) return;
-      const dx = e.clientX - drag.startX;
-      const dy = e.clientY - drag.startY;
-      drag.moved = true;
-      if (host.style.right && host.style.right !== 'auto') {
-        host.style.right = 'auto';
-      }
-      let left = drag.origLeft + dx;
-      let top = drag.origTop + dy;
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      const pw = host.offsetWidth || 520;
-      const ph = host.offsetHeight || 560;
-      left = Math.max(-20, Math.min(vw - pw + 20, left));
-      top = Math.max(-20, Math.min(vh - ph + 20, top));
-      host.style.left = left + 'px';
-      host.style.top = top + 'px';
-    });
-    const endDrag = (e) => {
-      if (!drag) return;
-      els.header.classList.remove('dragging');
-      drag = null;
-      try { els.header.releasePointerCapture && els.header.releasePointerCapture(e.pointerId); } catch (err) {}
-    };
-    els.header.addEventListener('pointerup', endDrag);
-    els.header.addEventListener('pointercancel', endDrag);
   }
 
   // ============ 发送 ============
@@ -2983,6 +3040,7 @@
 
   async function tryShowSaveFilePicker(text, filename) {
     if (typeof window.showSaveFilePicker !== 'function') return null;
+    suppressFocusLock(120000);
     try {
       const handle = await window.showSaveFilePicker({
         suggestedName: filename,
@@ -3217,18 +3275,18 @@
   }
 
   function clampHostPosition() {
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const rect = host.getBoundingClientRect();
+    const vw = pageWindow.innerWidth;
+    const vh = pageWindow.innerHeight;
+    const rect = shell.getBoundingClientRect();
     let left = rect.left;
     let top = rect.top;
     const pw = rect.width;
     const ph = rect.height;
     left = Math.max(-20, Math.min(vw - pw + 20, left));
     top = Math.max(-20, Math.min(vh - ph + 20, top));
-    host.style.right = 'auto';
-    host.style.left = left + 'px';
-    host.style.top = top + 'px';
+    shell.style.right = 'auto';
+    shell.style.left = left + 'px';
+    shell.style.top = top + 'px';
   }
 
   function panelScaleFrac(prop, fallback) {
@@ -3238,37 +3296,37 @@
   }
 
   function applyPanelSize() {
-    const prev = host.getBoundingClientRect();
+    const prev = shell.getBoundingClientRect();
     const anchorRight = prev.right;
     const anchorTop = prev.top;
     if (panelExpanded) {
       host.classList.add('expanded');
       const sx = panelScaleFrac('--wpa-scale-x', 0.7);
       const sy = panelScaleFrac('--wpa-scale-y', 0.7);
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
+      const vw = pageWindow.innerWidth;
+      const vh = pageWindow.innerHeight;
       const w = Math.max(280, Math.round(Math.min(vw * sx, vw - 16)));
       const h = Math.max(200, Math.round(Math.min(vh * sy, vh - 16)));
-      host.style.width = w + 'px';
-      host.style.height = h + 'px';
-      host.style.maxHeight = Math.max(200, vh - 16) + 'px';
+      shell.style.width = w + 'px';
+      shell.style.height = h + 'px';
+      shell.style.maxHeight = Math.max(200, vh - 16) + 'px';
     } else {
       host.classList.remove('expanded');
-      host.style.width = '';
-      host.style.height = '';
-      host.style.maxHeight = '';
+      shell.style.width = SHELL_DEFAULT_WIDTH;
+      shell.style.height = SHELL_DEFAULT_HEIGHT;
+      shell.style.maxHeight = SHELL_DEFAULT_MAX_HEIGHT;
     }
     if (els.zoomBtn) {
       els.zoomBtn.textContent = panelExpanded ? '⤡' : '⛶';
       els.zoomBtn.title = panelExpanded ? '还原面板大小' : '放大面板至网页比例';
     }
-    const next = host.getBoundingClientRect();
+    const next = shell.getBoundingClientRect();
     if (prev.width > 1 && prev.height > 1) {
-      host.style.right = 'auto';
-      host.style.left = Math.round(anchorRight - next.width) + 'px';
-      host.style.top = Math.round(anchorTop) + 'px';
+      shell.style.right = 'auto';
+      shell.style.left = Math.round(anchorRight - next.width) + 'px';
+      shell.style.top = Math.round(anchorTop) + 'px';
     }
-    if (panelExpanded || host.style.left) clampHostPosition();
+    if (panelExpanded || shell.style.left) clampHostPosition();
     syncOverlayTop();
   }
 
@@ -3278,7 +3336,7 @@
   }
 
   function onWindowResize() {
-    if (host.hidden) return;
+    if (shell.hidden) return;
     if (panelExpanded) applyPanelSize();
     else clampHostPosition();
     syncOverlayTop();
@@ -3327,29 +3385,31 @@
     const handle = els.inputResizeHandle;
     if (!handle) return;
     let drag = null;
+    function onPageMove(e) {
+      if (!drag) return;
+      const next = clampInt(drag.startH - (e.clientY - drag.startY), INPUT_H_MIN, INPUT_H_MAX, INPUT_H_DEFAULT);
+      els.userInput.style.height = next + 'px';
+    }
+    function endDrag() {
+      if (!drag) return;
+      handle.classList.remove('dragging');
+      drag = null;
+      persistPageUi();
+      pageWindow.removeEventListener('pointermove', onPageMove, true);
+      pageWindow.removeEventListener('pointerup', endDrag, true);
+      pageWindow.removeEventListener('pointercancel', endDrag, true);
+    }
     handle.addEventListener('pointerdown', (e) => {
       if (e.button != null && e.button !== 0) return;
       const startH = els.userInput.getBoundingClientRect().height;
       drag = { startY: e.clientY, startH: startH };
       handle.classList.add('dragging');
-      handle.setPointerCapture && handle.setPointerCapture(e.pointerId);
+      pageWindow.addEventListener('pointermove', onPageMove, true);
+      pageWindow.addEventListener('pointerup', endDrag, true);
+      pageWindow.addEventListener('pointercancel', endDrag, true);
       e.preventDefault();
       e.stopPropagation();
     });
-    handle.addEventListener('pointermove', (e) => {
-      if (!drag) return;
-      const next = clampInt(drag.startH - (e.clientY - drag.startY), INPUT_H_MIN, INPUT_H_MAX, INPUT_H_DEFAULT);
-      els.userInput.style.height = next + 'px';
-    });
-    const endDrag = (e) => {
-      if (!drag) return;
-      handle.classList.remove('dragging');
-      drag = null;
-      persistPageUi();
-      try { handle.releasePointerCapture && handle.releasePointerCapture(e.pointerId); } catch (err) {}
-    };
-    handle.addEventListener('pointerup', endDrag);
-    handle.addEventListener('pointercancel', endDrag);
   }
 
   function applyConfig(cfg) {
@@ -3669,7 +3729,7 @@
 
   // ============ 连接指示 / 重连 ============
   function isPanelVisible() {
-    return !panelDisposed && host && host.isConnected && !host.hidden;
+    return !panelDisposed && shell && shell.isConnected && !shell.hidden && shell.style.display !== 'none';
   }
 
   function setConnState(state) {
@@ -3720,9 +3780,101 @@
     }
   }
 
+  // ============ 焦点锁（指针所有权；不模拟按键） ============
+  let panelOwnsFocus = false;
+  let focusLockSuppressUntil = 0;
+  let focusLockTimer = 0;
+
+  function suppressFocusLock(ms) {
+    focusLockSuppressUntil = Date.now() + (ms || 2000);
+  }
+
+  function isPanelPointerTarget(t) {
+    if (!t || !shell) return false;
+    if (t === shell) return true;
+    try {
+      if (panelDoc && (t === panelDoc || t === panelDoc.documentElement || t === panelDoc.body)) return true;
+      if (host && (t === host || (host.contains && host.contains(t)))) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  function focusPanelInner() {
+    try {
+      const innerAe = panelDoc && panelDoc.activeElement;
+      if (innerAe && innerAe !== panelDoc.body && innerAe !== panelDoc.documentElement &&
+          innerAe !== host && typeof innerAe.focus === 'function') {
+        innerAe.focus();
+        return;
+      }
+    } catch (e) {}
+    try { if (els && els.userInput) els.userInput.focus(); } catch (e2) {}
+  }
+
+  function reclaimPanelFocus() {
+    if (!panelOwnsFocus || !shell || shell.hidden || panelDisposed) return;
+    if (Date.now() < focusLockSuppressUntil) return;
+    if (pageDocument.activeElement === shell) return;
+    try { shell.focus(); } catch (e1) {}
+    focusPanelInner();
+  }
+
+  function onPanelPointerDownCapture() {
+    if (shell && !shell.hidden) {
+      focusLockSuppressUntil = 0;
+      panelOwnsFocus = true;
+    }
+  }
+
+  function onPagePointerDownCapture(e) {
+    if (!shell || shell.hidden) {
+      panelOwnsFocus = false;
+      return;
+    }
+    if (isPanelPointerTarget(e.target)) {
+      focusLockSuppressUntil = 0;
+      panelOwnsFocus = true;
+      return;
+    }
+    panelOwnsFocus = false;
+  }
+
+  function onPageFocusInCapture() {
+    if (!panelOwnsFocus) return;
+    if (pageDocument.activeElement === shell) return;
+    reclaimPanelFocus();
+  }
+
+  function onShellBlur() {
+    if (!panelOwnsFocus || shell.hidden) return;
+    if (Date.now() < focusLockSuppressUntil) return;
+    if (focusLockTimer) clearTimeout(focusLockTimer);
+    focusLockTimer = setTimeout(function () {
+      focusLockTimer = 0;
+      reclaimPanelFocus();
+    }, 0);
+  }
+
+  function wireFocusLock() {
+    try { panelDoc.addEventListener('pointerdown', onPanelPointerDownCapture, true); } catch (e0) {}
+    pageDocument.addEventListener('pointerdown', onPagePointerDownCapture, true);
+    pageDocument.addEventListener('focusin', onPageFocusInCapture, true);
+    try { shell.addEventListener('blur', onShellBlur); } catch (e1) {}
+  }
+
+  function unwireFocusLock() {
+    panelOwnsFocus = false;
+    if (focusLockTimer) { try { clearTimeout(focusLockTimer); } catch (e) {} focusLockTimer = 0; }
+    try { panelDoc.removeEventListener('pointerdown', onPanelPointerDownCapture, true); } catch (e0) {}
+    try { pageDocument.removeEventListener('pointerdown', onPagePointerDownCapture, true); } catch (e1) {}
+    try { pageDocument.removeEventListener('focusin', onPageFocusInCapture, true); } catch (e2) {}
+    try { shell.removeEventListener('blur', onShellBlur); } catch (e3) {}
+  }
+
   // ============ 面板显示 ============
   function showPanel() {
-    host.hidden = false;
+    setShellVisible(shell, true);
+    panelOwnsFocus = true;
     els.userInput.focus();
     reportVisibility(true);
     if (portDead || !port) {
@@ -3734,7 +3886,8 @@
   }
 
   function hidePanel() {
-    host.hidden = true;
+    panelOwnsFocus = false;
+    setShellVisible(shell, false);
     stopHeartbeat();
     stopReconnectTimer();
     reconnecting = false;
@@ -3763,7 +3916,7 @@
         queuePrepareAttach();
       }
       // SW 重启后 visibleTabs 会丢失，若面板可见则重新上报
-      if (!host.hidden) reportVisibility(true);
+      if (!shell.hidden) reportVisibility(true);
       if (runningBeforeDisconnect && !msg.taskRunning) {
         addBubble('error', '浏览器后台已重启，之前的运行中任务已中断，请确认页面状态后重新发送。');
         setRunning(false);
@@ -4184,7 +4337,11 @@
       }
       exportSkills(ids);
     });
-    els.attachBtn.addEventListener('click', () => els.fileInput.click());
+    els.attachBtn.addEventListener('click', () => {
+      suppressFocusLock(120000);
+      els.fileInput.click();
+    });
+    els.fileInput.addEventListener('click', () => suppressFocusLock(120000));
     els.fileInput.addEventListener('change', () => handleFiles(els.fileInput.files));
     els.userInput.addEventListener('paste', onInputPaste);
     // 标签下拉切换：立即持久化，对下一次调用生效
@@ -4255,6 +4412,7 @@
       try { document.removeEventListener('DOMContentLoaded', onDomReady); } catch (e) {}
       awaitingDomReady = false;
     }
+    try { unwireFocusLock(); } catch (e) {}
     try { window.removeEventListener('pageshow', onPageShow); } catch (e) {}
     try { window.removeEventListener('pagehide', onPageHide); } catch (e) {}
     try { window.removeEventListener('resize', onWindowResize); } catch (e) {}
@@ -4268,9 +4426,9 @@
     portDead = true;
     reconnecting = false;
     try {
-      if (host) {
-        host.hidden = true;
-        if (host.parentNode) host.parentNode.removeChild(host);
+      if (shell) {
+        setShellVisible(shell, false);
+        if (shell.parentNode) shell.parentNode.removeChild(shell);
       }
     } catch (e) {}
     window.__assistantPanelInjected = false;
@@ -4281,11 +4439,14 @@
 
   // ============ 初始化 ============
   function init() {
-    document.body.appendChild(host);
+    if (pageDocument.body && shell.parentNode !== pageDocument.body) {
+      pageDocument.body.appendChild(shell);
+    }
     wireEvents();
+    wireFocusLock();
     setConnBanner('');
     setConnState('connecting');
-    host.hidden = true;
+    setShellVisible(shell, false);
     openPort();
 
     // bfcache 恢复：页面从前进/后退缓存恢复时，端口已断开，需主动重连（仅面板可见时）

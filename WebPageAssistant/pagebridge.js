@@ -4,19 +4,32 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '4.9.1';
+  var BRIDGE_VERSION = '4.10.0';
   var SNAPSHOT_TIME_BUDGET_MS = 2800;
 
   function install() {
     var scriptAborted = false;
     var trafficHook = null;
     var trafficLog = [];
+    function isAssistantFrame(el) {
+      if (!el) return false;
+      try {
+        var tag = String(el.tagName || '').toUpperCase();
+        if (tag !== 'IFRAME' && tag !== 'FRAME') return false;
+        if (el.id === '__ai-assistant-root') return true;
+        if (el.getAttribute && el.getAttribute('data-wpa-ignore')) return true;
+      } catch (e) {}
+      return false;
+    }
     function isIgnored(el) {
       if (!el) return true;
       try {
         if (el.id === 'wpa-busy-mask' || el.id === '__ai-assistant-root') return true;
         if (el.getAttribute && el.getAttribute('data-wpa-ignore')) return true;
         if (el.closest && el.closest('#__ai-assistant-root, #wpa-busy-mask, [data-wpa-ignore]')) return true;
+        var win = el.ownerDocument && el.ownerDocument.defaultView;
+        var fe = win && win.frameElement;
+        if (fe && isAssistantFrame(fe)) return true;
       } catch (e) {}
       return false;
     }
@@ -94,6 +107,7 @@
           var el = nodes[i];
           if (el.shadowRoot) walk(el.shadowRoot);
           if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+            if (isIgnored(el) || isAssistantFrame(el)) continue;
             try { if (el.contentDocument) walk(el.contentDocument); } catch (e) {}
           }
         }
@@ -126,6 +140,7 @@
         if (fi < frameParts.length - 1) {
           roots = [];
           for (var mj = 0; mj < matches.length; mj++) {
+            if (isIgnored(matches[mj]) || isAssistantFrame(matches[mj])) continue;
             try { if (matches[mj].contentDocument) roots.push(matches[mj].contentDocument); } catch (e) {}
           }
         } else {
@@ -327,7 +342,7 @@
     }
 
     function sameOriginFrameDoc(el) {
-      if (!el) return null;
+      if (!el || isIgnored(el) || isAssistantFrame(el)) return null;
       var tag = String(el.tagName || '').toUpperCase();
       if (tag !== 'IFRAME' && tag !== 'FRAME') return null;
       try {
@@ -1159,6 +1174,7 @@
           for (var k = 0; k < inner.length; k++) consider(inner[k]);
         }
         if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+          if (isIgnored(el) || isAssistantFrame(el)) continue;
           try {
             if (el.contentDocument) {
               var framed = elementsUnder(el.contentDocument, selector);

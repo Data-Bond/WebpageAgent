@@ -1452,7 +1452,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '4.9.1', '锁步版本为补丁号升级');
+ok(manifestVer === '4.10.0', '锁步版本为次版本升级');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -1933,6 +1933,25 @@ if (stringifyBox.stringifySnapshot) {
 }
 
 ok(/function isIgnored/.test(bridge), 'pagebridge 有 isIgnored');
+ok(/function isAssistantFrame/.test(bridge), 'pagebridge 识别助手 iframe');
+ok(/isIgnored\(el\) \|\| isAssistantFrame\(el\)/.test(bridge), 'pagebridge 不递归进入助手 iframe 文档');
+ok(/frameElement/.test(extractFn(bridge, 'isIgnored')), 'isIgnored 把助手 iframe 内节点视为忽略');
+ok(/createElement\('iframe'\)/.test(panelSrc) && /id = '__ai-assistant-root'/.test(panelSrc) && /about:blank/.test(panelSrc),
+  '面板壳为 about:blank iframe 且 id 仍为 __ai-assistant-root');
+ok(/pageWindow\.addEventListener\('pointermove', onPageMove, true\)/.test(extractFn(panelSrc, 'initDrag')),
+  '标题拖拽在页面 window 捕获 pointermove');
+ok(/pageWindow\.addEventListener\('pointermove', onPageMove, true\)/.test(extractFn(panelSrc, 'initInputResize')),
+  '输入框改高度在页面 window 捕获 pointermove');
+ok(/function reclaimPanelFocus/.test(panelSrc) && /panelOwnsFocus/.test(panelSrc),
+  '有指针所有权焦点锁');
+ok(/function suppressFocusLock/.test(panelSrc) && /fileInput\.addEventListener\('click'/.test(panelSrc),
+  '文件选择器期间抑制焦点锁');
+ok(/pageDocument\.activeElement === shell/.test(extractFn(panelSrc, 'reclaimPanelFocus')),
+  '焦点已在 iframe 内时不抢，以免打断 IME');
+ok(/function setShellVisible/.test(panelSrc) && /style\.display = on \? 'block' : 'none'/.test(extractFn(panelSrc, 'setShellVisible')),
+  '关闭面板用 iframe display，避免行内 display:block 盖过 hidden');
+ok(/setShellVisible\(shell, false\)/.test(extractFn(panelSrc, 'hidePanel')),
+  '关闭按钮 hidePanel 会把壳 display 设为 none');
 ok(/#wpa-busy-mask/.test(bridge) && /data-wpa-ignore/.test(bridge), '忽略规则含遮罩与 data-wpa-ignore');
 ok(/function hideBusyMask/.test(bridge), 'pagebridge 有 hideBusyMask');
 ok(/function onAbortSignal\(\) \{\s*hideBusyMask\(\)/.test(bridge), 'abort 首件事是 hideBusyMask');
@@ -2466,7 +2485,7 @@ ok(/uiOpacity: 100/.test(bg) && /panelScaleX: 70/.test(bg) && /panelScaleY: 70/.
   '界面透明度默认 100、放大比例默认 70×70');
 ok(/function applyUiKnobs\(/.test(bg) && /uiOpacity/.test(settingsHtml), '全局配置含插件界面透明度');
 ok(/:host\.expanded/.test(panelSrc) && /--wpa-scale-x/.test(panelSrc), '放大面板用宽高比例而非 transform');
-ok(/host\.style\.width = w \+ 'px'/.test(extractFn(panelSrc, 'applyPanelSize')), '放大时用像素宽高，避免 :host all:initial 吃掉 CSS');
+ok(/shell\.style\.width = w \+ 'px'/.test(extractFn(panelSrc, 'applyPanelSize')), '放大时用像素宽高打在页面 iframe 上');
 ok(/anchorRight/.test(extractFn(panelSrc, 'applyPanelSize')) && /anchorTop/.test(extractFn(panelSrc, 'applyPanelSize')),
   '缩放以右上角为不动点');
 ok(/els\.zoomBtn\.contains\(e\.target\)/.test(extractFn(panelSrc, 'initDrag')), '标题栏拖拽用 contains 排除缩放按钮（含文字节点）');
