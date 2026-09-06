@@ -28,7 +28,17 @@ iwr -useb https://raw.gitcode.com/hpcscc/WebpageAgent/raw/main/WebpageAgent-Inst
 
 脚本会把压缩包解压到自身所在目录，并创建 `WebpageAgent-Latest` 目录联接。请加载其中的 **`agent` 子目录**（推荐 Latest 那条）。然后在弹出的扩展页面打开「开发人员模式」，选择「加载解压缩的扩展」。
 
-**Linux / macOS**：自行下载本仓库的发行版压缩包，手动解压后，同样在 Chrome / Edge 中打开开发人员模式来加载其中的 **`agent` 目录**。
+**Linux / macOS**：可下载 [安装脚本](https://gitcode.com/hpcscc/WebpageAgent/blob/main/WebpageAgent-Installer-Linux-Mac.sh) 到希望安装插件的目录，然后执行：
+
+```bash
+chmod +x WebpageAgent-Installer-Linux-Mac.sh && ./WebpageAgent-Installer-Linux-Mac.sh
+```
+
+[raw 文件](https://raw.gitcode.com/hpcscc/WebpageAgent/raw/main/WebpageAgent-Installer-Linux-Mac.sh) 便于复制：
+
+`https://raw.gitcode.com/hpcscc/WebpageAgent/raw/main/WebpageAgent-Installer-Linux-Mac.sh`
+
+也可自行下载发行版压缩包，手动解压后，在 Chrome / Edge 中打开开发人员模式，加载其中的 **`agent` 目录**。
 
 **手动**：从 Release 解压，或 clone 本仓库后，在 Chrome / Edge 的扩展页打开开发人员模式，加载 **`agent` 目录**（不是仓库根）。安装脚本给出的两条路径都可用：`WebpageAgent-Latest\agent`（推荐）与 `解压文件夹\agent`。直接 clone 时加载仓库里的 `agent`。
 
