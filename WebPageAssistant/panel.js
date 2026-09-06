@@ -1,6 +1,6 @@
 // panel.js — 持久化聊天面板（隔离 world content script）
 // 页面挂 about:blank iframe 壳，UI 在 iframe 内 closed Shadow，避免编辑器页面抢走按键。
-// 由 background 通过 chrome.scripting.executeScript({ files:['panel.js'], world:'ISOLATED' }) 注入。
+// 由 background 通过 chrome.scripting.executeScript({ files:['shared/webSkill.js','panel.js'], world:'ISOLATED' }) 注入。
 // 与 content.js 共存于同一隔离 world；不使用/不覆盖它声明的全局（__dsContentLoaded 等）。
 
 'use strict';
@@ -14,6 +14,7 @@
     ? chrome.runtime.getManifest().version
     : 'unknown';
   const BUILD_TAG = 'v' + BUILD_VERSION;
+  const SKILL = (typeof globalThis !== 'undefined' && globalThis.WPA_WEB_SKILL) || {};
 
   // 同版本幂等；版本变化时先拆掉旧面板（否则布尔守卫会让角标永远停在首次注入的号，例如 2.5.0）。
   if (window.__assistantPanelVersion === BUILD_VERSION) return;
@@ -1125,6 +1126,78 @@
       min-height: 14px;
       word-break: break-word;
     }
+    .skill-lib-export-opt {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: #5a6072;
+      width: 100%;
+    }
+    .skill-lib-export-opt input {
+      margin: 0;
+    }
+    .skill-tabs {
+      display: flex;
+      gap: 6px;
+    }
+    .skill-tab {
+      padding: 4px 10px;
+      font-size: 12px;
+    }
+    .skill-tab.active {
+      background: linear-gradient(135deg, #4f7cff 0%, #6a5cff 100%);
+      border: none;
+      color: #fff;
+      font-weight: 600;
+    }
+    .skill-builder-pane {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .skill-dyn-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .skill-dyn-row {
+      border: 1px solid #e8ebf5;
+      border-radius: 8px;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: #fbfcfe;
+    }
+    .skill-dyn-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      font-weight: 650;
+      color: #5a6072;
+    }
+    .skill-preview {
+      font-size: 11px;
+      color: #3a4050;
+      background: #f4f6fb;
+      border: 1px dashed #d8dbe7;
+      border-radius: 8px;
+      padding: 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 140px;
+      overflow-y: auto;
+      line-height: 1.45;
+    }
+    .skill-build-hint {
+      font-size: 11px;
+      color: #6a7080;
+      line-height: 1.45;
+    }
     .modal-backdrop {
       position: absolute;
       inset: 0;
@@ -1321,6 +1394,11 @@
   let cachedSkills = [];
   const selectedSkillIds = {};
   let pendingTriggerSkill = null;
+  let activeSkillContext = null;
+  let skillBuildTab = 'auto';
+  let skillDraftStages = [];
+  let skillDraftVars = [];
+  let skillDraftBusy = false;
   let connHintEl = null;
   let archiveBusy = false;
   let archiveSaveMeta = null;
@@ -1572,7 +1650,7 @@
     const title = mk('div', 'header-title', { textContent: 'Webpage Agent' });
     const buildBadge = mk('span', 'header-build', { textContent: BUILD_TAG, title: '扩展版本（manifest，须与页面桥一致）' });
     const headerRight = mk('div', 'header-right');
-    const saveSkillBtn = mk('button', 'header-action', { type: 'button', textContent: '存为SKILL', title: '把本次对话中的用户任务存为可复用技能' });
+    const saveSkillBtn = mk('button', 'header-action', { type: 'button', textContent: '构建SKILL', title: '根据对话自动或手动构建可复用技能' });
     const skillLibBtn = mk('button', 'header-action', { type: 'button', textContent: '加载SKILL', title: '查看、导入或触发已保存的技能' });
     const clearBtn = mk('button', 'header-action', { type: 'button', textContent: '清空/存档对话', title: '清空对话或保存存档' });
     const settingsBtn = mk('button', 'icon-btn', { textContent: '⚙', title: '设置' });
@@ -1746,6 +1824,11 @@
     skillLibFooter.appendChild(exportSelectedBtn);
     skillLibFooter.appendChild(exportAllBtn);
     skillLibFooter.appendChild(importSkillsInput);
+    const skillExportValuesRow = mk('label', 'skill-lib-export-opt');
+    const skillExportValues = mk('input', null, { type: 'checkbox' });
+    skillExportValuesRow.appendChild(skillExportValues);
+    skillExportValuesRow.appendChild(panelDoc.createTextNode('导出含个人数据'));
+    skillLibFooter.appendChild(skillExportValuesRow);
     const skillLibStatus = mk('div', 'skill-lib-status');
     skillLibFooter.appendChild(skillLibStatus);
     skillLibrary.appendChild(skillLibFooter);
@@ -1759,11 +1842,32 @@
 
     const saveSkillModal = mk('div', 'modal-backdrop hidden');
     const saveSkillDialog = mk('div', 'modal');
-    saveSkillDialog.appendChild(mk('h3', null, { textContent: '存为SKILL' }));
+    saveSkillDialog.appendChild(mk('h3', null, { textContent: '构建SKILL' }));
+    const skillTabs = mk('div', 'skill-tabs');
+    const skillTabAuto = mk('button', 'btn skill-tab active', { type: 'button', textContent: '自动构建' });
+    const skillTabManual = mk('button', 'btn skill-tab', { type: 'button', textContent: '手动确认' });
+    skillTabs.appendChild(skillTabAuto);
+    skillTabs.appendChild(skillTabManual);
+    saveSkillDialog.appendChild(skillTabs);
+
+    const skillAutoPane = mk('div', 'skill-builder-pane');
+    skillAutoPane.appendChild(mk('div', 'skill-build-hint', {
+      textContent: '根据当前对话中的用户指令生成草稿（个人数据放入变量，正文用 {{变量名}}）。生成后请在「手动确认」里增删变量并改任意字段，点保存前不会写入技能库。'
+    }));
+    const skillAutoStatus = mk('div', 'skill-lib-status');
+    const skillAutoActions = mk('div', 'modal-actions');
+    const skillAutoRun = mk('button', 'btn primary', { type: 'button', textContent: '根据对话生成草稿' });
+    const skillAutoCancel = mk('button', 'btn hidden', { type: 'button', textContent: '取消生成' });
+    skillAutoActions.appendChild(skillAutoRun);
+    skillAutoActions.appendChild(skillAutoCancel);
+    skillAutoPane.appendChild(skillAutoStatus);
+    skillAutoPane.appendChild(skillAutoActions);
+
+    const skillManualPane = mk('div', 'skill-builder-pane hidden');
     const saveSkillName = mk('input', null, { type: 'text', placeholder: '技能名称', maxLength: 80 });
-    saveSkillDialog.appendChild(mkLabel('名称', saveSkillName));
+    skillManualPane.appendChild(mkLabel('名称', saveSkillName));
     const saveSkillUrl = mk('input', null, { type: 'url', placeholder: 'https://…' });
-    saveSkillDialog.appendChild(mkLabel('适用页面 URL（关键字段）', saveSkillUrl));
+    skillManualPane.appendChild(mkLabel('适用页面 URL（关键字段）', saveSkillUrl));
     const saveSkillMatch = mk('select');
     const matchOpts = [
       ['origin+path', '同源同路径（忽略查询串）'],
@@ -1774,16 +1878,38 @@
       const opt = mk('option', null, { value: pair[0], textContent: pair[1] });
       saveSkillMatch.appendChild(opt);
     });
-    saveSkillDialog.appendChild(mkLabel('URL 匹配方式', saveSkillMatch));
+    skillManualPane.appendChild(mkLabel('URL 匹配方式', saveSkillMatch));
+    const saveSkillOverwrite = mk('select');
+    skillManualPane.appendChild(mkLabel('保存方式', saveSkillOverwrite));
     const saveSkillNeedRow = mk('label', 'modal-check');
     const saveSkillNeedsInput = mk('input', null, { type: 'checkbox' });
     saveSkillNeedRow.appendChild(saveSkillNeedsInput);
     saveSkillNeedRow.appendChild(panelDoc.createTextNode('需要个性化数据或参数'));
-    saveSkillDialog.appendChild(saveSkillNeedRow);
-    const saveSkillHint = mk('input', null, { type: 'text', placeholder: '例如：请替换姓名、工号后再发送', maxLength: 500 });
-    saveSkillDialog.appendChild(mkLabel('参数说明（可选）', saveSkillHint));
-    const saveSkillPrompt = mk('textarea', null, { rows: 6, placeholder: '触发时写入聊天输入框的正文' });
-    saveSkillDialog.appendChild(mkLabel('技能正文', saveSkillPrompt));
+    skillManualPane.appendChild(saveSkillNeedRow);
+    const saveSkillHint = mk('input', null, { type: 'text', placeholder: '例如：请确认姓名、邮箱后再发送', maxLength: 500 });
+    skillManualPane.appendChild(mkLabel('参数说明（可选）', saveSkillHint));
+    const skillStagesHead = mk('div', 'skill-dyn-head');
+    skillStagesHead.appendChild(panelDoc.createTextNode('阶段'));
+    const skillAddStage = mk('button', 'btn', { type: 'button', textContent: '添加阶段' });
+    skillStagesHead.appendChild(skillAddStage);
+    skillManualPane.appendChild(skillStagesHead);
+    const skillStagesList = mk('div', 'skill-dyn-list');
+    skillManualPane.appendChild(skillStagesList);
+    const skillVarsHead = mk('div', 'skill-dyn-head');
+    skillVarsHead.appendChild(panelDoc.createTextNode('变量 {{var}}'));
+    const skillAddVar = mk('button', 'btn', { type: 'button', textContent: '添加变量' });
+    skillVarsHead.appendChild(skillAddVar);
+    skillManualPane.appendChild(skillVarsHead);
+    const skillVarsList = mk('div', 'skill-dyn-list');
+    skillManualPane.appendChild(skillVarsList);
+    skillManualPane.appendChild(mk('div', 'skill-build-hint', { textContent: '派生正文（触发时写入输入框，不展开变量值）' }));
+    const skillPromptPreview = mk('div', 'skill-preview');
+    skillManualPane.appendChild(skillPromptPreview);
+    const skillUndeclared = mk('div', 'modal-error');
+    skillManualPane.appendChild(skillUndeclared);
+
+    saveSkillDialog.appendChild(skillAutoPane);
+    saveSkillDialog.appendChild(skillManualPane);
     const saveSkillError = mk('div', 'modal-error');
     saveSkillDialog.appendChild(saveSkillError);
     const saveSkillActions = mk('div', 'modal-actions');
@@ -1964,9 +2090,14 @@
       pageBusyMaskEnabled, pageSnapshotPiiMask, pageCompatMode, pageRunSaveBtn, pageRunStatus,
       skillLibrary, skillSearch, skillFilterAll, skillFilterMatch, skillList,
       importSkillsBtn, exportSelectedBtn, exportAllBtn, importSkillsInput, skillLibStatus,
-      saveSkillModal, saveSkillName, saveSkillUrl, saveSkillMatch,
-      saveSkillNeedsInput, saveSkillHint, saveSkillPrompt, saveSkillError,
+      skillExportValues,
+      saveSkillModal, saveSkillName, saveSkillUrl, saveSkillMatch, saveSkillOverwrite,
+      saveSkillNeedsInput, saveSkillHint, saveSkillError,
       saveSkillCancel, saveSkillConfirm,
+      skillTabAuto, skillTabManual, skillAutoPane, skillManualPane,
+      skillAutoRun, skillAutoCancel, skillAutoStatus,
+      skillAddStage, skillAddVar, skillStagesList, skillVarsList,
+      skillPromptPreview, skillUndeclared,
       confirmModal, confirmWarn, confirmCancel, confirmOk,
       archiveModal, archiveCancel, archiveClearKeepFiles, archiveClearAll, archiveSaveFull, archiveSaveUser,
       archiveStatus,
@@ -2704,35 +2835,111 @@
     handleFiles(images, { fromPaste: true });
   }
 
-  // ============ 拖拽（页面 window 跟踪，指针移出 iframe 仍有效） ============
+  function shellIframeWindow() {
+    try { return panelDoc && panelDoc.defaultView; } catch (e) { return null; }
+  }
+
+  // iframe 内事件的 clientXY 相对 iframe；页面 window 的相对布局视口。拖拽必须先统一到页面坐标。
+  function eventClientInPage(e) {
+    const x = Number(e && e.clientX) || 0;
+    const y = Number(e && e.clientY) || 0;
+    let view = e && e.view;
+    if (!view) {
+      const doc = (e && e.target && e.target.ownerDocument) ||
+        (e && e.currentTarget && e.currentTarget.ownerDocument);
+      view = doc && doc.defaultView;
+    }
+    const iframeWin = shellIframeWindow();
+    if (iframeWin && view === iframeWin) {
+      const r = shell.getBoundingClientRect();
+      return { x: r.left + x, y: r.top + y };
+    }
+    return { x: x, y: y };
+  }
+
+  function pageViewportBox() {
+    const de = pageDocument.documentElement;
+    let w = pageWindow.innerWidth || 0;
+    let h = pageWindow.innerHeight || 0;
+    if (de) {
+      if (de.clientWidth > 0) w = Math.min(w || de.clientWidth, de.clientWidth);
+      if (de.clientHeight > 0) h = Math.min(h || de.clientHeight, de.clientHeight);
+    }
+    const vv = pageWindow.visualViewport;
+    let x = 0;
+    let y = 0;
+    if (vv && vv.width > 0 && vv.height > 0) {
+      x = vv.offsetLeft || 0;
+      y = vv.offsetTop || 0;
+      w = Math.min(w || vv.width, vv.width);
+      h = Math.min(h || vv.height, vv.height);
+    }
+    return { x: x, y: y, w: Math.max(0, w), h: Math.max(0, h) };
+  }
+
+  function clampShellLeftTop(left, top, pw, ph) {
+    const box = pageViewportBox();
+    const width = Math.max(1, pw || 0);
+    const height = Math.max(1, ph || 0);
+    if (width >= box.w) left = box.x;
+    else left = Math.max(box.x, Math.min(box.x + box.w - width, left));
+    if (height >= box.h) top = box.y;
+    else top = Math.max(box.y, Math.min(box.y + box.h - height, top));
+    return { left: left, top: top };
+  }
+
+  function applyShellPosition(left, top) {
+    const rect = shell.getBoundingClientRect();
+    const pw = rect.width || shell.offsetWidth || 520;
+    const ph = rect.height || shell.offsetHeight || 560;
+    const pos = clampShellLeftTop(left, top, pw, ph);
+    shell.style.right = 'auto';
+    shell.style.left = pos.left + 'px';
+    shell.style.top = pos.top + 'px';
+  }
+
+  function bindShellPointerTrack(onMove, onEnd) {
+    pageWindow.addEventListener('pointermove', onMove, true);
+    pageWindow.addEventListener('pointerup', onEnd, true);
+    pageWindow.addEventListener('pointercancel', onEnd, true);
+    const iw = shellIframeWindow();
+    if (iw && iw !== pageWindow) {
+      try {
+        iw.addEventListener('pointermove', onMove, true);
+        iw.addEventListener('pointerup', onEnd, true);
+        iw.addEventListener('pointercancel', onEnd, true);
+      } catch (err) {}
+    }
+  }
+
+  function unbindShellPointerTrack(onMove, onEnd) {
+    try { pageWindow.removeEventListener('pointermove', onMove, true); } catch (err) {}
+    try { pageWindow.removeEventListener('pointerup', onEnd, true); } catch (err) {}
+    try { pageWindow.removeEventListener('pointercancel', onEnd, true); } catch (err) {}
+    const iw = shellIframeWindow();
+    if (iw && iw !== pageWindow) {
+      try { iw.removeEventListener('pointermove', onMove, true); } catch (err) {}
+      try { iw.removeEventListener('pointerup', onEnd, true); } catch (err) {}
+      try { iw.removeEventListener('pointercancel', onEnd, true); } catch (err) {}
+    }
+  }
+
+  // ============ 拖拽（iframe 内 + 页面 window 同时跟踪，坐标统一到页面视口） ============
   function initDrag() {
     let drag = null;
     function onPageMove(e) {
       if (!drag) return;
-      const dx = e.clientX - drag.startX;
-      const dy = e.clientY - drag.startY;
+      const pt = eventClientInPage(e);
+      const dx = pt.x - drag.startX;
+      const dy = pt.y - drag.startY;
       drag.moved = true;
-      if (shell.style.right && shell.style.right !== 'auto') {
-        shell.style.right = 'auto';
-      }
-      let left = drag.origLeft + dx;
-      let top = drag.origTop + dy;
-      const vw = pageWindow.innerWidth;
-      const vh = pageWindow.innerHeight;
-      const pw = shell.offsetWidth || 520;
-      const ph = shell.offsetHeight || 560;
-      left = Math.max(-20, Math.min(vw - pw + 20, left));
-      top = Math.max(-20, Math.min(vh - ph + 20, top));
-      shell.style.left = left + 'px';
-      shell.style.top = top + 'px';
+      applyShellPosition(drag.origLeft + dx, drag.origTop + dy);
     }
     function endDrag() {
       if (!drag) return;
       els.header.classList.remove('dragging');
       drag = null;
-      pageWindow.removeEventListener('pointermove', onPageMove, true);
-      pageWindow.removeEventListener('pointerup', endDrag, true);
-      pageWindow.removeEventListener('pointercancel', endDrag, true);
+      unbindShellPointerTrack(onPageMove, endDrag);
     }
     els.header.addEventListener('pointerdown', (e) => {
       // 点到按钮内文字节点时 e.target 不是元素：用 contains，避免拖拽吞掉缩放 click。
@@ -2741,17 +2948,16 @@
       if (e.target === els.settingsBtn || e.target === els.closeBtn || e.target === els.clearBtn) return;
       if (t && t.closest && (t.closest('.header-right') || t.closest('.zoom-btn'))) return;
       const rect = shell.getBoundingClientRect();
+      const pt = eventClientInPage(e);
       drag = {
-        startX: e.clientX,
-        startY: e.clientY,
+        startX: pt.x,
+        startY: pt.y,
         origLeft: rect.left,
         origTop: rect.top,
         moved: false
       };
       els.header.classList.add('dragging');
-      pageWindow.addEventListener('pointermove', onPageMove, true);
-      pageWindow.addEventListener('pointerup', endDrag, true);
-      pageWindow.addEventListener('pointercancel', endDrag, true);
+      bindShellPointerTrack(onPageMove, endDrag);
       e.preventDefault();
     });
   }
@@ -2815,7 +3021,7 @@
       needsName: !!f.needsName
     }));
     try {
-      port.postMessage({ cmd: 'runTask', task: text, files: files });
+      port.postMessage({ cmd: 'runTask', task: text, files: files, skillContext: activeSkillContext });
     } catch (e) {
       addBubble('error', '发送失败：' + String(e));
       setRunning(false);
@@ -2861,6 +3067,7 @@
       if (canPersist()) storeSet({ [fileKey()]: [] });
     }
     addBubble('status', keepFiles ? '已清空对话历史（附件已保留）' : '已清空对话历史与附件');
+    activeSkillContext = null;
   }
 
   function clearAll() {
@@ -3278,18 +3485,8 @@
   }
 
   function clampHostPosition() {
-    const vw = pageWindow.innerWidth;
-    const vh = pageWindow.innerHeight;
     const rect = shell.getBoundingClientRect();
-    let left = rect.left;
-    let top = rect.top;
-    const pw = rect.width;
-    const ph = rect.height;
-    left = Math.max(-20, Math.min(vw - pw + 20, left));
-    top = Math.max(-20, Math.min(vh - ph + 20, top));
-    shell.style.right = 'auto';
-    shell.style.left = left + 'px';
-    shell.style.top = top + 'px';
+    applyShellPosition(rect.left, rect.top);
   }
 
   function panelScaleFrac(prop, fallback) {
@@ -3306,13 +3503,12 @@
       host.classList.add('expanded');
       const sx = panelScaleFrac('--wpa-scale-x', 0.7);
       const sy = panelScaleFrac('--wpa-scale-y', 0.7);
-      const vw = pageWindow.innerWidth;
-      const vh = pageWindow.innerHeight;
-      const w = Math.max(280, Math.round(Math.min(vw * sx, vw - 16)));
-      const h = Math.max(200, Math.round(Math.min(vh * sy, vh - 16)));
+      const box = pageViewportBox();
+      const w = Math.max(280, Math.round(Math.min(box.w * sx, box.w - 16)));
+      const h = Math.max(200, Math.round(Math.min(box.h * sy, box.h - 16)));
       shell.style.width = w + 'px';
       shell.style.height = h + 'px';
-      shell.style.maxHeight = Math.max(200, vh - 16) + 'px';
+      shell.style.maxHeight = Math.max(200, box.h - 16) + 'px';
     } else {
       host.classList.remove('expanded');
       shell.style.width = SHELL_DEFAULT_WIDTH;
@@ -3390,7 +3586,8 @@
     let drag = null;
     function onPageMove(e) {
       if (!drag) return;
-      const next = clampInt(drag.startH - (e.clientY - drag.startY), INPUT_H_MIN, INPUT_H_MAX, INPUT_H_DEFAULT);
+      const pt = eventClientInPage(e);
+      const next = clampInt(drag.startH - (pt.y - drag.startY), INPUT_H_MIN, INPUT_H_MAX, INPUT_H_DEFAULT);
       els.userInput.style.height = next + 'px';
     }
     function endDrag() {
@@ -3398,18 +3595,15 @@
       handle.classList.remove('dragging');
       drag = null;
       persistPageUi();
-      pageWindow.removeEventListener('pointermove', onPageMove, true);
-      pageWindow.removeEventListener('pointerup', endDrag, true);
-      pageWindow.removeEventListener('pointercancel', endDrag, true);
+      unbindShellPointerTrack(onPageMove, endDrag);
     }
     handle.addEventListener('pointerdown', (e) => {
       if (e.button != null && e.button !== 0) return;
       const startH = els.userInput.getBoundingClientRect().height;
-      drag = { startY: e.clientY, startH: startH };
+      const pt = eventClientInPage(e);
+      drag = { startY: pt.y, startH: startH };
       handle.classList.add('dragging');
-      pageWindow.addEventListener('pointermove', onPageMove, true);
-      pageWindow.addEventListener('pointerup', endDrag, true);
-      pageWindow.addEventListener('pointercancel', endDrag, true);
+      bindShellPointerTrack(onPageMove, endDrag);
       e.preventDefault();
       e.stopPropagation();
     });
@@ -3493,10 +3687,6 @@
     return t.length > 32 ? t.slice(0, 32) : t;
   }
 
-  function promptHasPlaceholders(text) {
-    return /\{\{[^}]+\}\}/.test(String(text || ''));
-  }
-
   function setSkillLibraryOpen(open) {
     if (open) {
       els.settingsPanel.classList.add('hidden');
@@ -3528,18 +3718,168 @@
   }
 
   function skillUrlMatches(skill, currentHref) {
-    let saved;
-    let cur;
-    try { saved = new URL(skill && skill.pageUrl || ''); saved.hash = ''; } catch (e) { return false; }
-    try { cur = new URL(currentHref || ''); cur.hash = ''; } catch (e) { return false; }
-    const mode = (skill && skill.urlMatch) || 'origin+path';
-    if (mode === 'origin') return saved.origin === cur.origin;
-    if (mode === 'exact') return saved.href === cur.href;
-    return saved.origin === cur.origin && saved.pathname === cur.pathname;
+    if (SKILL.skillUrlMatches) return SKILL.skillUrlMatches(skill, currentHref);
+    return false;
   }
 
   function selectedSkillIdList() {
     return Object.keys(selectedSkillIds).filter((id) => selectedSkillIds[id]);
+  }
+
+  function emptyStage() {
+    return { title: '', instruction: '' };
+  }
+
+  function emptyVar() {
+    return { name: '', label: '', value: '', required: false };
+  }
+
+  function refreshOverwriteOptions(selectedId) {
+    const sel = els.saveSkillOverwrite;
+    if (!sel) return;
+    const keep = selectedId != null ? String(selectedId) : String(sel.value || '');
+    sel.textContent = '';
+    const fresh = mk('option', null, { value: '', textContent: '新建一条' });
+    sel.appendChild(fresh);
+    cachedSkills.forEach((s) => {
+      if (!s || !s.id) return;
+      const opt = mk('option', null, { value: s.id, textContent: '覆盖：' + (s.name || s.id) });
+      sel.appendChild(opt);
+    });
+    if (keep && Array.prototype.some.call(sel.options, (o) => o.value === keep)) sel.value = keep;
+    else sel.value = '';
+  }
+
+  function updateSkillPreview() {
+    const prompt = SKILL.renderSkillPrompt ? SKILL.renderSkillPrompt(skillDraftStages) : '';
+    if (els.skillPromptPreview) els.skillPromptPreview.textContent = prompt || '（尚无阶段正文）';
+    const missing = SKILL.undeclaredVarTokens
+      ? SKILL.undeclaredVarTokens(prompt, skillDraftVars)
+      : [];
+    if (els.skillUndeclared) {
+      els.skillUndeclared.textContent = missing.length
+        ? '未声明变量：' + missing.map((n) => '{{' + n + '}}').join('、') + '。请添加变量或改阶段正文。'
+        : '';
+    }
+    if (skillDraftVars.some((v) => v && v.required && !String(v.value || '').trim())) {
+      els.saveSkillNeedsInput.checked = true;
+    }
+  }
+
+  function renderSkillStages() {
+    els.skillStagesList.textContent = '';
+    skillDraftStages.forEach((st, idx) => {
+      const row = mk('div', 'skill-dyn-row');
+      const head = mk('div', 'skill-dyn-head');
+      head.appendChild(panelDoc.createTextNode('阶段 ' + (idx + 1)));
+      const del = mk('button', 'btn', { type: 'button', textContent: '删除' });
+      del.addEventListener('click', () => {
+        if (skillDraftStages.length <= 1) {
+          skillDraftStages[0] = emptyStage();
+        } else {
+          skillDraftStages.splice(idx, 1);
+        }
+        renderSkillStages();
+        updateSkillPreview();
+      });
+      head.appendChild(del);
+      row.appendChild(head);
+      const title = mk('input', null, { type: 'text', placeholder: '标题（可选）', maxLength: 80 });
+      title.value = st.title || '';
+      title.addEventListener('input', () => { skillDraftStages[idx].title = title.value; updateSkillPreview(); });
+      row.appendChild(title);
+      const inst = mk('textarea', null, { rows: 3, placeholder: '该步做什么。个人数据写成 {{UserEmail}} 这类占位符' });
+      inst.value = st.instruction || '';
+      inst.addEventListener('input', () => { skillDraftStages[idx].instruction = inst.value; updateSkillPreview(); });
+      row.appendChild(inst);
+      els.skillStagesList.appendChild(row);
+    });
+  }
+
+  function renderSkillVars() {
+    els.skillVarsList.textContent = '';
+    if (!skillDraftVars.length) {
+      els.skillVarsList.appendChild(mk('div', 'skill-build-hint', { textContent: '还没有变量。可添加 {{UserEmail}} 等，供填表时由引擎注入。' }));
+      return;
+    }
+    skillDraftVars.forEach((v, idx) => {
+      const row = mk('div', 'skill-dyn-row');
+      const head = mk('div', 'skill-dyn-head');
+      head.appendChild(panelDoc.createTextNode('{{' + (v.name || 'var') + '}}'));
+      const del = mk('button', 'btn', { type: 'button', textContent: '删除' });
+      del.addEventListener('click', () => {
+        skillDraftVars.splice(idx, 1);
+        renderSkillVars();
+        updateSkillPreview();
+      });
+      head.appendChild(del);
+      row.appendChild(head);
+      const name = mk('input', null, { type: 'text', placeholder: '变量名，如 UserEmail', maxLength: 64 });
+      name.value = v.name || '';
+      name.addEventListener('input', () => {
+        skillDraftVars[idx].name = name.value.trim();
+        head.firstChild.textContent = '{{' + (skillDraftVars[idx].name || 'var') + '}}';
+        updateSkillPreview();
+      });
+      row.appendChild(name);
+      const label = mk('input', null, { type: 'text', placeholder: '说明（如：邮箱）', maxLength: 80 });
+      label.value = v.label || '';
+      label.addEventListener('input', () => { skillDraftVars[idx].label = label.value; });
+      row.appendChild(label);
+      const value = mk('input', null, { type: 'text', placeholder: '本地保存的值（默认不随技能导出）' });
+      value.value = v.value || '';
+      value.addEventListener('input', () => { skillDraftVars[idx].value = value.value; updateSkillPreview(); });
+      row.appendChild(value);
+      const reqRow = mk('label', 'modal-check');
+      const req = mk('input', null, { type: 'checkbox' });
+      req.checked = !!v.required;
+      req.addEventListener('change', () => { skillDraftVars[idx].required = !!req.checked; updateSkillPreview(); });
+      reqRow.appendChild(req);
+      reqRow.appendChild(panelDoc.createTextNode('必填'));
+      row.appendChild(reqRow);
+      els.skillVarsList.appendChild(row);
+    });
+  }
+
+  function setSkillBuildTab(tab) {
+    skillBuildTab = tab === 'manual' ? 'manual' : 'auto';
+    const auto = skillBuildTab === 'auto';
+    els.skillTabAuto.classList.toggle('active', auto);
+    els.skillTabManual.classList.toggle('active', !auto);
+    els.skillAutoPane.classList.toggle('hidden', !auto);
+    els.skillManualPane.classList.toggle('hidden', auto);
+  }
+
+  function setSkillDraftBusy(busy) {
+    skillDraftBusy = !!busy;
+    els.skillAutoRun.disabled = skillDraftBusy;
+    els.saveSkillConfirm.disabled = skillDraftBusy;
+    els.skillAutoCancel.classList.toggle('hidden', !skillDraftBusy);
+  }
+
+  function applyDraftObject(raw) {
+    const src = raw || {};
+    els.saveSkillName.value = src.name || defaultSkillName(collectUserPrompt()) || '';
+    els.saveSkillUrl.value = src.pageUrl || location.href || '';
+    els.saveSkillMatch.value = src.urlMatch || 'origin+path';
+    els.saveSkillNeedsInput.checked = !!src.needsInput;
+    els.saveSkillHint.value = src.inputHint || '';
+    const stages = Array.isArray(src.stages) && src.stages.length
+      ? src.stages.map((st) => ({ title: st && st.title || '', instruction: st && st.instruction || '' }))
+      : [emptyStage()];
+    skillDraftStages = stages;
+    skillDraftVars = Array.isArray(src.variables)
+      ? src.variables.map((v) => ({
+        name: v && v.name || '',
+        label: v && v.label || '',
+        value: v && v.value != null ? String(v.value) : '',
+        required: !!(v && v.required)
+      }))
+      : [];
+    refreshOverwriteOptions(src.id || '');
+    renderSkillStages();
+    renderSkillVars();
+    updateSkillPreview();
   }
 
   function renderSkillList() {
@@ -3561,7 +3901,7 @@
     els.skillList.textContent = '';
     if (list.length === 0) {
       els.skillList.appendChild(mk('div', 'skill-empty', {
-        textContent: cachedSkills.length ? '没有符合条件的技能' : '还没有 WEB-SKILL，可从当前对话保存或导入 JSON'
+        textContent: cachedSkills.length ? '没有符合条件的技能' : '还没有 SKILL，可从当前对话构建或导入 JSON'
       }));
       return;
     }
@@ -3585,17 +3925,21 @@
       card.appendChild(mk('div', 'skill-card-url', { textContent: compactUrl(skill.pageUrl) }));
       const actions = mk('div', 'skill-card-actions');
       const triggerBtn = mk('button', 'btn primary', { type: 'button', textContent: '触发' });
+      const editBtn = mk('button', 'btn', { type: 'button', textContent: '编辑' });
       const exportOneBtn = mk('button', 'btn', { type: 'button', textContent: '导出' });
       const delBtn = mk('button', 'btn', { type: 'button', textContent: '删除' });
       triggerBtn.addEventListener('click', () => triggerSkill(skill));
+      editBtn.addEventListener('click', () => openBuildSkillModal({ skill: skill, tab: 'manual' }));
       exportOneBtn.addEventListener('click', () => exportSkills([skill.id]));
       delBtn.addEventListener('click', () => deleteSkill(skill));
       actions.appendChild(triggerBtn);
+      actions.appendChild(editBtn);
       actions.appendChild(exportOneBtn);
       actions.appendChild(delBtn);
       card.appendChild(actions);
       els.skillList.appendChild(card);
     });
+    refreshOverwriteOptions(els.saveSkillOverwrite && els.saveSkillOverwrite.value);
   }
 
   function applySkillToInput(skill) {
@@ -3603,9 +3947,12 @@
     els.userInput.focus();
     els.skillLibrary.classList.add('hidden');
     hideConfirmModal();
+    activeSkillContext = skill && Array.isArray(skill.variables) && skill.variables.length
+      ? { skillId: skill.id || '', variables: skill.variables }
+      : null;
     if (skill && skill.needsInput) {
       const hint = String(skill.inputHint || '').trim();
-      addBubble('system', hint || '此技能需要补充个性化参数/数据或附件后再发送');
+      addBubble('system', hint || '此技能含个性化变量。值由本地技能保存，发送后引擎在填表前注入；请确认变量已填写。');
     }
   }
 
@@ -3623,60 +3970,138 @@
     }
     pendingTriggerSkill = skill;
     els.confirmWarn.textContent =
-      '该 WEB-SKILL 适用于：\n' + (skill.pageUrl || '(无)') +
+      '该 SKILL 适用于：\n' + (skill.pageUrl || '(无)') +
       '\n\n当前页面：\n' + current +
       '\n\n页面不匹配。确认后仍可将提示词载入输入框，但操作目标页可能不同。';
     els.confirmModal.classList.remove('hidden');
   }
 
   function hideSaveSkillModal() {
+    if (skillDraftBusy) {
+      try { port.postMessage({ cmd: 'cancelSkillDraft' }); } catch (e) {}
+      setSkillDraftBusy(false);
+    }
     els.saveSkillModal.classList.add('hidden');
     els.saveSkillError.textContent = '';
+    if (els.skillAutoStatus) els.skillAutoStatus.textContent = '';
+  }
+
+  function openBuildSkillModal(opt) {
+    opt = opt || {};
+    els.saveSkillError.textContent = '';
+    if (els.skillAutoStatus) els.skillAutoStatus.textContent = '';
+    els.settingsPanel.classList.add('hidden');
+    els.skillLibrary.classList.add('hidden');
+    if (opt.skill) {
+      applyDraftObject(opt.skill);
+      setSkillBuildTab(opt.tab || 'manual');
+    } else {
+      const prompt = collectUserPrompt();
+      applyDraftObject({
+        name: defaultSkillName(prompt),
+        pageUrl: location.href || '',
+        urlMatch: 'origin+path',
+        needsInput: false,
+        inputHint: '',
+        stages: prompt ? [{ title: '', instruction: prompt }] : [emptyStage()],
+        variables: []
+      });
+      setSkillBuildTab(opt.tab || (prompt ? 'auto' : 'manual'));
+    }
+    els.saveSkillModal.classList.remove('hidden');
+    if (skillBuildTab === 'manual') els.saveSkillName.focus();
   }
 
   function openSaveSkillModal() {
-    const prompt = collectUserPrompt();
-    if (!prompt) {
-      addBubble('error', '还没有用户任务可保存。请先发送至少一条任务，再存为SKILL。');
-      return;
-    }
-    els.saveSkillName.value = defaultSkillName(prompt);
-    els.saveSkillUrl.value = location.href || '';
-    els.saveSkillMatch.value = 'origin+path';
-    els.saveSkillPrompt.value = prompt;
-    const needs = promptHasPlaceholders(prompt);
-    els.saveSkillNeedsInput.checked = needs;
-    els.saveSkillHint.value = '';
-    els.saveSkillError.textContent = '';
-    els.settingsPanel.classList.add('hidden');
-    els.saveSkillModal.classList.remove('hidden');
-    els.saveSkillName.focus();
+    openBuildSkillModal({ tab: 'auto' });
+  }
+
+  function collectSkillForm() {
+    return {
+      id: String(els.saveSkillOverwrite.value || '').trim(),
+      name: String(els.saveSkillName.value || '').trim(),
+      pageUrl: String(els.saveSkillUrl.value || '').trim(),
+      urlMatch: els.saveSkillMatch.value || 'origin+path',
+      needsInput: !!els.saveSkillNeedsInput.checked,
+      inputHint: String(els.saveSkillHint.value || '').trim(),
+      stages: skillDraftStages.map((st) => ({
+        title: st && st.title || '',
+        instruction: st && st.instruction || ''
+      })),
+      variables: skillDraftVars.map((v) => ({
+        name: v && v.name || '',
+        label: v && v.label || '',
+        value: v && v.value != null ? String(v.value) : '',
+        required: !!(v && v.required)
+      }))
+    };
   }
 
   function submitSaveSkill() {
-    const name = String(els.saveSkillName.value || '').trim();
-    const pageUrl = String(els.saveSkillUrl.value || '').trim();
-    const prompt = String(els.saveSkillPrompt.value || '');
-    if (!name) { els.saveSkillError.textContent = '请填写技能名称'; return; }
-    if (!pageUrl) { els.saveSkillError.textContent = '请填写适用页面 URL'; return; }
-    if (!prompt.trim()) { els.saveSkillError.textContent = '技能正文不能为空'; return; }
+    const skill = collectSkillForm();
+    if (!skill.name) { els.saveSkillError.textContent = '请填写技能名称'; return; }
+    if (!skill.pageUrl) { els.saveSkillError.textContent = '请填写适用页面 URL'; return; }
     if (!port || portDead) { els.saveSkillError.textContent = '未连接后台'; return; }
+    const checked = SKILL.sanitizeWebSkill
+      ? SKILL.sanitizeWebSkill(skill, { forceNewId: !skill.id })
+      : { error: '技能模块未加载' };
+    if (!checked.ok) {
+      els.saveSkillError.textContent = checked.error || '校验失败';
+      setSkillBuildTab('manual');
+      return;
+    }
     els.saveSkillError.textContent = '';
     try {
-      port.postMessage({
-        cmd: 'saveWebSkill',
-        skill: {
-          name: name,
-          pageUrl: pageUrl,
-          urlMatch: els.saveSkillMatch.value || 'origin+path',
-          needsInput: !!els.saveSkillNeedsInput.checked,
-          inputHint: String(els.saveSkillHint.value || '').trim(),
-          prompt: prompt
-        }
-      });
+      port.postMessage({ cmd: 'saveWebSkill', skill: checked.skill });
     } catch (e) {
       els.saveSkillError.textContent = '保存失败：' + String(e && e.message || e);
     }
+  }
+
+  function runAutoBuildSkill() {
+    const turns = transcript
+      .filter((m) => m && m.role === 'user')
+      .map((m) => String(m.text || '').trim())
+      .filter(Boolean);
+    if (!turns.length) {
+      els.skillAutoStatus.textContent = '还没有用户任务。请先发送至少一条任务，或改用手动确认。';
+      return;
+    }
+    if (!port || portDead) {
+      els.skillAutoStatus.textContent = '未连接后台';
+      return;
+    }
+    els.skillAutoStatus.textContent = '正在生成草稿…';
+    els.saveSkillError.textContent = '';
+    setSkillDraftBusy(true);
+    try {
+      port.postMessage({ cmd: 'buildSkillDraft', turns: turns, pageUrl: location.href || '' });
+    } catch (e) {
+      setSkillDraftBusy(false);
+      els.skillAutoStatus.textContent = '生成失败：' + String(e && e.message || e);
+    }
+  }
+
+  function applySkillDraftResult(msg) {
+    setSkillDraftBusy(false);
+    if (msg && msg.cancelled) {
+      els.skillAutoStatus.textContent = '已取消';
+      return;
+    }
+    if (msg && msg.ok && msg.skill) {
+      applyDraftObject(msg.skill);
+      if (els.saveSkillOverwrite) els.saveSkillOverwrite.value = '';
+      els.skillAutoStatus.textContent = '已填入草稿，请在「手动确认」中增删变量并保存。';
+      setSkillBuildTab('manual');
+      return;
+    }
+    if (msg && msg.draft) {
+      applyDraftObject(msg.draft);
+      if (els.saveSkillOverwrite) els.saveSkillOverwrite.value = '';
+      setSkillBuildTab('manual');
+    }
+    els.skillAutoStatus.textContent = (msg && msg.error) || '生成失败';
+    els.saveSkillError.textContent = (msg && msg.error) || '';
   }
 
   function deleteSkill(skill) {
@@ -3695,7 +4120,13 @@
       els.skillLibStatus.textContent = '未连接后台';
       return;
     }
-    try { port.postMessage({ cmd: 'exportWebSkills', ids: ids }); } catch (e) {
+    try {
+      port.postMessage({
+        cmd: 'exportWebSkills',
+        ids: ids,
+        includeValues: !!(els.skillExportValues && els.skillExportValues.checked)
+      });
+    } catch (e) {
       els.skillLibStatus.textContent = '导出失败';
     }
   }
@@ -3877,6 +4308,7 @@
   // ============ 面板显示 ============
   function showPanel() {
     setShellVisible(shell, true);
+    clampHostPosition();
     panelOwnsFocus = true;
     els.userInput.focus();
     reportVisibility(true);
@@ -4087,11 +4519,12 @@
             hideSaveSkillModal();
             cachedSkills = Array.isArray(msg.skills) ? msg.skills : cachedSkills;
             renderSkillList();
-            addBubble('system', '已保存 WEB-SKILL' + (msg.skill && msg.skill.name ? '：' + msg.skill.name : ''));
+            addBubble('system', '已保存 SKILL' + (msg.skill && msg.skill.name ? '：' + msg.skill.name : ''));
           } else if (!els.saveSkillModal.classList.contains('hidden')) {
             els.saveSkillError.textContent = msg.error || '保存失败';
+            setSkillBuildTab('manual');
           } else {
-            addBubble('error', '保存 WEB-SKILL 失败：' + (msg.error || '未知错误'));
+            addBubble('error', '保存 SKILL 失败：' + (msg.error || '未知错误'));
           }
           break;
         case 'webSkillDeleted':
@@ -4108,7 +4541,7 @@
           if (msg.ok && typeof msg.json === 'string') {
             const n = msg.count != null ? msg.count : 1;
             downloadJsonText(msg.json, n === 1 ? 'web-skill.json' : 'web-skill-pack.json');
-            els.skillLibStatus.textContent = '已导出 ' + n + ' 条 WEB-SKILL';
+            els.skillLibStatus.textContent = '已导出 ' + n + ' 条 SKILL';
           } else {
             els.skillLibStatus.textContent = '导出失败：' + (msg.error || '未知错误');
           }
@@ -4119,11 +4552,17 @@
             renderSkillList();
             const n = msg.imported != null ? msg.imported : 0;
             els.skillLibStatus.textContent = '已导入 ' + n + ' 条（同 id 已作为新条目）';
-            addBubble('status', '已导入 ' + n + ' 条 WEB-SKILL');
+            addBubble('status', '已导入 ' + n + ' 条 SKILL');
           } else {
             els.skillLibStatus.textContent = '导入失败：' + (msg.error || '文件无效');
-            addBubble('error', '导入 WEB-SKILL 失败：' + (msg.error || '文件无效'));
+            addBubble('error', '导入 SKILL 失败：' + (msg.error || '文件无效'));
           }
+          break;
+        case 'skillDraftProgress':
+          if (els.skillAutoStatus) els.skillAutoStatus.textContent = String(msg.text || '正在生成草稿…');
+          break;
+        case 'skillDraft':
+          applySkillDraftResult(msg);
           break;
         default:
           break;
@@ -4283,11 +4722,26 @@
     });
     els.saveSkillCancel.addEventListener('click', () => hideSaveSkillModal());
     els.saveSkillConfirm.addEventListener('click', () => submitSaveSkill());
-    els.saveSkillPrompt.addEventListener('input', () => {
-      if (promptHasPlaceholders(els.saveSkillPrompt.value)) els.saveSkillNeedsInput.checked = true;
+    els.skillTabAuto.addEventListener('click', () => setSkillBuildTab('auto'));
+    els.skillTabManual.addEventListener('click', () => setSkillBuildTab('manual'));
+    els.skillAutoRun.addEventListener('click', () => runAutoBuildSkill());
+    els.skillAutoCancel.addEventListener('click', () => {
+      try { port.postMessage({ cmd: 'cancelSkillDraft' }); } catch (e) {}
+    });
+    els.skillAddStage.addEventListener('click', () => {
+      skillDraftStages.push(emptyStage());
+      renderSkillStages();
+      updateSkillPreview();
+      setSkillBuildTab('manual');
+    });
+    els.skillAddVar.addEventListener('click', () => {
+      skillDraftVars.push(emptyVar());
+      renderSkillVars();
+      updateSkillPreview();
+      setSkillBuildTab('manual');
     });
     els.saveSkillModal.addEventListener('click', (e) => {
-      if (e.target === els.saveSkillModal) hideSaveSkillModal();
+      if (e.target === els.saveSkillModal && !skillDraftBusy) hideSaveSkillModal();
     });
     els.confirmCancel.addEventListener('click', () => hideConfirmModal());
     els.confirmOk.addEventListener('click', () => {
@@ -4374,6 +4828,12 @@
     initDrag();
     initInputResize();
     window.addEventListener('resize', onWindowResize);
+    try {
+      if (pageWindow.visualViewport) {
+        pageWindow.visualViewport.addEventListener('resize', onWindowResize);
+        pageWindow.visualViewport.addEventListener('scroll', onWindowResize);
+      }
+    } catch (eVv) {}
 
     // chrome.runtime.onMessage：仅响应 showPanel，其余忽略
     try {
@@ -4419,6 +4879,12 @@
     try { window.removeEventListener('pageshow', onPageShow); } catch (e) {}
     try { window.removeEventListener('pagehide', onPageHide); } catch (e) {}
     try { window.removeEventListener('resize', onWindowResize); } catch (e) {}
+    try {
+      if (pageWindow.visualViewport) {
+        pageWindow.visualViewport.removeEventListener('resize', onWindowResize);
+        pageWindow.visualViewport.removeEventListener('scroll', onWindowResize);
+      }
+    } catch (eVv) {}
     try {
       if (chrome && chrome.runtime && chrome.runtime.onMessage) {
         chrome.runtime.onMessage.removeListener(onRuntimeShowPanel);

@@ -20,7 +20,7 @@ function ok(cond, name) {
   }
 }
 
-const files = ['background.js', 'pagebridge.js', 'content.js', 'panel.js', 'office.js', 'settings.js', 'shared/contracts.js', 'shared/pdfPages.js'];
+const files = ['background.js', 'pagebridge.js', 'content.js', 'panel.js', 'office.js', 'settings.js', 'shared/contracts.js', 'shared/pdfPages.js', 'shared/webSkill.js'];
 const srcs = {};
 for (const f of files) {
   const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
@@ -76,7 +76,7 @@ ok(/opts\.onUsage/.test(bg) && /parseLlmUsage\(data && data\.usage\)/.test(bg),
 ok(/usage: rec\.usage/.test(bg), '下载详情包含本次用量');
 ok(/downloadLlmCall/.test(panelSrc), '面板可请求下载调用详情');
 ok(/llm-call-badge/.test(panelSrc), '调用卡片有解析状态徽标');
-ok(/textContent: '存为SKILL'/.test(panelSrc), '标题栏按钮文案为存为SKILL');
+ok(/textContent: '构建SKILL'/.test(panelSrc), '标题栏按钮文案为构建SKILL');
 ok(/textContent: '清空\/存档对话'/.test(panelSrc), '标题栏按钮为清空/存档对话');
 ok(!/textContent: '清空对话', title: '清空对话与附件'/.test(panelSrc), '标题栏不再直接清空对话');
 ok(/清空对话（仅对话历史、保留附件）/.test(panelSrc), '可清空对话并保留附件');
@@ -92,6 +92,15 @@ ok(/function openArchiveModal/.test(panelSrc), '点击标题栏打开清空/存�
 ok(/textContent: '加载SKILL'/.test(panelSrc), '标题栏按钮文案为加载SKILL');
 ok(!/存为 WEB-SKILL/.test(panelSrc), '不再使用「存为 WEB-SKILL」');
 ok(!/WEB-SKILL 库/.test(panelSrc), '不再使用「WEB-SKILL 库」');
+ok(/导出含个人数据/.test(panelSrc), '技能库可勾选导出含个人数据');
+ok(/textContent: '自动构建'/.test(panelSrc) && /textContent: '手动确认'/.test(panelSrc), '构建SKILL 含自动/手动标签');
+ok(/cmd === 'buildSkillDraft'/.test(bg) && /function buildSkillDraftFromTurns/.test(bg), '后台可自动构建技能草稿');
+ok(/importScripts\('shared\/webSkill\.js'\)/.test(bg), '后台加载 webSkill 共享模块');
+ok(/shared\/webSkill\.js',\s*'panel\.js'/.test(bg), '面板注入先加载 webSkill.js');
+ok(/【技能变量占位符】/.test(bg) && /\{\{变量名\}\}/.test(bg), '运行时手册钉死技能变量占位符规则');
+ok(/includeValues: !!msg\.includeValues/.test(bg), '导出透传 includeValues');
+ok(/skillContext: activeSkillContext/.test(panelSrc), '发送任务携带技能变量上下文');
+ok(/substituteSkillVars/.test(bg), '执行 ops 前替换技能变量');
 ok(/header-action/.test(panelSrc), '标题栏文本按钮样式统一');
 ok(!/｜ 已注入/.test(panelSrc), '不再展示页面 URL｜已注入 条');
 ok(/网页智能体助手/.test(panelSrc) && /textContent: 'Webpage Agent'/.test(panelSrc),
@@ -1457,7 +1466,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.0.2', '锁步版本为 5.0.2');
+ok(manifestVer === '5.1.1', '锁步版本为 5.1.1');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -1672,6 +1681,8 @@ try {
   vm.runInNewContext(
     'const chrome = { runtime: { getURL: (f) => "chrome-extension://abc/" + f } };\n' +
       extractFn(bg, 'extensionPageUrl') + '\n' +
+      extractFn(bg, 'chromeExtensionOrigin') + '\n' +
+      extractFn(bg, 'extensionOrigin') + '\n' +
       extractFn(bg, 'portSenderUrl') + '\n' +
       extractFn(bg, 'isSettingsSenderUrl') + '\n' +
       extractFn(bg, 'assertSettingsPort') + '\n' +
@@ -1690,6 +1701,16 @@ if (portIdBox.assertSettingsPort) {
     '配置页作为标签打开时仍识别为 settings');
   ok(portIdBox.assertSettingsPort({ sender: { url: settingsUrl } }),
     '无 tab 的扩展页仍识别为 settings');
+  ok(portIdBox.assertSettingsPort({ sender: { url: settingsUrl + '/' } }),
+    'settings.html 尾斜杠仍识别');
+  ok(portIdBox.assertSettingsPort({ sender: { url: settingsUrl + '?x=1' } }),
+    'settings.html 带查询串仍识别');
+  ok(portIdBox.assertSettingsPort({ sender: { origin: 'chrome-extension://abc' } }),
+    'url 为空时本扩展 origin 仍识别为 settings');
+  ok(!portIdBox.assertSettingsPort({ sender: { origin: 'https://example.com' } }),
+    'url 为空时网页 origin 不能冒充 settings');
+  ok(!portIdBox.assertSettingsPort({ sender: { url: 'https://example.com/settings.html' } }),
+    '网页路径叫 settings.html 不能冒充');
   ok(!portIdBox.assertSettingsPort({ sender: { url: 'https://example.com/', tab: { id: 1, url: 'https://example.com/' } } }),
     '网页 origin 不能冒充 settings');
   ok(portIdBox.assertPanelPort({ sender: { tab: { id: 1, url: 'https://example.com/' }, url: 'https://example.com/', frameId: 0 } }),
@@ -1771,6 +1792,51 @@ if (pdfPageBox.parsePdfPageRefs) {
     WPA_PDF_PAGES.clampPdfTextMaxChars(999999) === 500000 &&
     WPA_PDF_PAGES.clampPdfTextMaxChars(20000) === 20000,
     '文本层上限钳制在 1 万～50 万，默认 15 万');
+
+const WPA_WEB_SKILL = require(path.join(ROOT, 'shared/webSkill.js'));
+{
+  const base = {
+    name: '填报',
+    pageUrl: 'https://example.com/app',
+    urlMatch: 'origin+path',
+    stages: [{ title: '填邮箱', instruction: '在邮箱框填 {{UserEmail}}' }],
+    variables: [{ name: 'UserEmail', label: '邮箱', value: 'a@b.com', required: true }]
+  };
+  const okSkill = WPA_WEB_SKILL.sanitizeWebSkill(base);
+  ok(okSkill.ok && okSkill.skill.prompt.indexOf('{{UserEmail}}') >= 0, 'sanitize 从 stages 派生 prompt');
+  ok(okSkill.skill.variables[0].value === 'a@b.com', 'sanitize 保留变量值');
+  const flat = WPA_WEB_SKILL.sanitizeWebSkill({
+    name: '旧', pageUrl: 'https://example.com/', prompt: '只写 prompt 没有 stages'
+  });
+  ok(!flat.ok, '旧扁平 prompt 技能被拒绝');
+  const undeclared = WPA_WEB_SKILL.sanitizeWebSkill({
+    name: 'x', pageUrl: 'https://example.com/',
+    stages: [{ title: '', instruction: '填 {{Missing}}' }],
+    variables: []
+  });
+  ok(!undeclared.ok && /未声明/.test(undeclared.error || ''), '未声明 {{var}} 被拒绝');
+  const sub = WPA_WEB_SKILL.substituteSkillVars(
+    [{ op: 'setVal', args: [12, '{{UserEmail}}'] }, { op: 'clickByText', args: ['{{UserEmail}}'] }],
+    okSkill.skill.variables
+  );
+  ok(sub.ok && sub.operations[0].args[1] === 'a@b.com' && sub.operations[1].args[0] === 'a@b.com',
+    '入页前替换 setVal 与 clickByText 中的 {{UserEmail}}');
+  const unknown = WPA_WEB_SKILL.substituteSkillVars(
+    [{ op: 'setVal', args: [1, '{{Nope}}'] }],
+    okSkill.skill.variables
+  );
+  ok(!unknown.ok, '未知槽替换失败');
+  const packed = WPA_WEB_SKILL.exportWebSkillPack([okSkill.skill]);
+  ok(packed.format === 1 && packed.skills[0].variables[0].value === '', '默认导出剥离 value');
+  const packedFull = WPA_WEB_SKILL.exportWebSkillPack([okSkill.skill], { includeValues: true });
+  ok(packedFull.skills[0].variables[0].value === 'a@b.com', 'includeValues 保留 value');
+  ok(WPA_WEB_SKILL.skillUrlMatches(okSkill.skill, 'https://example.com/app?x=1'), 'origin+path 忽略查询串');
+  ok(!WPA_WEB_SKILL.skillUrlMatches(okSkill.skill, 'https://example.com/other'), '不同 path 不匹配');
+  ok(WPA_WEB_SKILL.isValidVarName('UserEmail') && WPA_WEB_SKILL.isValidVarName('申请人邮箱'),
+    '变量名允许驼峰与中文');
+  ok(!WPA_WEB_SKILL.isValidVarName('a b') && !WPA_WEB_SKILL.isValidVarName('x{y}'),
+    '变量名拒绝空白与花括号');
+}
   const notes = pdfPageBox.pdfCoverageNotes(
     { numPages: 12, scannedPages: 2, pageList: [1, 12], missingPageCount: 1 },
     { mode: 'pages', refs: [1, -1] },
@@ -2048,10 +2114,23 @@ ok(/isIgnored\(el\) \|\| isAssistantFrame\(el\)/.test(bridge), 'pagebridge 不�
 ok(/frameElement/.test(extractFn(bridge, 'isIgnored')), 'isIgnored 把助手 iframe 内节点视为忽略');
 ok(/createElement\('iframe'\)/.test(panelSrc) && /id = '__ai-assistant-root'/.test(panelSrc) && /about:blank/.test(panelSrc),
   '面板壳为 about:blank iframe 且 id 仍为 __ai-assistant-root');
-ok(/pageWindow\.addEventListener\('pointermove', onPageMove, true\)/.test(extractFn(panelSrc, 'initDrag')),
-  '标题拖拽在页面 window 捕获 pointermove');
-ok(/pageWindow\.addEventListener\('pointermove', onPageMove, true\)/.test(extractFn(panelSrc, 'initInputResize')),
-  '输入框改高度在页面 window 捕获 pointermove');
+ok(/function eventClientInPage/.test(panelSrc) && /function pageViewportBox/.test(panelSrc),
+  '拖拽坐标换算到页面视口，边界用可视区域');
+ok(/bindShellPointerTrack/.test(extractFn(panelSrc, 'initDrag')) &&
+  /iw\.addEventListener\('pointermove', onMove, true\)/.test(extractFn(panelSrc, 'bindShellPointerTrack')),
+  '标题拖拽同时听 iframe 与页面 window 的 pointermove');
+ok(/bindShellPointerTrack/.test(extractFn(panelSrc, 'initInputResize')),
+  '输入框改高度同样双窗口跟踪指针');
+ok(/eventClientInPage\(e\)/.test(extractFn(panelSrc, 'initDrag')) &&
+  /applyShellPosition\(drag\.origLeft \+ dx/.test(extractFn(panelSrc, 'initDrag')),
+  '拖拽位移用页面坐标，避免 iframe clientXY 与页面混用');
+ok(/de\.clientWidth/.test(extractFn(panelSrc, 'pageViewportBox')) &&
+  /visualViewport/.test(extractFn(panelSrc, 'pageViewportBox')),
+  '移动边界取 clientWidth 与 visualViewport，不含滚动条外的 innerWidth');
+ok(!/vw - pw \+ 20/.test(panelSrc) && !/Math\.max\(-20/.test(extractFn(panelSrc, 'clampShellLeftTop')),
+  '面板不再允许超出可视区域 20px');
+ok(/clampHostPosition\(\)/.test(extractFn(panelSrc, 'showPanel')),
+  '打开面板时按当前窗口夹紧位置');
 ok(/function reclaimPanelFocus/.test(panelSrc) && /panelOwnsFocus/.test(panelSrc),
   '有指针所有权焦点锁');
 ok(/function suppressFocusLock/.test(panelSrc) && /fileInput\.addEventListener\('click'/.test(panelSrc),
@@ -2737,6 +2816,13 @@ ok(/function syncOverlayTop\(/.test(panelSrc) && /--wpa-header-h/.test(panelSrc)
 ok(!/附件命中缓存/.test(bg), '命中附件缓存不再向对话发状态');
 ok(/isSilentAttachStatus/.test(panelSrc), '面板忽略附件缓存命中状态');
 ok(/chrome\.runtime\.connect\(\{ name: 'settings' \}\)/.test(settingsSrc), '全局配置页用 settings 端口');
+ok(/connectGen/.test(settingsSrc) && /function triggerReconnect\(/.test(settingsSrc),
+  '配置页端口有世代号与退避重连');
+ok(/cmd: 'ping'/.test(settingsSrc) && /ping: true/.test(bg),
+  '配置页心跳 ping 不被 settings 命令白名单丢掉');
+ok(/formDirty/.test(settingsSrc) && /forceFill/.test(settingsSrc),
+  '正在编辑时广播 config 不整表重填');
+ok(!/setTimeout\(connect, 400\)/.test(settingsSrc), '配置页不再 400ms 无退避重连');
 
 ok(/panelExpanded = false/.test(extractFn(panelSrc, 'loadPageUi')), '加载本页 UI 不恢复放大状态');
 ok(!/expanded: panelExpanded/.test(panelSrc), '放大状态不写入按网站存储');

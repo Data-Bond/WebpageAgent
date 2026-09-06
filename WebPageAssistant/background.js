@@ -3,6 +3,7 @@
 
 importScripts('shared/contracts.js');
 importScripts('shared/pdfPages.js');
+importScripts('shared/webSkill.js');
 
 const parsePdfPageRefs = WPA_PDF_PAGES.parsePdfPageRefs;
 const clampPdfTextMaxChars = WPA_PDF_PAGES.clampPdfTextMaxChars;
@@ -277,6 +278,7 @@ const RUNTIME_PLAYBOOK =
   '【当前指令优先】只完成最新一条标了【当前指令】的用户要求。标为【历史背景·勿再执行】的内容只帮助理解页面和已完成进度，禁止当成新任务再做一遍。若当前指令是在旧结果上继续（例如“接着选那两个文件”），应接着当前页面往下做，而不是把历史里的登录/上传/发布整段重跑。用户补充（【用户补充·继续原任务】）是对你上一个提问的回答，要结合原任务继续，不要另起炉灶。\n' +
   '【中断恢复】若当前指令写明【原任务】并要求从中断处继续：目标仍是该原任务，不是“继续”这句空话。必须跳过【已完成且验证通过·禁止重做】中的步骤；对照最新快照，页面上已经生效的字段、标签、已选项不要重填、不要重开已完成的弹窗。卡在弹窗里就只做该弹窗尚未完成的确认；目标已出现在表单上则进入下一字段。禁止用中断前的旧选择器从头再跑一遍。\n' +
   '【指令闭环】当前指令写明的操作一旦成功，必须立刻 {"action":"done","summary":"..."}。禁止根据快照里新出现的弹层、文件列表、确定按钮去猜测用户没写的下一步。用户只说 clickByText「选择数据文件」时，点开选择框即完成，不要自行勾选文件或点确定。不要等用户在指令末尾写“停止/结束”。指令没覆盖的事一律不做；缺信息时 action:ask，不要发明流程。开放式任务（如“把这两个文件发布出去”）仍按该目标做到完成再 done。\n' +
+  '【技能变量占位符】当用户任务或【技能变量目录】出现 {{变量名}}（例如 {{UserEmail}}、{{applicant_name}}，名字以目录为准）时：setVal/select/filterSelect/selectOption/officeFill 的值参数，以及 clickByText/clickOptionByText/findOption 的匹配文本、setChecked 的 {text}，必须原样输出 "{{变量名}}"，禁止改写成真实姓名/邮箱/手机，禁止去掉花括号，禁止把 {{变量名}} 写进 CSS 选择器。引擎在执行前把占位符替换为本地保存的值。\n' +
   PLAYBOOK_END;
 
 const MODERN_SYSTEM_PROMPT =
@@ -735,16 +737,39 @@ function portSenderUrl(port) {
   return String(s.url || (s.tab && s.tab.url) || '');
 }
 
+function chromeExtensionOrigin(url) {
+  const m = String(url || '').match(/^(chrome-extension:\/\/[^/]+)/i);
+  return m ? m[1].toLowerCase() : '';
+}
+
+function extensionOrigin() {
+  return chromeExtensionOrigin(extensionPageUrl('settings.html'));
+}
+
 function isSettingsSenderUrl(url) {
   const want = extensionPageUrl('settings.html');
   if (!want) return false;
-  const u = String(url || '').split('#')[0].split('?')[0];
-  return u === want;
+  const raw = String(url || '').split('#')[0].split('?')[0];
+  if (!raw) return false;
+  const u = raw.replace(/\/+$/, '');
+  const wantNorm = String(want).replace(/\/+$/, '');
+  if (u === wantNorm) return true;
+  const ext = chromeExtensionOrigin(wantNorm);
+  const got = chromeExtensionOrigin(u);
+  if (!ext || !got || ext !== got) return false;
+  const path = u.slice(got.length);
+  const wantPath = wantNorm.slice(ext.length);
+  return path === wantPath || /(^|\/)settings\.html$/.test(path);
 }
 
-// options_ui.open_in_tab=true 时 sender.tab 一定存在；按扩展页 URL 识别，不能因有 tab 就拒。
+// options_ui.open_in_tab=true 时 sender.tab 一定存在；按扩展源 + settings.html 识别，不能因有 tab 就拒。
+// sender.url 偶发为空时，仅接受本扩展 origin（网页无法伪造 chrome-extension origin）。
 function assertSettingsPort(port) {
-  return isSettingsSenderUrl(portSenderUrl(port));
+  if (isSettingsSenderUrl(portSenderUrl(port))) return true;
+  if (portSenderUrl(port)) return false;
+  const origin = String((port && port.sender && port.sender.origin) || '');
+  const ext = extensionOrigin();
+  return !!(ext && origin === ext);
 }
 
 function assertPanelPort(port) {
@@ -1116,124 +1141,76 @@ function validateImportConfig(obj, current) {
 
 // ============ WEB-SKILL 库（与 assistantConfig 隔离，分享不含 API Key） ============
 const WEB_SKILLS_KEY = 'webSkills';
-const WEB_SKILL_PACK_KIND = 'web-skill-pack';
-const WEB_SKILL_FORMAT = 1;
-const WEB_SKILL_NAME_MAX = 80;
-const WEB_SKILL_PROMPT_MAX = 20000;
-const WEB_SKILL_HINT_MAX = 500;
-const WEB_SKILL_MAX_COUNT = 200;
+const WEB_SKILL_PACK_KIND = WPA_WEB_SKILL.WEB_SKILL_PACK_KIND;
+const WEB_SKILL_FORMAT = WPA_WEB_SKILL.WEB_SKILL_FORMAT;
+const WEB_SKILL_MAX_COUNT = WPA_WEB_SKILL.WEB_SKILL_MAX_COUNT;
 
-function newWebSkillId() {
-  try {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-      return crypto.randomUUID();
-    }
-  } catch (e) {}
-  return 'ws-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
-}
-
-function parsePageUrl(raw) {
-  try {
-    const u = new URL(String(raw || '').trim());
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
-    return u.href;
-  } catch (e) {
-    return null;
-  }
-}
-
-function normalizeUrlMatch(mode) {
-  const m = String(mode || '').trim();
-  if (m === 'origin' || m === 'exact' || m === 'origin+path') return m;
-  return 'origin+path';
+function sanitizeWebSkill(raw, opts) {
+  return WPA_WEB_SKILL.sanitizeWebSkill(raw, opts);
 }
 
 function publicWebSkill(skill) {
-  return {
-    id: skill.id,
-    name: skill.name,
-    pageUrl: skill.pageUrl,
-    urlMatch: skill.urlMatch,
-    needsInput: !!skill.needsInput,
-    inputHint: skill.inputHint || '',
-    prompt: skill.prompt,
-    createdAt: skill.createdAt,
-    updatedAt: skill.updatedAt
-  };
-}
-
-function sanitizeWebSkill(raw, opts) {
-  opts = opts || {};
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: '技能不是有效对象' };
-  const pageUrl = parsePageUrl(raw.pageUrl);
-  if (!pageUrl) return { error: 'pageUrl 必须是有效的 http(s) URL' };
-  const name = String(raw.name != null ? raw.name : '').trim();
-  if (!name) return { error: 'name 不能为空' };
-  if (name.length > WEB_SKILL_NAME_MAX) return { error: 'name 最长 ' + WEB_SKILL_NAME_MAX + ' 字' };
-  const prompt = String(raw.prompt != null ? raw.prompt : '');
-  if (!prompt.trim()) return { error: 'prompt 不能为空' };
-  if (prompt.length > WEB_SKILL_PROMPT_MAX) return { error: 'prompt 最长 ' + WEB_SKILL_PROMPT_MAX + ' 字' };
-  const inputHint = String(raw.inputHint != null ? raw.inputHint : '');
-  if (inputHint.length > WEB_SKILL_HINT_MAX) return { error: 'inputHint 最长 ' + WEB_SKILL_HINT_MAX + ' 字' };
-
-  let id;
-  if (opts.forceNewId) {
-    id = newWebSkillId();
-  } else {
-    id = String(raw.id || '').trim();
-    if (!id) id = newWebSkillId();
-  }
-  const now = new Date().toISOString();
-  const createdAt = (!opts.forceNewId && typeof raw.createdAt === 'string' && raw.createdAt)
-    ? raw.createdAt
-    : now;
-
-  return {
-    ok: true,
-    skill: {
-      id: id,
-      name: name,
-      pageUrl: pageUrl,
-      urlMatch: normalizeUrlMatch(raw.urlMatch),
-      needsInput: !!raw.needsInput,
-      inputHint: inputHint.trim(),
-      prompt: prompt,
-      createdAt: createdAt,
-      updatedAt: now
-    }
-  };
+  return WPA_WEB_SKILL.publicWebSkill(skill);
 }
 
 async function loadWebSkills() {
   const saved = await storageGet(WEB_SKILLS_KEY);
   const list = saved[WEB_SKILLS_KEY];
   if (!Array.isArray(list)) return [];
-  return list.filter((s) => s && typeof s === 'object' && s.id && s.pageUrl && s.prompt != null);
+  const kept = [];
+  let dropped = false;
+  for (let i = 0; i < list.length; i++) {
+    const v = sanitizeWebSkill(list[i], { keepTimestamps: true });
+    if (v.ok) kept.push(v.skill);
+    else dropped = true;
+  }
+  if (dropped) {
+    const write = await persistWebSkills(kept);
+    if (!write.ok) return kept;
+  }
+  return kept;
 }
 
 function persistWebSkills(list) {
   return storageSet({ [WEB_SKILLS_KEY]: list });
 }
 
-function exportWebSkillPack(skills) {
-  return {
-    kind: WEB_SKILL_PACK_KIND,
-    format: WEB_SKILL_FORMAT,
-    exportedAt: new Date().toISOString(),
-    skills: (skills || []).map(publicWebSkill)
-  };
+function exportWebSkillPack(skills, opts) {
+  return WPA_WEB_SKILL.exportWebSkillPack(skills, opts);
 }
 
 function parseWebSkillPack(obj) {
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { error: 'JSON 不是有效对象' };
-  if (obj.kind !== WEB_SKILL_PACK_KIND) return { error: '不是 WEB-SKILL 包（kind 应为 web-skill-pack）' };
-  const fmt = Number(obj.format);
-  if (!Number.isInteger(fmt) || fmt < 1 || fmt > WEB_SKILL_FORMAT) {
-    return { error: '不支持的 WEB-SKILL 格式版本' };
+  return WPA_WEB_SKILL.parseWebSkillPack(obj);
+}
+
+const BUILD_SKILL_DRAFT_SYSTEM =
+  '你把用户在某网页上成功完成的任务整理成一条可复用的 WEB-SKILL JSON。只输出一个 JSON 对象，不要 Markdown，不要解释。\n' +
+  '字段：name（短名称）、pageUrl（http(s) URL，可沿用用户提供的当前页）、urlMatch（origin 或 origin+path 或 exact）、needsInput（布尔）、inputHint（短说明，可空）、' +
+  'stages（非空数组，每项 {title, instruction}）、variables（数组，每项 {name, label, value, required}）。\n' +
+  '规则：\n' +
+  '1) 只保留有效、可复用的用户指令；过滤无效、被后续版本取代的说法，同类只留最新一条。\n' +
+  '2) stages 按执行顺序编号含义写进 title/instruction，instruction 里把具体个人数据换成 {{变量名}}，变量名不含空白和花括号。\n' +
+  '3) 被替换的个人数据（姓名、邮箱、手机、单位等）放入 variables，value 填原值，label 用中文说明，必填则 required=true。\n' +
+  '4) 不要把真实个人数据留在 stages 正文。不要编造用户没做过的步骤。\n' +
+  '5) 若几乎没有可复用步骤，仍输出至少一条 stage 概括当前任务。';
+
+async function buildSkillDraftFromTurns(turns, pageUrl, reporter, signal, origin) {
+  const list = Array.isArray(turns) ? turns.map(function (t) { return String(t || '').trim(); }).filter(Boolean) : [];
+  const numbered = list.map(function (t, i) { return (i + 1) + '. ' + t; }).join('\n\n');
+  const user = '当前页面 URL：' + String(pageUrl || '') + '\n\n用户指令（按时间顺序，请去重并只留有效步骤）：\n' +
+    (numbered || '（无）');
+  const raw = await callLLM([
+    { role: 'system', content: BUILD_SKILL_DRAFT_SYSTEM },
+    { role: 'user', content: user.slice(0, 24000) }
+  ], 'text', reporter, signal, { origin: origin });
+  const parsed = WPA_WEB_SKILL.parseLooseJsonObject(raw);
+  if (!parsed || typeof parsed !== 'object') {
+    return { ok: false, error: '模型未返回有效 JSON' };
   }
-  if (!Array.isArray(obj.skills) || obj.skills.length === 0) return { error: 'skills 必须是非空数组' };
-  if (obj.skills.length > WEB_SKILL_MAX_COUNT) return { error: '单次最多导入 ' + WEB_SKILL_MAX_COUNT + ' 条技能' };
-  return { ok: true, skills: obj.skills };
+  if (!parsed.pageUrl) parsed.pageUrl = pageUrl;
+  const v = sanitizeWebSkill(parsed, { forceNewId: true });
+  if (v.ok) return { ok: true, skill: publicWebSkill(v.skill) };
+  return { ok: false, error: v.error || '技能草稿校验失败', draft: parsed };
 }
 
 // chat/completions 端点规整：去尾部斜杠；已含 /chat/completions 幂等去掉再拼回；
@@ -3307,7 +3284,7 @@ async function inject(tabId) {
   const files = [
     { files: ['content.js', 'pagebridge.js'], world: 'ISOLATED' },
     { files: ['office.js', 'pagebridge.js'], world: 'MAIN' },
-    { files: ['panel.js'], world: 'ISOLATED' }
+    { files: ['shared/webSkill.js', 'panel.js'], world: 'ISOLATED' }
   ];
   const failures = [];
   for (const entry of files) {
@@ -3989,7 +3966,15 @@ function formatFileCatalogLine(f) {
   return '- ' + name + '（key="' + ((f && f.key) || '') + '"，类型 ' + ((f && f.type) || '未知') + aliasPart + '）';
 }
 
-function buildUserPrompt(task, files, mode, resumeMeta) {
+function appendSkillVarCatalog(s, skillVars) {
+  if (!skillVars || !skillVars.length) return s;
+  if (typeof WPA_WEB_SKILL === 'undefined' || !WPA_WEB_SKILL.formatSkillVarCatalog) return s;
+  const catalog = WPA_WEB_SKILL.formatSkillVarCatalog(skillVars);
+  if (!catalog) return s;
+  return String(s || '') + '\n' + catalog;
+}
+
+function buildUserPrompt(task, files, mode, resumeMeta, skillVars) {
   if (mode === 'resume' && resumeMeta && resumeMeta.originalTask) {
     let s = '【当前指令】从中断处继续下面的原任务，禁止当成新任务，禁止从头重做。\n';
     s += '【原任务】' + resumeMeta.originalTask + '\n';
@@ -4006,7 +3991,7 @@ function buildUserPrompt(task, files, mode, resumeMeta) {
       s += '已附加文件（上传用 key；正文仅在需要抽字段时另发）：\n' + list +
         '\n页面需要上传时，请输出结构化操作 {"op":"upload","args":["<文件输入选择器>","<key>"]}。';
     }
-    return s;
+    return appendSkillVarCatalog(s, skillVars);
   }
   const head = mode === 'continue'
     ? '【用户补充·继续原任务】请结合尚未完成的原任务理解下面的回复，不要把历史旧任务当成要重新执行的新指令。\n用户回复：'
@@ -4017,7 +4002,7 @@ function buildUserPrompt(task, files, mode, resumeMeta) {
     s += '\n已附加文件（上传用 key；正文仅在需要抽字段时另发）：\n' + list +
       '\n页面需要上传时，请输出结构化操作 {"op":"upload","args":["<文件输入选择器>","<key>"]}。';
   }
-  return s;
+  return appendSkillVarCatalog(s, skillVars);
 }
 
 function limitAttachmentContext(blocks, maxChars) {
@@ -5566,7 +5551,15 @@ async function runOperationsSafe(tabId, operations, ctx) {
   if (!checked.ok) {
     return { resp: { ok: false, error: checked.error }, navigated: false };
   }
-  const list = checked.operations;
+  let list = checked.operations;
+  const skillCtx = (ctx && ctx.skillContext) || skillContexts.get(tabId) || null;
+  if (skillCtx && skillCtx.variables && skillCtx.variables.length) {
+    const sub = WPA_WEB_SKILL.substituteSkillVars(list, skillCtx.variables);
+    if (!sub.ok) {
+      return { resp: { ok: false, error: sub.error }, navigated: false };
+    }
+    list = sub.operations;
+  }
   const pre = WPA_CONTRACTS.preflightGeneration(list, snapState.get(tabId));
   if (!pre.ok) {
     return { resp: { ok: false, error: pre.error }, navigated: false };
@@ -6062,6 +6055,7 @@ function stopActiveTask(tabId, opts) {
   }
   pendingInstructions.delete(tabId);
   pausedOrigins.delete(tabId);
+  skillContexts.delete(tabId);
   clearPendingCheckpoint(tabId);
   if (tabId != null) {
     hideBusyMaskTab(tabId);
@@ -6078,6 +6072,8 @@ const visibleTabs = new Set();
 // 多指令批处理中因 ask 暂停时保存剩余指令和初始 origin，跨站导航后回复仍接续原会话。
 const pendingInstructions = new Map();
 const pausedOrigins = new Map();
+const skillContexts = new Map();
+const skillDraftRuns = new Map();
 
 function pendingSessionKey(tabId) { return 'pendingTask:' + tabId; }
 
@@ -6086,7 +6082,12 @@ function persistPendingState(tabId) {
     const state = pendingInstructions.get(tabId) || null;
     const origin = pausedOrigins.get(tabId) || (state && state.origin) || '';
     const write = chrome.storage.session.set({
-      [pendingSessionKey(tabId)]: { state: state, origin: origin, savedAt: Date.now() }
+      [pendingSessionKey(tabId)]: {
+        state: state,
+        origin: origin,
+        skillContext: skillContexts.get(tabId) || null,
+        savedAt: Date.now()
+      }
     });
     if (write && typeof write.catch === 'function') write.catch(() => {});
   } catch (e) {}
@@ -6111,6 +6112,10 @@ async function restorePendingState(tabId) {
     }
     if (checkpoint.state) pendingInstructions.set(tabId, checkpoint.state);
     if (checkpoint.origin) pausedOrigins.set(tabId, checkpoint.origin);
+    if (checkpoint.skillContext) {
+      const ctx = WPA_WEB_SKILL.sanitizeSkillContext(checkpoint.skillContext);
+      if (ctx) skillContexts.set(tabId, ctx);
+    }
   } catch (e) {}
 }
 
@@ -6160,10 +6165,11 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
   if (resumeMeta) {
     postMsg({ type: 'status', text: '已从中断处恢复原任务，将跳过已验证完成的步骤。' });
   }
+  const skillCtx = skillContexts.get(tabId) || null;
   messages.push({
     role: 'user',
     kind: continueAsk ? 'continue' : (resumeMeta ? 'resume' : 'task'),
-    content: buildUserPrompt(task, files, continueAsk ? 'continue' : (resumeMeta ? 'resume' : 'current'), resumeMeta)
+    content: buildUserPrompt(task, files, continueAsk ? 'continue' : (resumeMeta ? 'resume' : 'current'), resumeMeta, skillCtx && skillCtx.variables)
   });
 
   // 文件字节仍同步到页面（上传用）。正文不预提取：前缀缓存要求历史只追加不改写，
@@ -6572,7 +6578,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
       const hintTask = (resumeMeta && resumeMeta.originalTask) || task;
       const execution = await runOperationsSafe(tabId, attachTaskHintToOps(parsed.operations, hintTask, {
         blockHandoff: taskWantsFileObtain(hintTask) && !taskExplicitDesktopHandoff(hintTask)
-      }), { postMsg, cancelRef, origin, flags: flagsFromPage(config) });
+      }), { postMsg, cancelRef, origin, flags: flagsFromPage(config), skillContext: skillContexts.get(tabId) || null });
       const { resp: runResp, navigated } = execution;
       if (cancelRef.cancelled || execution.cancelled) {
         return await notifyCancelled(postMsg, cancelRef, origin, messages);
@@ -7049,7 +7055,7 @@ chrome.runtime.onConnect.addListener((port) => {
   }
   const SETTINGS_CMDS = {
     getConfig: true, saveConfig: true, testLLM: true, exportConfig: true, importConfig: true,
-    exportDiag: true, clearDiag: true, diagFail: true
+    exportDiag: true, clearDiag: true, diagFail: true, ping: true
   };
   const tab = port.sender && port.sender.tab;
   const tabId = tab ? tab.id : null;
@@ -7399,7 +7405,7 @@ chrome.runtime.onConnect.addListener((port) => {
         postMsg({
           type: 'webSkillsExport',
           ok: true,
-          json: JSON.stringify(exportWebSkillPack(picked), null, 2),
+          json: JSON.stringify(exportWebSkillPack(picked, { includeValues: !!msg.includeValues }), null, 2),
           count: picked.length
         });
       })();
@@ -7437,6 +7443,42 @@ chrome.runtime.onConnect.addListener((port) => {
         }
         postMsg({ type: 'webSkillsImported', ok: true, imported: added.length, skills: next.map(publicWebSkill) });
       })();
+    } else if (cmd === 'buildSkillDraft') {
+      (async () => {
+        const prev = skillDraftRuns.get(tabId);
+        if (prev && typeof prev.abort === 'function') prev.abort();
+        const cancelRef = makeCancelRef();
+        skillDraftRuns.set(tabId, cancelRef);
+        const reporter = makeApiReporter(postMsg);
+        try {
+          postMsg({ type: 'skillDraftProgress', text: '正在根据对话生成技能草稿…' });
+          const out = await buildSkillDraftFromTurns(
+            msg.turns,
+            msg.pageUrl || '',
+            reporter,
+            cancelRef.signal,
+            origin
+          );
+          if (cancelRef.cancelled) {
+            postMsg({ type: 'skillDraft', ok: false, cancelled: true, error: '已取消' });
+            return;
+          }
+          postMsg(Object.assign({ type: 'skillDraft' }, out));
+        } catch (e) {
+          if (isUserCancelled(e, cancelRef)) {
+            postMsg({ type: 'skillDraft', ok: false, cancelled: true, error: '已取消' });
+          } else {
+            postMsg({ type: 'skillDraft', ok: false, error: String(e && e.message || e) });
+          }
+        } finally {
+          if (skillDraftRuns.get(tabId) === cancelRef) skillDraftRuns.delete(tabId);
+        }
+      })();
+    } else if (cmd === 'cancelSkillDraft') {
+      const prev = skillDraftRuns.get(tabId);
+      if (prev && typeof prev.abort === 'function') prev.abort();
+      skillDraftRuns.delete(tabId);
+      postMsg({ type: 'skillDraft', ok: false, cancelled: true, error: '已取消' });
     } else if (cmd === 'clearHistory') {
       (async () => {
         const active = stopActiveTask(tabId, { closeOffscreen: false });
@@ -7445,6 +7487,7 @@ chrome.runtime.onConnect.addListener((port) => {
         }
         await storageSet({ ['hist:' + origin]: [] });
         pendingInstructions.delete(tabId);
+        skillContexts.delete(tabId);
         if (!msg.keepFiles) {
           await ocrCacheClear(origin); // 连附件一起清空时，同步丢掉该页 OCR 缓存
         }
@@ -7625,6 +7668,10 @@ chrome.runtime.onConnect.addListener((port) => {
             : (pausedOrigins.get(tabId) || origin);
           const currentTask = activeTasks.get(tabId);
           if (currentTask && currentTask.cancelRef === cancelRef) currentTask.origin = taskOrigin;
+          const incomingSkillCtx = WPA_WEB_SKILL.sanitizeSkillContext(msg.skillContext);
+          const continuing = instructions.length === 1 && (hasPending || wasPaused);
+          if (incomingSkillCtx) skillContexts.set(tabId, incomingSkillCtx);
+          else if (!continuing) skillContexts.delete(tabId);
           const files = await hydrateTaskFiles(taskOrigin, msg.files || []);
           const payloadChars = files.reduce((sum, f) => sum + String(f && f.dataUrl || '').length, 0);
           if (payloadChars > 24 * 1024 * 1024) {
@@ -7731,6 +7778,10 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   deferredTaskMessages.delete(tabId);
   bridgeKeys.delete(tabId);
   snapState.delete(tabId);
+  skillContexts.delete(tabId);
+  const draftRun = skillDraftRuns.get(tabId);
+  if (draftRun && typeof draftRun.abort === 'function') draftRun.abort();
+  skillDraftRuns.delete(tabId);
   stopActiveTask(tabId, { closeOffscreen: false });
   activeTasks.delete(tabId);
 });

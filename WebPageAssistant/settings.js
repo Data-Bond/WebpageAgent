@@ -26,6 +26,13 @@
   let port = null;
   let currentConfig = null;
   let diagExportTimer = null;
+  let connectGen = 0;
+  let reconnectTimerId = null;
+  let heartbeatId = null;
+  let formDirty = false;
+  let filling = false;
+  let forceFill = true;
+  let reconnecting = false;
 
   function $(id) { return document.getElementById(id); }
 
@@ -221,6 +228,9 @@
   function fillSettings(cfg) {
     if (!cfg) return;
     currentConfig = cfg;
+    if (formDirty && !forceFill) return;
+    filling = true;
+    try {
     const textList = $('textProvidersList');
     const ocrList = $('ocrProvidersList');
     textList.textContent = '';
@@ -262,6 +272,11 @@
     $('panelScaleY').value = String(clampInt(cfg.panelScaleY, 30, 100, 70));
     if ($('diagCapKb')) $('diagCapKb').value = String(clampInt(cfg.diagCapKb, 10, 200, 50));
     syncOpacityLabel();
+    } finally {
+      filling = false;
+      formDirty = false;
+      forceFill = false;
+    }
   }
 
   function downloadTextFile(text, filename, mime) {
@@ -287,65 +302,140 @@
       return true;
     } catch (e) {
       setStatus('发送失败：' + String(e && e.message || e), 'err');
+      triggerReconnect();
       return false;
     }
   }
 
-  function connect() {
-    try {
-      port = chrome.runtime.connect({ name: 'settings' });
-    } catch (e) {
-      setStatus('无法连接后台：' + String(e && e.message || e), 'err');
-      return;
-    }
-    port.onMessage.addListener((msg) => {
-      if (!msg || typeof msg !== 'object') return;
-      const type = msg.type;
-      if (type === 'config') fillSettings(msg.config);
-      else if (type === 'configSaved') setStatus(msg.ok ? '已保存 ✓' : ('保存失败' + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
-      else if (type === 'configExport') {
-        if (typeof msg.json === 'string') {
-          const name = msg.filename || (msg.masked === false ? 'assistant-config.SECRETS.json' : 'assistant-config.json');
-          downloadTextFile(msg.json, name, 'application/json');
-          setStatus(msg.masked === false
-            ? '已导出配置 JSON（含完整密钥）✓'
-            : '已导出配置 JSON ✓（密钥已掩码）', 'ok');
-        }
-      } else if (type === 'configImported') {
-        if (msg.ok) setStatus('已导入并保存配置 ✓', 'ok');
-        else setStatus('导入配置失败：' + (msg.error || '文件无效'), 'err');
-      } else if (type === 'diagExport') {
-        if (diagExportTimer) { clearTimeout(diagExportTimer); diagExportTimer = null; }
-        if (typeof msg.json === 'string') {
-          downloadTextFile(msg.json, msg.filename || 'wpa-diag.json', 'application/json');
-        }
-        const errN = Number(msg.count) || 0;
-        const trailN = Number(msg.trailCount) || 0;
-        const hours = Number(msg.hours) || 24;
-        if (errN === 0 && trailN === 0) {
-          setStatus('近 ' + hours + ' 小时没有错误，也还没有活动轨迹。已下载空诊断文件。', 'ok');
-        } else if (errN === 0) {
-          setStatus('近 ' + hours + ' 小时没有错误；已导出 ' + trailN + ' 条活动轨迹。', 'ok');
-        } else {
-          setStatus('已导出 ' + errN + ' 条错误、' + trailN + ' 条活动轨迹。', 'ok');
-        }
-      } else if (type === 'diagCleared') {
-        setStatus(msg.ok ? '已清空错误记录 ✓' : ('清空失败' + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
-      } else if (type === 'testResult') {
-        setStatus(msg.message != null ? String(msg.message) : (msg.ok ? '连接成功' : '连接失败'), msg.ok ? 'ok' : 'err');
-      } else if (type === 'status' && msg.kind === 'error') {
-        setStatus(String(msg.text || ''), 'err');
+  function stopHeartbeat() {
+    if (heartbeatId) { clearInterval(heartbeatId); heartbeatId = null; }
+  }
+  function startHeartbeat() {
+    stopHeartbeat();
+    heartbeatId = setInterval(() => {
+      try {
+        if (port) port.postMessage({ cmd: 'ping' });
+      } catch (e) {
+        stopHeartbeat();
+        triggerReconnect();
       }
-    });
-    port.onDisconnect.addListener(() => {
-      void chrome.runtime.lastError;
+    }, 20000);
+  }
+
+  function handlePortMessage(msg) {
+    if (!msg || typeof msg !== 'object') return;
+    const type = msg.type;
+    if (type === 'pong') return;
+    if (type === 'config') {
+      fillSettings(msg.config);
+      if (reconnecting) {
+        reconnecting = false;
+        setStatus('');
+      }
+    } else if (type === 'configSaved') {
+      if (msg.ok) forceFill = true;
+      setStatus(msg.ok ? '已保存 ✓' : ('保存失败' + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
+    } else if (type === 'configExport') {
+      if (typeof msg.json === 'string') {
+        const name = msg.filename || (msg.masked === false ? 'assistant-config.SECRETS.json' : 'assistant-config.json');
+        downloadTextFile(msg.json, name, 'application/json');
+        setStatus(msg.masked === false
+          ? '已导出配置 JSON（含完整密钥）✓'
+          : '已导出配置 JSON ✓（密钥已掩码）', 'ok');
+      }
+    } else if (type === 'configImported') {
+      if (msg.ok) forceFill = true;
+      if (msg.ok) setStatus('已导入并保存配置 ✓', 'ok');
+      else setStatus('导入配置失败：' + (msg.error || '文件无效'), 'err');
+    } else if (type === 'diagExport') {
+      if (diagExportTimer) { clearTimeout(diagExportTimer); diagExportTimer = null; }
+      if (typeof msg.json === 'string') {
+        downloadTextFile(msg.json, msg.filename || 'wpa-diag.json', 'application/json');
+      }
+      const errN = Number(msg.count) || 0;
+      const trailN = Number(msg.trailCount) || 0;
+      const hours = Number(msg.hours) || 24;
+      if (errN === 0 && trailN === 0) {
+        setStatus('近 ' + hours + ' 小时没有错误，也还没有活动轨迹。已下载空诊断文件。', 'ok');
+      } else if (errN === 0) {
+        setStatus('近 ' + hours + ' 小时没有错误；已导出 ' + trailN + ' 条活动轨迹。', 'ok');
+      } else {
+        setStatus('已导出 ' + errN + ' 条错误、' + trailN + ' 条活动轨迹。', 'ok');
+      }
+    } else if (type === 'diagCleared') {
+      setStatus(msg.ok ? '已清空错误记录 ✓' : ('清空失败' + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
+    } else if (type === 'testResult') {
+      setStatus(msg.message != null ? String(msg.message) : (msg.ok ? '连接成功' : '连接失败'), msg.ok ? 'ok' : 'err');
+    } else if (type === 'status' && msg.kind === 'error') {
+      setStatus(String(msg.text || ''), 'err');
+    }
+  }
+
+  function connectPort() {
+    connectGen += 1;
+    const gen = connectGen;
+    stopHeartbeat();
+    const prev = port;
+    port = null;
+    if (prev) {
+      try { prev.disconnect(); } catch (e) {}
+    }
+    try {
+      const thisPort = chrome.runtime.connect({ name: 'settings' });
+      port = thisPort;
+      thisPort.onMessage.addListener((msg) => {
+        if (gen !== connectGen || port !== thisPort) return;
+        handlePortMessage(msg);
+      });
+      thisPort.onDisconnect.addListener(() => {
+        void chrome.runtime.lastError;
+        if (gen !== connectGen || port !== thisPort) return;
+        port = null;
+        stopHeartbeat();
+        triggerReconnect();
+      });
+      startHeartbeat();
+      return true;
+    } catch (e) {
       port = null;
-      setStatus('与后台断开，正在重连…', 'err');
-      setTimeout(connect, 400);
-    });
+      return false;
+    }
+  }
+
+  function triggerReconnect() {
+    if (reconnectTimerId) return;
+    reconnecting = true;
+    setStatus('与后台断开，正在重连…', 'err');
+    const delays = [1000, 2000, 4000, 8000, 16000, 30000, 60000];
+    let attempt = 0;
+    function tryReconnect() {
+      reconnectTimerId = null;
+      const ok = connectPort();
+      if (ok) return;
+      attempt++;
+      reconnectTimerId = setTimeout(tryReconnect, delays[Math.min(attempt, delays.length - 1)]);
+    }
+    reconnectTimerId = setTimeout(tryReconnect, delays[0]);
+  }
+
+  function openPort() {
+    if (connectPort()) return;
+    setStatus('无法连接后台：请重新加载扩展', 'err');
+    triggerReconnect();
+  }
+
+  function markDirty() {
+    if (!filling) formDirty = true;
   }
 
   function wire() {
+    document.addEventListener('input', markDirty, true);
+    document.addEventListener('change', markDirty, true);
+    document.addEventListener('click', (e) => {
+      const t = e && e.target;
+      if (!t || !t.closest) return;
+      if (t.closest('#addTextProviderBtn, #addOcrProviderBtn, .provider-row .btn')) markDirty();
+    }, true);
     $('uiOpacity').addEventListener('input', syncOpacityLabel);
     $('pdfParseAll').addEventListener('change', syncPdfParseUi);
     $('pdfParsePagesMode').addEventListener('change', syncPdfParseUi);
@@ -399,8 +489,12 @@
     window.addEventListener('unhandledrejection', () => {
       try { if (port) port.postMessage({ cmd: 'diagFail' }); } catch (e) {}
     });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return;
+      if (!port) triggerReconnect();
+    });
   }
 
   wire();
-  connect();
+  openPort();
 })();
