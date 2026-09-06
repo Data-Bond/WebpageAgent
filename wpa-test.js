@@ -1466,7 +1466,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.1.2', '锁步版本为 5.1.2');
+ok(manifestVer === '5.2.3', '锁步版本为 5.2.3');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -2239,8 +2239,10 @@ ok(/当前文本模型 /.test(bg) && /textTag\.name/.test(bg) && /textTag\.model
 ok(/text-align: center/.test((panelSrc.match(/\.page-config-tab-head \{[\s\S]*?\n    \}/) || [''])[0]), '本页配置标题居中');
 ok(/运行参数（全局）/.test(settingsHtml) && /模型调用间隔（秒）/.test(settingsHtml), '设置页有全局运行参数分组');
 ok(settingsHtml.indexOf('运行参数（全局）') < settingsHtml.indexOf('存档脱敏指令') &&
-  settingsHtml.indexOf('存档脱敏指令') < settingsHtml.indexOf('文本模型 Providers'),
-  '运行参数与脱敏指令排在文本模型配置之前');
+  settingsHtml.indexOf('存档脱敏指令') < settingsHtml.indexOf('id="systemPromptText"') &&
+  settingsHtml.indexOf('id="systemPromptText"') < settingsHtml.indexOf('id="textProvidersList"') &&
+  settingsHtml.indexOf('id="systemPromptOcr"') < settingsHtml.indexOf('id="ocrProvidersList"'),
+  'System Prompt 独立成卡并排在对应 Providers 之前');
 ok(/操作时显示半透明遮罩/.test(settingsHtml), '设置页可关操作遮罩');
 ok(/超时重试次数/.test(settingsHtml) && /瞬时错误重试次数/.test(settingsHtml), '设置页可配重试');
 ok(/页面稳定等待上限/.test(settingsHtml) && /填写后等待建议层/.test(settingsHtml), '设置页可配页面等待');
@@ -2249,14 +2251,48 @@ ok(/secInputToMs/.test(settingsSrc) && /msToSecValue/.test(settingsSrc), '设置
 ok(/function exportPayload\(/.test(bg) && /maskProviderList/.test(bg), '导入导出走白名单且默认掩码密钥');
 ok(/diagCapKb: 50/.test(bg) && /id="diagCapKb"/.test(settingsHtml) && /诊断探针日志的上限/.test(settingsHtml),
   '诊断探针日志上限默认 50KB 且可在全局配置改');
-ok(/诊断记录/.test(settingsHtml) && /导出诊断记录/.test(settingsHtml) && /cmd === 'exportDiag'/.test(bg),
-  '全局配置可导出诊断记录');
+ok(/诊断记录/.test(settingsHtml) && /诊断数据/.test(settingsHtml) && /cmd === 'exportDiag'/.test(bg),
+  '全局配置可下载诊断数据');
+ok(/id="downloadDataBtn"/.test(settingsHtml) && /配置重载/.test(settingsHtml) && /id="reloadConfigBtn"/.test(settingsHtml),
+  '导入导出拆成数据下载与配置重载两张卡');
 ok(/ARCHIVE_REDACT_MAX_BYTES = 20 \* 1024/.test(bg) && /function planArchiveRedactChunks/.test(bg),
   '存档脱敏不超过 20KB 不分拆');
 ok(/provider-row:nth-child\(8n\+1\)/.test(settingsHtml) && /#dceaff/.test(settingsHtml),
   'provider 配置卡用不同背景色区分');
-ok(/provider-sample/.test(settingsHtml) && /请求示例（基于第一个模型ID/.test(settingsSrc),
-  '配置卡在删除前展示脱敏请求示例');
+ok(/provider-sample/.test(settingsHtml) && /请求示例（与「测试」相同/.test(settingsSrc)
+  && /连接性测试不发送/.test(settingsSrc),
+  '文本卡示例对齐测试；OCR 卡示例为协议报文且标明连接性测试不发送');
+ok(/provider-test/.test(settingsSrc) && /连接性测试/.test(settingsSrc) && /provider-del/.test(settingsSrc)
+  && /如果需要 OCR 测试，请到对话框上传图片或 PDF/.test(settingsSrc),
+  'OCR 卡为连接性测试，并提示到对话框上传图片或 PDF');
+ok(/id="resultModal"/.test(settingsHtml) && /data-close-modal="resultModal"/.test(settingsHtml)
+  && /providerTestResult/.test(settingsSrc),
+  'provider 测试结果（含错误）显示在可关闭弹出框');
+ok(/id="exportPickerModal"/.test(settingsHtml) && /记录数据/.test(settingsHtml) && /配置数据/.test(settingsHtml)
+  && /flex-direction: column/.test(settingsHtml)
+  && settingsHtml.indexOf('id="exportPickerConfirm"') < settingsHtml.indexOf('id="exportRecordsBody"')
+  && settingsHtml.indexOf('id="exportRecordsBody"') < settingsHtml.indexOf('id="exportConfigBody"')
+  && /data-kind/.test(settingsSrc) && /textIndexes/.test(settingsSrc) && /providerPickerLabel/.test(settingsSrc)
+  && /cb\.checked = false/.test(settingsSrc)
+  && /topCard\('文本模型 System Prompt'/.test(settingsSrc)
+  && !/appendExportLeaf\(kids, '文本模型 System Prompt'/.test(settingsSrc),
+  '数据下载弹窗上下排列，按钮在前，System Prompt 与 provider 分卡勾选');
+const pickerNameBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(settingsSrc, 'providerPickerLabel') + '\nthis.providerPickerLabel = providerPickerLabel;',
+    pickerNameBox
+  );
+} catch (e) {
+  ok(false, '加载 providerPickerLabel 失败: ' + (e && e.message));
+}
+if (pickerNameBox.providerPickerLabel) {
+  ok(pickerNameBox.providerPickerLabel({ name: 'Kimi' }) === 'Kimi', '下载选项名为名称字段');
+  ok(pickerNameBox.providerPickerLabel({ name: '  ' }) === '（未填名称）', '名称为空时用占位');
+}
+ok(/cmd === 'testProvider'/.test(bg) && /testProvider: true/.test(bg)
+  && /未发送 OCR 识别请求/.test(bg) && /不测 OCR/.test(bg),
+  'OCR 连接性测试不发送识别请求');
 const sampleBox = {};
 try {
   vm.runInNewContext(
@@ -2287,21 +2323,27 @@ if (sampleBox.formatProviderSampleRequest) {
   ok(chat.indexOf('"model": "kimi-k2"') >= 0 && chat.indexOf('backup') < 0, '文本模型示例只用第一个模型ID');
   ok(/Authorization: Bearer sk-a\*\*\*\*stuv/.test(chat) && chat.indexOf('sk-abcdefghijklmnopqrstuv') < 0,
     '文本模型示例 Authorization 已脱敏');
+  ok(chat.indexOf('你是一个连通性测试助手。') >= 0 && chat.indexOf('请只回复两个字：成功') >= 0,
+    '文本模型示例正文与连通性测试 ping 一致');
   const vision = sampleBox.formatProviderSampleRequest(
     'OpenAI-chat-completions-image_url', 'https://api.example.com', 'k', 'qwen-vl-ocr'
   );
   ok(vision.indexOf('image_url') >= 0 && vision.indexOf('max_tokens') >= 0, '视觉模型示例含 image_url 与 max_tokens');
+  ok(vision.indexOf('iVBORw0KGgo') >= 0 && vision.indexOf('data:image/png;base64,') >= 0,
+    '视觉模型示例嵌入真实 1×1 PNG data URL');
   const scnet = sampleBox.formatProviderSampleRequest(
     'OCR-SCnet', 'https://api.scnet.cn/api/llm/v1/ocr/recognize', 'token-abcdef', 'ID_CARD,GENERAL'
   );
   ok(/^POST https:\/\/api\.scnet\.cn\/api\/llm\/v1\/ocr\/recognize/m.test(scnet), 'SCnet 示例打到 recognize 端点');
   ok(/name="ocrType"/.test(scnet) && /ID_CARD/.test(scnet) && !/GENERAL/.test(scnet.split('ocrType')[1] || ''),
     'SCnet 示例 ocrType 取第一个模型ID');
+  ok(/filename="ping.png"/.test(scnet) && /iVBORw0KGgo/.test(scnet), 'SCnet 示例文件为可复制的 ping.png');
   const mineru = sampleBox.formatProviderSampleRequest(
     'MinerU', 'https://ocr.example.com/file_parse', 'mk-12345678', 'MinerU'
   );
   ok(/^POST https:\/\/ocr\.example\.com\/file_parse/m.test(mineru), 'MinerU 示例 POST 到 file_parse');
   ok(/name="files"/.test(mineru) && /hybrid-auto-engine/.test(mineru), 'MinerU 示例含 files 与解析字段');
+  ok(/filename="ping.png"/.test(mineru) && /iVBORw0KGgo/.test(mineru), 'MinerU 示例文件为可复制的 ping.png');
 }
 ok(/function diagFail\(/.test(bg) && /DIAG_STORE_KEY = 'wpaDiag'/.test(bg), '后台有诊断黑匣子写入');
 const ocrSelBox = {};
@@ -2959,7 +3001,45 @@ if (redactBox.extractRedactedDocument) {
 ok(/pageCompatMode/.test(panelSrc), '本页配置有兼容模式开关');
 ok(/panelStoreSet/.test(bg) && /panelStoreGet/.test(bg) && /panelStoreSet/.test(panelSrc), '面板存储经 SW 代理');
 ok(/publicConfigPayload/.test(bg) && /maskProviderList/.test(bg), '面板配置负载剥离明文密钥');
-ok(/exportIncludeKeys/.test(settingsHtml) && /SECRETS/.test(settingsSrc), '导出完整密钥需确认');
+ok(/exportPickerIncludeKeys/.test(settingsHtml) && /SECRETS/.test(settingsSrc), '导出完整密钥需确认');
+ok(/function pickExportPayload\(/.test(bg) && /opts\.pick/.test(bg), '导出支持按数据卡/provider 勾选');
+const pickBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(bg, 'pickExportPayload') + '\nthis.pickExportPayload = pickExportPayload;',
+    pickBox
+  );
+  ok(typeof pickBox.pickExportPayload === 'function', 'pickExportPayload 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 pickExportPayload 失败: ' + (e && e.message));
+}
+if (pickBox.pickExportPayload) {
+  const full = {
+    diagCapKb: 50,
+    uiOpacity: 80,
+    panelScaleX: 70,
+    panelScaleY: 70,
+    maxSteps: 60,
+    systemPromptText: 'T',
+    systemPromptOcr: 'O',
+    archiveRedactHint: 'R',
+    textProviders: [{ name: 'A', models: 'm1' }, { name: 'B', models: 'm2' }],
+    ocrProviders: [{ name: 'C', models: 'GENERAL' }],
+    selectedTextTag: { provider: 'A', model: 'm1' },
+    selectedOcrTag: { provider: 'C', model: 'GENERAL' }
+  };
+  const onlyDiag = pickBox.pickExportPayload(full, { diag: true });
+  ok(onlyDiag.diagCapKb === 50 && !('uiOpacity' in onlyDiag) && !('textProviders' in onlyDiag),
+    '只勾选诊断卡时不含界面与 provider');
+  const oneText = pickBox.pickExportPayload(full, { textIndexes: [1], textPrompt: true });
+  ok(oneText.systemPromptText === 'T' && oneText.textProviders && oneText.textProviders.length === 1
+    && oneText.textProviders[0].name === 'B' && !('ocrProviders' in oneText),
+    '文本卡可只导出某一个 provider');
+  const none = pickBox.pickExportPayload(full, {});
+  ok(Object.keys(none).length === 0, '全部不勾选时导出为空对象');
+}
+ok(/iVBORw0KGgo/.test(settingsSrc),
+  'OCR 协议示例仍含可复制的 1×1 PNG');
 ok(/TRUSTED_CONTEXTS/.test(bg), '存储访问级别收紧到受信上下文');
 ok(/unlimitedStorage/.test(JSON.stringify(JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')))),
   'manifest 含 unlimitedStorage');

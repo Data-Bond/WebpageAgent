@@ -961,11 +961,63 @@ function configPayload(cfg) {
   };
 }
 
-// 导出配置负载：默认掩码密钥；includeKeys 时保留明文
+// 导出配置负载：默认掩码密钥；includeKeys 时保留明文。
+// opts.pick 存在时只导出勾选的数据卡；每个 provider 可按索引独立选取。
+function pickExportPayload(full, pick) {
+  if (!pick || typeof pick !== 'object' || Array.isArray(pick)) return full;
+  const out = {};
+  function take(flag, keys) {
+    if (!flag) return;
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      if (Object.prototype.hasOwnProperty.call(full, k)) out[k] = full[k];
+    }
+  }
+  take(pick.diag, ['diagCapKb']);
+  take(pick.ui, ['uiOpacity', 'panelScaleX', 'panelScaleY']);
+  take(pick.runtime, [
+    'maxSteps', 'snapshotPiiMask', 'llmCallGapMs', 'busyMaskEnabled',
+    'llmTimeoutRetry', 'llmErrorRetry', 'pageQuietMs', 'suggestWaitMs',
+    'pdfParseMode', 'pdfParsePages', 'pdfTextMaxChars',
+    'ocrCacheMaxChars', 'attachContextMaxChars'
+  ]);
+  take(pick.archiveRedact, ['archiveRedactHint']);
+  take(pick.textPrompt, ['systemPromptText']);
+  take(pick.ocrPrompt, ['systemPromptOcr']);
+  function sliceProviders(list, indexes) {
+    const src = Array.isArray(list) ? list : [];
+    const idx = Array.isArray(indexes) ? indexes : [];
+    const seen = {};
+    const outList = [];
+    for (let i = 0; i < idx.length; i++) {
+      const n = Number(idx[i]);
+      if (!Number.isInteger(n) || n < 0 || n >= src.length || seen[n]) continue;
+      seen[n] = true;
+      outList.push(src[n]);
+    }
+    return outList;
+  }
+  if (Array.isArray(pick.textIndexes)) {
+    const list = sliceProviders(full.textProviders, pick.textIndexes);
+    if (list.length) {
+      out.textProviders = list;
+      if (Object.prototype.hasOwnProperty.call(full, 'selectedTextTag')) out.selectedTextTag = full.selectedTextTag;
+    }
+  }
+  if (Array.isArray(pick.ocrIndexes)) {
+    const list = sliceProviders(full.ocrProviders, pick.ocrIndexes);
+    if (list.length) {
+      out.ocrProviders = list;
+      if (Object.prototype.hasOwnProperty.call(full, 'selectedOcrTag')) out.selectedOcrTag = full.selectedOcrTag;
+    }
+  }
+  return out;
+}
+
 function exportPayload(cfg, opts) {
   const includeKeys = !!(opts && opts.includeKeys);
   const knobs = applyRuntimeKnobs(cfg);
-  return Object.assign({
+  const full = Object.assign({
     textProviders: WPA_CONTRACTS.maskProviderList(cfg.textProviders, includeKeys),
     ocrProviders: WPA_CONTRACTS.maskProviderList(cfg.ocrProviders, includeKeys),
     selectedTextTag: cfg.selectedTextTag,
@@ -978,6 +1030,8 @@ function exportPayload(cfg, opts) {
       ? cfg.archiveRedactHint.slice(0, 2000)
       : DEFAULT_CONFIG.archiveRedactHint
   }, knobs, applyUiKnobs(cfg), applyDiagKnobs(cfg), normalizePdfParseConfig(cfg), applyPdfTextCap(cfg), applyAttachBudgetKnobs(cfg));
+  if (opts && opts.pick != null) return pickExportPayload(full, opts.pick);
+  return full;
 }
 
 // 导入侧把常见别名摊成 normalizeProvider 认识的字段；对不上的键丢掉。
@@ -7054,7 +7108,7 @@ chrome.runtime.onConnect.addListener((port) => {
     return;
   }
   const SETTINGS_CMDS = {
-    getConfig: true, saveConfig: true, testLLM: true, exportConfig: true, importConfig: true,
+    getConfig: true, saveConfig: true, testLLM: true, testProvider: true, exportConfig: true, importConfig: true,
     exportDiag: true, clearDiag: true, diagFail: true, ping: true
   };
   const tab = port.sender && port.sender.tab;
@@ -7222,12 +7276,82 @@ chrome.runtime.onConnect.addListener((port) => {
           postMsg({ type: 'testResult', ok: false, message: who + '连接失败：' + String(e && e.message || e) });
         }
       })();
+    } else if (cmd === 'testProvider') {
+      if (!isSettings) return;
+      (async () => {
+        const testId = String(msg.testId || '');
+        const kind = msg.kind === 'ocr' ? 'ocr' : 'text';
+        try {
+          const n = normalizeProvider(msg.provider, kind);
+          if (!n) throw new Error('provider 无效');
+          const ids = modelsOf(n);
+          if (!ids[0]) throw new Error('未填写模型ID');
+          const tag = {
+            name: n.name,
+            providerType: n.providerType,
+            baseURL: n.baseURL,
+            apiKey: n.apiKey,
+            model: ids[0]
+          };
+          const pingSystem = '你是一个连通性测试助手。';
+          const pingUser = '请只回复两个字：成功';
+          const ocrHint = '如果需要 OCR 测试，请到对话框上传图片或 PDF，观察对话结果。';
+          let detail = '';
+          if (kind === 'text') {
+            const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, [
+              { role: 'system', content: pingSystem },
+              { role: 'user', content: pingUser }
+            ], { timeoutMs: 30000 });
+            detail = '模型回复：' + truncate(text, 800);
+          } else {
+            const proto = ocrProtocol(tag);
+            if (proto === 'mineru-parse' || proto === 'scnet-recognize') {
+              if (!tag.baseURL) throw new Error('未填写 Base URL');
+              if (!tag.apiKey) throw new Error('未填写 API Key');
+              detail = '未发送 OCR 识别请求（连接性测试不探测识别能力）。参数已就绪。\n' + ocrHint;
+            } else {
+              if (!tag.baseURL) throw new Error('未填写 Base URL');
+              const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, [
+                { role: 'system', content: pingSystem },
+                { role: 'user', content: pingUser }
+              ], { timeoutMs: 30000 });
+              detail = '连接性探测（未发送图像，不测 OCR）。模型回复：' + truncate(text, 800) + '\n' + ocrHint;
+            }
+          }
+          postMsg({
+            type: 'providerTestResult',
+            testId: testId,
+            kind: kind,
+            ok: true,
+            message: tag.name + ' / ' + tag.model + ' 连接成功。\n' + detail
+          });
+        } catch (e) {
+          const ocrHint = kind === 'ocr' ? ('\n如果需要 OCR 测试，请到对话框上传图片或 PDF，观察对话结果。') : '';
+          postMsg({
+            type: 'providerTestResult',
+            testId: testId,
+            kind: kind,
+            ok: false,
+            message: '连接失败：' + String(e && e.message || e) + ocrHint
+          });
+        }
+      })();
     } else if (cmd === 'exportConfig') {
       (async () => {
         try {
           const includeKeys = msg.includeKeys === true;
-          const cfg = await getConfigMerged();
-          const json = JSON.stringify(exportPayload(cfg, { includeKeys: includeKeys }), null, 2);
+          let cfg = await getConfigMerged();
+          if (msg.config && typeof msg.config === 'object' && !Array.isArray(msg.config)) {
+            cfg = Object.assign({}, cfg, msg.config);
+          }
+          const opts = { includeKeys: includeKeys };
+          if (msg.pick && typeof msg.pick === 'object' && !Array.isArray(msg.pick)) opts.pick = msg.pick;
+          const payload = exportPayload(cfg, opts);
+          if (!payload || typeof payload !== 'object' || !Object.keys(payload).length) {
+            postMsg({ type: 'status', text: '未选择任何配置项', kind: 'error' });
+            return;
+          }
+          const json = JSON.stringify(payload, null, 2);
           postMsg({
             type: 'configExport',
             json: json,

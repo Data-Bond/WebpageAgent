@@ -33,6 +33,8 @@
   let filling = false;
   let forceFill = true;
   let reconnecting = false;
+  let pendingProviderTestId = '';
+  let pendingDownloads = { config: false, diag: false };
 
   function $(id) { return document.getElementById(id); }
 
@@ -144,20 +146,29 @@
     const type = String(providerType || '').trim();
     const model = firstProviderModelId(models) || '<第一个模型ID>';
     const auth = 'Authorization: Bearer ' + maskProviderApiKey(apiKey);
-    const boundary = '----WebKitFormBoundaryExample';
+    const pingSystem = '你是一个连通性测试助手。';
+    const pingUser = '请只回复两个字：成功';
+    const pingPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const pingPngB64 = pingPng.slice(pingPng.indexOf(',') + 1);
+    const boundary = '----WebKitFormBoundaryPing';
+    const isOcrType = type === 'OCR-SCnet' || type === 'MinerU' || type === 'OpenAI-chat-completions-image_url';
+    const note = isOcrType
+      ? '# OCR 协议报文（连接性测试不发送此请求；Authorization 已脱敏）'
+      : '# 与本卡「测试」按钮发送的报文相同（Authorization 已脱敏）';
     if (type === 'OCR-SCnet') {
       const url = scnetOcrUrlForSample(baseURL);
       const ocrType = firstProviderModelId(models) ? scnetOcrTypeForSample(firstProviderModelId(models)) : 'GENERAL';
       return [
+        note,
         'POST ' + url,
         auth,
         'Content-Type: multipart/form-data; boundary=' + boundary,
         '',
         '--' + boundary,
-        'Content-Disposition: form-data; name="file"; filename="image.jpg"',
-        'Content-Type: image/jpeg',
+        'Content-Disposition: form-data; name="file"; filename="ping.png"',
+        'Content-Type: image/png',
         '',
-        '<图像文件二进制>',
+        pingPngB64,
         '--' + boundary,
         'Content-Disposition: form-data; name="ocrType"',
         '',
@@ -168,16 +179,17 @@
     if (type === 'MinerU') {
       const url = String(baseURL || '').trim().replace(/\/+$/, '') || '<未填写 MinerU /file_parse 端点>';
       return [
+        note,
         '# 第一个模型ID：' + model + '（本协议不把 model 写入 body）',
         'POST ' + url,
         auth,
         'Content-Type: multipart/form-data; boundary=' + boundary,
         '',
         '--' + boundary,
-        'Content-Disposition: form-data; name="files"; filename="document.pdf"',
-        'Content-Type: application/pdf',
+        'Content-Disposition: form-data; name="files"; filename="ping.png"',
+        'Content-Type: image/png',
         '',
-        '<PDF或图像文件二进制>',
+        pingPngB64,
         '--' + boundary,
         'Content-Disposition: form-data; name="lang_list"',
         '',
@@ -211,12 +223,12 @@
       ? {
         model: model,
         messages: [
-          { role: 'system', content: '<OCR系统提示词>' },
+          { role: 'system', content: pingSystem },
           {
             role: 'user',
             content: [
-              { type: 'image_url', image_url: { url: 'data:image/png;base64,<图像>' } },
-              { type: 'text', text: '<OCR指令>' }
+              { type: 'image_url', image_url: { url: pingPng } },
+              { type: 'text', text: pingUser }
             ]
           }
         ],
@@ -225,11 +237,12 @@
       : {
         model: model,
         messages: [
-          { role: 'system', content: '<系统提示词>' },
-          { role: 'user', content: '<本轮任务与页面快照>' }
+          { role: 'system', content: pingSystem },
+          { role: 'user', content: pingUser }
         ]
       };
     return [
+      note,
       'POST ' + url,
       'Content-Type: application/json',
       auth,
@@ -294,7 +307,15 @@
       lastDefaultModels = meta.defaultModels || '';
       refreshSample();
     });
-    const sampleLabel = mk('div', 'provider-sample-label', { textContent: '请求示例（基于第一个模型ID，密钥已脱敏）' });
+    const sampleHead = mk('div', 'provider-sample-head');
+    const sampleLabel = mk('div', 'provider-sample-label', {
+      textContent: isOcr
+        ? '请求示例（OCR 协议报文，密钥已脱敏，可复制；连接性测试不发送）'
+        : '请求示例（与「测试」相同，密钥已脱敏，可复制）'
+    });
+    const copyBtn = mk('button', 'btn provider-sample-copy', { type: 'button', textContent: '复制' });
+    sampleHead.appendChild(sampleLabel);
+    sampleHead.appendChild(copyBtn);
     const samplePre = mk('pre', 'provider-sample');
     function refreshSample() {
       samplePre.textContent = formatProviderSampleRequest(typeSel.value, baseURL.value, apiKey.value, models.value);
@@ -304,18 +325,115 @@
       el.addEventListener('change', refreshSample);
     });
     refreshSample();
-    const del = mk('button', 'btn danger', { type: 'button', textContent: '✕ 删除', title: '删除该 provider' });
+    copyBtn.addEventListener('click', () => {
+      copyTextToClipboard(samplePre.textContent || '').then((ok) => {
+        copyBtn.textContent = ok ? '已复制' : '复制失败';
+        setTimeout(() => { copyBtn.textContent = '复制'; }, 1200);
+        if (!ok) setStatus('复制失败', 'err');
+      });
+    });
+    const actions = mk('div', 'provider-actions');
+    const testBtn = mk('button', 'btn provider-test', {
+      type: 'button',
+      textContent: isOcr ? '连接性测试' : '测试',
+      title: isOcr
+        ? '只探测连通性，不发送图片/PDF，不测 OCR 识别'
+        : '用该 provider 的第一个模型ID发连通性请求'
+    });
+    const del = mk('button', 'btn danger provider-del', { type: 'button', textContent: '✕ 删除', title: '删除该 provider' });
+    testBtn.addEventListener('click', () => { testProviderRow(row, kindKey); });
     del.addEventListener('click', () => { row.remove(); });
+    actions.appendChild(testBtn);
+    actions.appendChild(del);
     row.appendChild(makeField('类型 providerType', typeSel));
     row.appendChild(makeField('名称', name));
     row.appendChild(makeField('Base URL', baseURL));
     row.appendChild(makeField('API Key', apiKey));
     row.appendChild(makeField(isOcr ? '模型ID / ocrType（逗号分隔）' : '模型ID（逗号分隔）', models));
-    row.appendChild(sampleLabel);
+    row.appendChild(sampleHead);
     row.appendChild(samplePre);
-    row.appendChild(del);
+    row.appendChild(actions);
+    if (isOcr) {
+      row.appendChild(mk('div', 'hint', {
+        textContent: '如果需要 OCR 测试，请到对话框上传图片或 PDF，观察对话结果。'
+      }));
+    }
     container.appendChild(row);
     return row;
+  }
+
+  function copyTextToClipboard(text) {
+    const s = String(text || '');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(s).then(() => true).catch(() => fallbackCopyText(s));
+    }
+    return Promise.resolve(fallbackCopyText(s));
+  }
+  function fallbackCopyText(text) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return !!ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function providerFromRow(row, kind) {
+    const get = (f) => {
+      const el = row.querySelector('[data-field="' + f + '"]');
+      return el ? String(el.value || '').trim() : '';
+    };
+    const name = get('name');
+    const models = get('models');
+    return {
+      name: name || 'provider',
+      providerType: canonicalizeProviderType(get('providerType'), kind, { name: name, models: models }),
+      baseURL: get('baseURL'),
+      apiKey: get('apiKey'),
+      models: models
+    };
+  }
+
+  function closeModal(id) {
+    const el = $(id);
+    if (el) el.hidden = true;
+  }
+  function openModal(id) {
+    const el = $(id);
+    if (el) el.hidden = false;
+  }
+
+  function showResultModal(title, text, kind) {
+    const titleEl = $('resultModalTitle');
+    const body = $('resultModalBody');
+    if (titleEl) titleEl.textContent = title || '测试结果';
+    if (body) {
+      body.textContent = text || '';
+      body.className = 'modal-pre' + (kind === 'ok' ? ' ok' : kind === 'err' ? ' err' : '');
+    }
+    openModal('resultModal');
+  }
+
+  function testProviderRow(row, kind) {
+    const provider = providerFromRow(row, kind);
+    pendingProviderTestId = 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const isOcr = kind === 'ocr';
+    const title = isOcr ? '连接性测试结果' : '测试结果';
+    const waiting = isOcr
+      ? ('正在做连接性测试 ' + provider.name + ' / ' + (firstProviderModelId(provider.models) || '（未填模型ID）') + ' …')
+      : ('正在测试 ' + provider.name + ' / ' + (firstProviderModelId(provider.models) || '（未填模型ID）') + ' …');
+    showResultModal(title, waiting, '');
+    if (!send('testProvider', { testId: pendingProviderTestId, kind: kind, provider: provider })) {
+      showResultModal(title, '未连接后台', 'err');
+    }
   }
 
   function collectProviders(container, kind) {
@@ -445,6 +563,205 @@
     setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 1000);
   }
 
+  function appendExportLeaf(parent, label, attrs) {
+    const lab = mk('label', 'export-leaf');
+    const cb = mk('input', null, { type: 'checkbox' });
+    cb.checked = false;
+    if (attrs) {
+      for (const k in attrs) cb.setAttribute(k, attrs[k]);
+    }
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(label));
+    parent.appendChild(lab);
+    return cb;
+  }
+
+  function appendExportGroup(body, title, fillChildren) {
+    const wrap = mk('div', 'export-group');
+    const parentLab = mk('label', 'export-parent');
+    const parentCb = mk('input', null, { type: 'checkbox' });
+    parentCb.checked = false;
+    parentLab.appendChild(parentCb);
+    parentLab.appendChild(document.createTextNode(title));
+    const kids = mk('div', 'export-children');
+    fillChildren(kids);
+    function syncParent() {
+      const boxes = kids.querySelectorAll('input[type="checkbox"]');
+      let n = 0;
+      boxes.forEach((c) => { if (c.checked) n++; });
+      parentCb.checked = boxes.length > 0 && n === boxes.length;
+      parentCb.indeterminate = n > 0 && n < boxes.length;
+    }
+    parentCb.addEventListener('change', () => {
+      kids.querySelectorAll('input[type="checkbox"]').forEach((c) => { c.checked = parentCb.checked; });
+      parentCb.indeterminate = false;
+    });
+    kids.addEventListener('change', syncParent);
+    wrap.appendChild(parentLab);
+    wrap.appendChild(kids);
+    body.appendChild(wrap);
+  }
+
+  function providerPickerLabel(p) {
+    const name = String((p && p.name) || '').trim();
+    return name || '（未填名称）';
+  }
+
+  function collectProviderRows(container, kind) {
+    const rows = container.querySelectorAll('.provider-row');
+    const out = [];
+    rows.forEach((row) => {
+      const nameEl = row.querySelector('[data-field="name"]');
+      const rawName = nameEl ? String(nameEl.value || '').trim() : '';
+      out.push({
+        provider: providerFromRow(row, kind),
+        label: providerPickerLabel({ name: rawName })
+      });
+    });
+    return out;
+  }
+
+  function setExportPickerStatus(text, kind) {
+    const el = $('exportPickerStatus');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = 'status' + (kind === 'ok' ? ' ok' : kind === 'err' ? ' err' : '');
+  }
+
+  function fillExportPicker() {
+    const records = $('exportRecordsBody');
+    const configBody = $('exportConfigBody');
+    if (!records || !configBody) return;
+    records.textContent = '';
+    configBody.textContent = '';
+    setExportPickerStatus('');
+    appendExportLeaf(records, '诊断数据', { 'data-record': 'diag' });
+    const hoursWrap = mk('div', 'export-hours');
+    const hoursLab = mk('label', 'field');
+    hoursLab.appendChild(document.createTextNode('最近'));
+    const hoursSel = mk('select');
+    hoursSel.id = 'downloadDiagHours';
+    [
+      { v: '1', t: '1 小时' },
+      { v: '6', t: '6 小时' },
+      { v: '24', t: '24 小时' }
+    ].forEach((opt) => {
+      const o = document.createElement('option');
+      o.value = opt.v;
+      o.textContent = opt.t;
+      if (opt.v === '24') o.selected = true;
+      hoursSel.appendChild(o);
+    });
+    hoursLab.appendChild(hoursSel);
+    hoursWrap.appendChild(hoursLab);
+    const hoursHint = mk('div', 'hint', { textContent: '勾选「诊断数据」后生效。无错误时仍会下载文件并写明「没有错误」。' });
+    hoursWrap.appendChild(hoursHint);
+    records.appendChild(hoursWrap);
+    function topCard(label, attrs) {
+      const wrap = mk('div', 'export-group');
+      const lab = mk('label', 'export-parent');
+      const cb = mk('input', null, { type: 'checkbox' });
+      cb.checked = false;
+      if (attrs) {
+        for (const k in attrs) cb.setAttribute(k, attrs[k]);
+      }
+      lab.appendChild(cb);
+      lab.appendChild(document.createTextNode(label));
+      wrap.appendChild(lab);
+      configBody.appendChild(wrap);
+    }
+    topCard('诊断记录', { 'data-card': 'diag' });
+    topCard('插件界面', { 'data-card': 'ui' });
+    topCard('运行参数（全局）', { 'data-card': 'runtime' });
+    topCard('存档脱敏指令', { 'data-card': 'archiveRedact' });
+    topCard('文本模型 System Prompt', { 'data-pick': 'textPrompt' });
+    const textRows = collectProviderRows($('textProvidersList'), 'text');
+    appendExportGroup(configBody, '文本模型 Providers', (kids) => {
+      textRows.forEach((row, i) => {
+        appendExportLeaf(kids, row.label, {
+          'data-kind': 'text',
+          'data-index': String(i)
+        });
+      });
+    });
+    topCard('OCR 模型 System Prompt', { 'data-pick': 'ocrPrompt' });
+    const ocrRows = collectProviderRows($('ocrProvidersList'), 'ocr');
+    appendExportGroup(configBody, 'OCR Providers', (kids) => {
+      ocrRows.forEach((row, i) => {
+        appendExportLeaf(kids, row.label, {
+          'data-kind': 'ocr',
+          'data-index': String(i)
+        });
+      });
+    });
+    if ($('exportPickerIncludeKeys')) $('exportPickerIncludeKeys').checked = false;
+  }
+
+  function collectExportPick() {
+    const pick = {
+      diagRecords: false,
+      diagHours: 24,
+      diag: false,
+      ui: false,
+      runtime: false,
+      archiveRedact: false,
+      textPrompt: false,
+      ocrPrompt: false,
+      textIndexes: [],
+      ocrIndexes: []
+    };
+    const records = $('exportRecordsBody');
+    const configBody = $('exportConfigBody');
+    if (records) {
+      records.querySelectorAll('input[data-record]').forEach((el) => {
+        if (el.checked && el.getAttribute('data-record') === 'diag') pick.diagRecords = true;
+      });
+    }
+    pick.diagHours = clampInt($('downloadDiagHours') && $('downloadDiagHours').value, 1, 24, 24);
+    if (!configBody) return pick;
+    configBody.querySelectorAll('input[data-card]').forEach((el) => {
+      if (!el.checked) return;
+      const k = el.getAttribute('data-card');
+      if (k === 'diag' || k === 'ui' || k === 'runtime' || k === 'archiveRedact') pick[k] = true;
+    });
+    configBody.querySelectorAll('input[data-pick]').forEach((el) => {
+      if (!el.checked) return;
+      const k = el.getAttribute('data-pick');
+      if (k === 'textPrompt' || k === 'ocrPrompt') pick[k] = true;
+    });
+    configBody.querySelectorAll('input[data-kind][data-index]').forEach((el) => {
+      if (!el.checked) return;
+      const kind = el.getAttribute('data-kind');
+      const n = Number(el.getAttribute('data-index'));
+      if (!Number.isInteger(n) || n < 0) return;
+      if (kind === 'text') pick.textIndexes.push(n);
+      else if (kind === 'ocr') pick.ocrIndexes.push(n);
+    });
+    return pick;
+  }
+
+  function exportConfigPickHasAny(pick) {
+    if (!pick) return false;
+    if (pick.diag || pick.ui || pick.runtime || pick.archiveRedact || pick.textPrompt || pick.ocrPrompt) return true;
+    return (pick.textIndexes && pick.textIndexes.length) || (pick.ocrIndexes && pick.ocrIndexes.length);
+  }
+
+  function exportPickHasAny(pick) {
+    return !!(pick && (pick.diagRecords || exportConfigPickHasAny(pick)));
+  }
+
+  function collectDownloadConfig() {
+    const cfg = collectConfig();
+    cfg.textProviders = collectProviderRows($('textProvidersList'), 'text').map((row) => row.provider);
+    cfg.ocrProviders = collectProviderRows($('ocrProvidersList'), 'ocr').map((row) => row.provider);
+    return cfg;
+  }
+
+  function finishDownloadStatus(fallback) {
+    if (pendingDownloads.config || pendingDownloads.diag) return;
+    setStatus(fallback || '已下载所选数据 ✓', 'ok');
+  }
+
   function send(cmd, extra) {
     if (!port) {
       setStatus('未连接后台', 'err');
@@ -492,6 +809,13 @@
       if (typeof msg.json === 'string') {
         const name = msg.filename || (msg.masked === false ? 'assistant-config.SECRETS.json' : 'assistant-config.json');
         downloadTextFile(msg.json, name, 'application/json');
+      }
+      if (pendingDownloads.config) {
+        pendingDownloads.config = false;
+        finishDownloadStatus(msg.masked === false
+          ? '已导出配置 JSON（含完整密钥）✓'
+          : '已导出配置 JSON ✓（密钥已掩码）');
+      } else {
         setStatus(msg.masked === false
           ? '已导出配置 JSON（含完整密钥）✓'
           : '已导出配置 JSON ✓（密钥已掩码）', 'ok');
@@ -508,18 +832,31 @@
       const errN = Number(msg.count) || 0;
       const trailN = Number(msg.trailCount) || 0;
       const hours = Number(msg.hours) || 24;
+      let detail;
       if (errN === 0 && trailN === 0) {
-        setStatus('近 ' + hours + ' 小时没有错误，也还没有活动轨迹。已下载空诊断文件。', 'ok');
+        detail = '近 ' + hours + ' 小时没有错误，也还没有活动轨迹。已下载空诊断文件。';
       } else if (errN === 0) {
-        setStatus('近 ' + hours + ' 小时没有错误；已导出 ' + trailN + ' 条活动轨迹。', 'ok');
+        detail = '近 ' + hours + ' 小时没有错误；已导出 ' + trailN + ' 条活动轨迹。';
       } else {
-        setStatus('已导出 ' + errN + ' 条错误、' + trailN + ' 条活动轨迹。', 'ok');
+        detail = '已导出 ' + errN + ' 条错误、' + trailN + ' 条活动轨迹。';
+      }
+      if (pendingDownloads.diag) {
+        pendingDownloads.diag = false;
+        finishDownloadStatus(detail);
+      } else {
+        setStatus(detail, 'ok');
       }
     } else if (type === 'diagCleared') {
       setStatus(msg.ok ? '已清空错误记录 ✓' : ('清空失败' + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
     } else if (type === 'testResult') {
       setStatus(msg.message != null ? String(msg.message) : (msg.ok ? '连接成功' : '连接失败'), msg.ok ? 'ok' : 'err');
+    } else if (type === 'providerTestResult') {
+      if (pendingProviderTestId && msg.testId && String(msg.testId) !== pendingProviderTestId) return;
+      const title = msg.kind === 'ocr' ? '连接性测试结果' : '测试结果';
+      showResultModal(title, msg.message != null ? String(msg.message) : (msg.ok ? '连接成功' : '连接失败'), msg.ok ? 'ok' : 'err');
     } else if (type === 'status' && msg.kind === 'error') {
+      pendingDownloads.config = false;
+      pendingDownloads.diag = false;
       setStatus(String(msg.text || ''), 'err');
     }
   }
@@ -582,12 +919,20 @@
   }
 
   function wire() {
-    document.addEventListener('input', markDirty, true);
-    document.addEventListener('change', markDirty, true);
+    document.addEventListener('input', (e) => {
+      const t = e && e.target;
+      if (t && t.closest && t.closest('#exportPickerModal, #resultModal')) return;
+      markDirty();
+    }, true);
+    document.addEventListener('change', (e) => {
+      const t = e && e.target;
+      if (t && t.closest && t.closest('#exportPickerModal, #resultModal')) return;
+      markDirty();
+    }, true);
     document.addEventListener('click', (e) => {
       const t = e && e.target;
       if (!t || !t.closest) return;
-      if (t.closest('#addTextProviderBtn, #addOcrProviderBtn, .provider-row .btn')) markDirty();
+      if (t.closest('#addTextProviderBtn, #addOcrProviderBtn, .provider-del')) markDirty();
     }, true);
     $('uiOpacity').addEventListener('input', syncOpacityLabel);
     $('pdfParseAll').addEventListener('change', syncPdfParseUi);
@@ -605,12 +950,74 @@
       setStatus('测试中…');
       send('testLLM', { config: collectConfig() });
     });
-    $('downloadConfigBtn').addEventListener('click', () => {
-      const includeKeys = !!($('exportIncludeKeys') && $('exportIncludeKeys').checked);
-      if (includeKeys && !window.confirm('将导出完整 API 密钥。确认继续？')) return;
-      send('exportConfig', { includeKeys: includeKeys });
+    $('downloadDataBtn').addEventListener('click', () => {
+      fillExportPicker();
+      openModal('exportPickerModal');
     });
-    $('uploadConfigBtn').addEventListener('click', () => $('uploadConfigInput').click());
+    $('exportPickerConfirm').addEventListener('click', () => {
+      const pick = collectExportPick();
+      if (!exportPickHasAny(pick)) {
+        setExportPickerStatus('请至少勾选一项再下载', 'err');
+        return;
+      }
+      const needConfig = exportConfigPickHasAny(pick);
+      const needDiag = !!pick.diagRecords;
+      const includeKeys = !!($('exportPickerIncludeKeys') && $('exportPickerIncludeKeys').checked);
+      if (includeKeys && needConfig && (pick.textIndexes.length || pick.ocrIndexes.length)
+        && !window.confirm('将导出完整 API 密钥。确认继续？')) return;
+      pendingDownloads = { config: needConfig, diag: needDiag };
+      let sent = true;
+      if (needConfig) {
+        const configPick = {
+          diag: pick.diag,
+          ui: pick.ui,
+          runtime: pick.runtime,
+          archiveRedact: pick.archiveRedact,
+          textPrompt: pick.textPrompt,
+          ocrPrompt: pick.ocrPrompt,
+          textIndexes: pick.textIndexes,
+          ocrIndexes: pick.ocrIndexes
+        };
+        sent = send('exportConfig', {
+          includeKeys: includeKeys,
+          pick: configPick,
+          config: collectDownloadConfig()
+        }) && sent;
+      }
+      if (needDiag) {
+        const hours = pick.diagHours;
+        if (!send('exportDiag', { hours: hours })) sent = false;
+        else {
+          if (diagExportTimer) clearTimeout(diagExportTimer);
+          diagExportTimer = setTimeout(() => {
+            diagExportTimer = null;
+            pendingDownloads.diag = false;
+            setStatus('导出超时：后台未响应。请到 chrome://extensions 重新加载插件后再试。', 'err');
+          }, 8000);
+        }
+      }
+      if (!sent) {
+        pendingDownloads = { config: false, diag: false };
+        return;
+      }
+      closeModal('exportPickerModal');
+      setStatus('正在下载…');
+    });
+    document.addEventListener('click', (e) => {
+      const t = e && e.target;
+      if (!t || !t.closest) return;
+      const closer = t.closest('[data-close-modal]');
+      if (closer) closeModal(closer.getAttribute('data-close-modal'));
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      closeModal('resultModal');
+      closeModal('exportPickerModal');
+    });
+    $('reloadConfigBtn').addEventListener('click', () => {
+      if (formDirty && !window.confirm('当前有未保存修改，重载将用文件覆盖本页已识别的字段。继续？')) return;
+      $('uploadConfigInput').click();
+    });
     $('uploadConfigInput').addEventListener('change', async () => {
       const file = $('uploadConfigInput').files && $('uploadConfigInput').files[0];
       $('uploadConfigInput').value = '';
@@ -621,16 +1028,6 @@
         return;
       }
       if (send('importConfig', { raw: String(text) })) setStatus('正在导入…');
-    });
-    $('exportDiagBtn').addEventListener('click', () => {
-      const hours = clampInt($('diagHours').value, 1, 24, 24);
-      if (!send('exportDiag', { hours: hours })) return;
-      setStatus('正在导出诊断记录…');
-      if (diagExportTimer) clearTimeout(diagExportTimer);
-      diagExportTimer = setTimeout(() => {
-        diagExportTimer = null;
-        setStatus('导出超时：后台未响应。请到 chrome://extensions 重新加载插件后再试。', 'err');
-      }, 8000);
     });
     $('clearDiagBtn').addEventListener('click', () => {
       if (!window.confirm('清空本机保存的错误与活动轨迹？不含配置与对话。')) return;

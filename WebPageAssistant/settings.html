@@ -218,10 +218,21 @@
       font-size: 11px;
       color: var(--muted);
     }
+    .provider-sample-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 2px;
+    }
     .provider-sample-label {
       font-size: 11px;
       color: var(--muted);
-      margin-top: 2px;
+    }
+    .provider-sample-copy {
+      flex: 0 0 auto;
+      padding: 3px 10px;
+      font-size: 11px;
     }
     .provider-sample {
       margin: 0;
@@ -235,9 +246,125 @@
       word-break: break-all;
       max-height: 240px;
       overflow: auto;
+      user-select: text;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       color: #2a3148;
     }
+    .provider-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .provider-actions .btn { flex: 1; }
+    .modal[hidden] { display: none !important; }
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(24, 28, 42, 0.42);
+    }
+    .modal-dialog {
+      position: relative;
+      z-index: 1;
+      width: min(640px, 100%);
+      max-height: min(82vh, 720px);
+      overflow: auto;
+      background: #fff;
+      border-radius: 14px;
+      box-shadow: 0 18px 48px rgba(24, 28, 42, 0.22);
+      padding: 18px 18px 16px;
+    }
+    .modal-dialog.wide { width: min(640px, 100%); }
+    .export-cols {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .export-col {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px 12px;
+      background: #f7f8fc;
+    }
+    .export-col-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #4a5270;
+      margin-bottom: 8px;
+    }
+    .export-hours {
+      margin: 6px 0 0 22px;
+    }
+    .export-hours .field { margin-bottom: 0; }
+    .modal-x {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 32px;
+      height: 32px;
+      border: none;
+      background: transparent;
+      color: #5a6072;
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+      border-radius: 8px;
+    }
+    .modal-x:hover { background: #f3f5fb; color: #23283a; }
+    .modal-title {
+      font-size: 15px;
+      font-weight: 700;
+      padding-right: 36px;
+      margin-bottom: 8px;
+    }
+    .modal-pre {
+      margin: 0;
+      padding: 10px 12px;
+      background: #f6f7fb;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 56vh;
+      overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .modal-pre.ok { color: #1f7a4d; }
+    .modal-pre.err { color: #b42318; }
+    .export-group {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 10px;
+      margin-bottom: 8px;
+      background: #fbfcfe;
+    }
+    .export-parent, .export-leaf {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--text);
+      cursor: pointer;
+    }
+    .export-parent { font-weight: 700; }
+    .export-parent input, .export-leaf input { margin-top: 2px; flex: 0 0 auto; }
+    .export-children {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin: 8px 0 0 22px;
+    }
+    .export-leaf { font-weight: 400; color: #3b4154; }
     .range-row {
       display: flex;
       align-items: center;
@@ -263,37 +390,31 @@
     </div>
 
     <div class="card">
-      <div class="heading">配置导入 / 导出</div>
-      <div class="hint">默认导出掩码密钥。勾选并确认后才导出完整密钥（文件名含 SECRETS）。导入时 ******** 表示沿用已有密钥。</div>
+      <div class="heading">数据下载</div>
+      <div class="hint">按需勾选后下载。记录数据在上、配置数据在下；可只下其中一类，也可同时下（会分别生成文件）。配置默认掩码密钥，需要明文时在弹出框勾选并确认（文件名含 SECRETS）。</div>
       <div class="io-bar">
-        <button type="button" class="btn" id="downloadConfigBtn">⬇ 下载配置</button>
-        <button type="button" class="btn" id="uploadConfigBtn">⬆ 上传配置</button>
-        <label class="hint" style="display:flex;align-items:center;gap:6px;">
-          <input type="checkbox" id="exportIncludeKeys"> 导出完整密钥
-        </label>
+        <button type="button" class="btn" id="downloadDataBtn">⬇ 数据下载</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="heading">配置重载</div>
+      <div class="hint">用 JSON 覆盖本页已勾选范围内的配置。文件中没有的字段保持现状；密钥为 ******** 时沿用本机已有值。</div>
+      <div class="io-bar">
+        <button type="button" class="btn" id="reloadConfigBtn">⬆ 选择文件并重载</button>
         <input id="uploadConfigInput" type="file" accept=".json,application/json" hidden>
       </div>
     </div>
 
     <div class="card">
       <div class="heading">诊断记录</div>
-      <div class="hint">记录功能探针（含成功路径的活动轨迹）与错误类，不含 API 密钥、提示词、页面内容或附件。无错误时导出仍会下载文件并写明「没有错误」。保留最近 24 小时，并受上限约束。</div>
+      <div class="hint">记录功能探针（含成功路径的活动轨迹）与错误类，不含 API 密钥、提示词、页面内容或附件。保留最近 24 小时，并受上限约束。下载诊断数据请用上方「数据下载」。</div>
       <label class="field">
         诊断探针日志的上限（KB）
         <input id="diagCapKb" type="number" min="10" max="200" step="1" value="50">
       </label>
       <div class="hint">默认 50KB，可填 10–200。改后请点页面底部「保存」。超出上限时丢掉最旧记录。</div>
-      <div class="row-2">
-        <label class="field">导出最近
-          <select id="diagHours">
-            <option value="1">1 小时</option>
-            <option value="6">6 小时</option>
-            <option value="24" selected>24 小时</option>
-          </select>
-        </label>
-      </div>
       <div class="io-bar">
-        <button type="button" class="btn" id="exportDiagBtn">⬇ 导出诊断记录</button>
         <button type="button" class="btn danger" id="clearDiagBtn">清空诊断记录</button>
       </div>
     </div>
@@ -360,12 +481,26 @@
     </div>
 
     <div class="card">
+      <div class="heading">文本模型 System Prompt</div>
+      <div class="hint">每次调用文本模型时置于上下文最前。</div>
+      <label class="field">
+        文本模型 System Prompt
+        <textarea id="systemPromptText" rows="3" placeholder="文本模型 System Prompt（每次调用置于上下文最前）"></textarea>
+      </label>
+    </div>
+
+    <div class="card">
       <div class="heading">文本模型 Providers（类型仅 OpenAI-chat-completions：OpenAI 兼容 /chat/completions，Base URL / 模型ID 自行填写）</div>
       <div class="provider-list" id="textProvidersList"></div>
       <button type="button" class="btn" id="addTextProviderBtn">＋ 添加 provider</button>
-      <label class="field" style="margin-top:12px">
-        文本模型 System Prompt
-        <textarea id="systemPromptText" rows="3" placeholder="文本模型 System Prompt（每次调用置于上下文最前）"></textarea>
+    </div>
+
+    <div class="card">
+      <div class="heading">OCR 模型 System Prompt</div>
+      <div class="hint">视觉模型调用时置于最前。OCR-SCnet / MinerU 不使用这段提示词。</div>
+      <label class="field">
+        OCR 模型 System Prompt
+        <textarea id="systemPromptOcr" rows="3" placeholder="OCR 模型 System Prompt（视觉模型调用时置于最前）"></textarea>
       </label>
     </div>
 
@@ -373,16 +508,48 @@
       <div class="heading">OCR Providers（类型必选：OpenAI-chat-completions-image_url 为视觉 chat；OCR-SCnet 为 multipart；MinerU 为文档解析）</div>
       <div class="provider-list" id="ocrProvidersList"></div>
       <button type="button" class="btn" id="addOcrProviderBtn">＋ 添加 provider</button>
-      <label class="field" style="margin-top:12px">
-        OCR 模型 System Prompt
-        <textarea id="systemPromptOcr" rows="3" placeholder="OCR 模型 System Prompt（视觉模型调用时置于最前）"></textarea>
-      </label>
     </div>
 
     <div class="actions">
       <button type="button" class="btn primary" id="saveBtn">保存</button>
       <button type="button" class="btn" id="testBtn">测试当前模型的连接</button>
       <div class="status" id="settingsStatus"></div>
+    </div>
+  </div>
+
+  <div class="modal" id="resultModal" hidden>
+    <div class="modal-backdrop" data-close-modal="resultModal"></div>
+    <div class="modal-dialog" role="dialog" aria-labelledby="resultModalTitle" aria-modal="true">
+      <button type="button" class="modal-x" data-close-modal="resultModal" aria-label="关闭">×</button>
+      <div class="modal-title" id="resultModalTitle">测试结果</div>
+      <pre class="modal-pre" id="resultModalBody"></pre>
+    </div>
+  </div>
+
+  <div class="modal" id="exportPickerModal" hidden>
+    <div class="modal-backdrop" data-close-modal="exportPickerModal"></div>
+    <div class="modal-dialog wide" role="dialog" aria-labelledby="exportPickerTitle" aria-modal="true">
+      <button type="button" class="modal-x" data-close-modal="exportPickerModal" aria-label="关闭">×</button>
+      <div class="modal-title" id="exportPickerTitle">数据下载</div>
+      <div class="hint">默认不勾选。记录数据在上、配置数据在下。每个 provider 按「名称」独立勾选；两段 System Prompt 各是独立卡片。</div>
+      <div class="io-bar">
+        <button type="button" class="btn primary" id="exportPickerConfirm">下载所选</button>
+        <button type="button" class="btn" data-close-modal="exportPickerModal">取消</button>
+      </div>
+      <div class="status" id="exportPickerStatus"></div>
+      <div class="export-cols">
+        <div class="export-col">
+          <div class="export-col-title">记录数据</div>
+          <div id="exportRecordsBody"></div>
+        </div>
+        <div class="export-col">
+          <div class="export-col-title">配置数据</div>
+          <div id="exportConfigBody"></div>
+          <label class="check-row" style="margin-top:10px">
+            <input type="checkbox" id="exportPickerIncludeKeys"> 导出完整密钥
+          </label>
+        </div>
+      </div>
     </div>
   </div>
   <script src="settings.js"></script>
