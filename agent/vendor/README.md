@@ -9,7 +9,7 @@
   - `index.esm.browser.js`: `fafd410c8ae085096f332bcb4252a521aac29dbd217470988007ce59e355c528`
   - `pdfium.wasm`: `71aec412a303a0405baee21c3d6d3f30ad2033dc02444130fe476be3976e2d09`
 
-刷新：`sh WebPageAssistant/vendor/copy-pdfium.sh`，然后把本文件的版本与哈希改成脚本打印值。
+刷新：`sh agent/vendor/copy-pdfium.sh`，然后把本文件的版本与哈希改成脚本打印值。
 
 offscreen 以 `type="module"` 加载 `offscreen.js`，再 `import { PDFiumLibrary } from './vendor/pdfium/index.esm.browser.js'`，`wasmUrl` 用 `chrome.runtime.getURL('vendor/pdfium/pdfium.wasm')`。不要把 `.wasm` 放进 `web_accessible_resources`。不要走 CDN / `browser/cdn` / `browser/base64`。
 

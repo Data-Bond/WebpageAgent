@@ -9,7 +9,7 @@ const path = require('path');
 const vm = require('vm');
 const { execFileSync } = require('child_process');
 
-const ROOT = path.join(__dirname, 'WebPageAssistant');
+const ROOT = path.join(__dirname, 'agent');
 let failures = 0;
 function ok(cond, name) {
   if (cond) {
@@ -1466,7 +1466,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.2.3', '锁步版本为 5.2.3');
+ok(manifestVer === '5.3.0', '锁步版本为 5.3.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
