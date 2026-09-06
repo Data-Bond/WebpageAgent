@@ -14,7 +14,13 @@
 
 **Windows（推荐）** 打开 [安装脚本页面](https://gitcode.com/hpcscc/WebpageAgent/blob/main/WebpageAgent-Installer-Windows.bat)，点击页面上的「下载」，把 `WebpageAgent-Installer-Windows.bat` 存到希望安装插件的目录（保存时核对文件名和 `.bat` 后缀，不要变成 `.txt`）。然后双击运行。
 
-也可在 PowerShell 中下载并运行同一文件：
+Chrome 等浏览器常会拦截这次下载：`.bat` 属于可执行脚本，Safe Browsing 会把它当成「危险文件类型」，并不是脚本本身已被判定为病毒。若地址栏或下载托盘提示已拦截，打开完整下载列表（Chrome 地址栏输入 `chrome://downloads/`，Edge 为 `edge://downloads/`），找到这一行，在可操作选项里选「忽略危险」或「仍然下载 / 保留」。
+
+也可直接打开 [raw 文件](https://raw.gitcode.com/hpcscc/WebpageAgent/raw/main/WebpageAgent-Installer-Windows.bat)（下载器仍可能拦截，但便于复制脚本内容）：
+
+`https://raw.gitcode.com/hpcscc/WebpageAgent/raw/main/WebpageAgent-Installer-Windows.bat`
+
+或在 PowerShell 中下载并运行同一文件：
 
 ```powershell
 iwr -useb https://raw.gitcode.com/hpcscc/WebpageAgent/raw/main/WebpageAgent-Installer-Windows.bat -OutFile WebpageAgent-Installer-Windows.bat; .\WebpageAgent-Installer-Windows.bat
