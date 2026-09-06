@@ -36,6 +36,10 @@ iwr -useb https://raw.gitcode.com/hpcscc/WebpageAgent/raw/main/WebpageAgent-Inst
 - OCR 按设置页中的类型配置
 - 先登录目标网站，再点击工具栏图标
 
+## 免责声明
+
+本扩展免费、无需授权。使用风险由用户自负：不保证不会搞崩业务。不建议新手做无人看守的自动化，也不建议用管理员账号做自动化。可设置自动化操作步骤数量上限，并构建固定、经过验证的 WEB-SKILL，以降低风险。
+
 ## 许可证
 
 GNU AGPL-3.0，详见 [LICENSE](LICENSE)。
