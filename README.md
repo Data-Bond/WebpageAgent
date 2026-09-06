@@ -12,7 +12,9 @@
 
 ## 安装
 
-**Windows（推荐）** 在 PowerShell 中执行：
+**Windows（推荐）** 打开 [安装脚本页面](https://gitcode.com/hpcscc/WebpageAgent/blob/main/WebpageAgent-Installer-Windows.bat)，点击页面上的「下载」，把 `WebpageAgent-Installer-Windows.bat` 存到希望安装插件的目录（保存时核对文件名和 `.bat` 后缀，不要变成 `.txt`）。然后双击运行。
+
+也可在 PowerShell 中下载并运行同一文件：
 
 ```powershell
 iwr -useb https://raw.gitcode.com/hpcscc/WebpageAgent/raw/main/WebpageAgent-Installer-Windows.bat -OutFile WebpageAgent-Installer-Windows.bat; .\WebpageAgent-Installer-Windows.bat
