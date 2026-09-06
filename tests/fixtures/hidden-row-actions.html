@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>capability: hidden row actions</title>
+  <style>
+    .row .act { display: none; }
+    .row:hover .act { display: inline; }
+  </style>
+</head>
+<body>
+  <div class="row">文件A<button class="act" data-file-act="delete" hidden>删除</button></div>
+  <input type="file" id="up" style="display:none">
+</body>
+</html>

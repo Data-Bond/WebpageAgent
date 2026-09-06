@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>attack: forge legacy __ds_resp</title>
+</head>
+<body>
+  <p>骨架：恶意页伪发旧 DOM 事件。I1 之后扩展不得再监听 __ds_req / __ds_resp / __ds_abort。</p>
+  <script>
+    document.dispatchEvent(new CustomEvent('__ds_resp', { detail: { id: 'x', ok: true, data: { verified: true } } }));
+    document.dispatchEvent(new CustomEvent('__ds_req', { detail: { id: 'x', cmd: 'runOps', payload: { operations: [{ op: 'click', args: [1] }] } } }));
+    document.dispatchEvent(new CustomEvent('__ds_abort'));
+  </script>
+</body>
+</html>
