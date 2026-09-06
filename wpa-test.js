@@ -1248,15 +1248,15 @@ function pickHint(hint) {
   return hit && hit.itemTitle;
 }
 ok(
-  /超算应用运行优化/.test(pickHint('登录后在「某某项目名称」这一项里 clickByText："进入"') || ''),
+  /某某项目名称/.test(pickHint('登录后在「某某项目名称」这一项里 clickByText："进入"') || ''),
   '书名号+这一项 能消歧'
 );
 ok(
-  /超算应用运行优化/.test(pickHint('点击某某项目名称的进入按钮') || ''),
+  /某某项目名称/.test(pickHint('点击某某项目名称的进入按钮') || ''),
   '不加引号直接写标题也能消歧'
 );
 ok(
-  /超算应用运行优化/.test(pickHint('Open Enter on 某某项目名称') || ''),
+  /某某项目名称/.test(pickHint('Open Enter on 某某项目名称') || ''),
   '中英混写句式也能消歧'
 );
 ok(
@@ -1286,7 +1286,7 @@ const hintedOps = doneSandbox.attachTaskHintToOps(
   '在「某某项目名称」里点进入'
 );
 ok(
-  hintedOps[0].args[1] && /超算应用运行优化/.test(hintedOps[0].args[1].hint),
+  hintedOps[0].args[1] && /某某项目名称/.test(hintedOps[0].args[1].hint),
   'clickByText 会带上当前指令全文作 hint'
 );
 const keptWithin = doneSandbox.attachTaskHintToOps(
@@ -1466,7 +1466,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.1.1', '锁步版本为 5.1.1');
+ok(manifestVer === '5.1.2', '锁步版本为 5.1.2');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -2255,6 +2255,54 @@ ok(/ARCHIVE_REDACT_MAX_BYTES = 20 \* 1024/.test(bg) && /function planArchiveReda
   '存档脱敏不超过 20KB 不分拆');
 ok(/provider-row:nth-child\(8n\+1\)/.test(settingsHtml) && /#dceaff/.test(settingsHtml),
   'provider 配置卡用不同背景色区分');
+ok(/provider-sample/.test(settingsHtml) && /请求示例（基于第一个模型ID/.test(settingsSrc),
+  '配置卡在删除前展示脱敏请求示例');
+const sampleBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(settingsSrc, 'firstProviderModelId') + '\n' +
+      extractFn(settingsSrc, 'maskProviderApiKey') + '\n' +
+      extractFn(settingsSrc, 'chatCompletionsUrlForSample') + '\n' +
+      extractFn(settingsSrc, 'scnetOcrUrlForSample') + '\n' +
+      extractFn(settingsSrc, 'scnetOcrTypeForSample') + '\n' +
+      extractFn(settingsSrc, 'formatProviderSampleRequest') + '\n' +
+      'this.firstProviderModelId = firstProviderModelId;\n' +
+      'this.maskProviderApiKey = maskProviderApiKey;\n' +
+      'this.formatProviderSampleRequest = formatProviderSampleRequest;',
+    sampleBox
+  );
+  ok(typeof sampleBox.formatProviderSampleRequest === 'function', 'formatProviderSampleRequest 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 formatProviderSampleRequest 失败: ' + (e && e.message));
+}
+if (sampleBox.formatProviderSampleRequest) {
+  const masked = sampleBox.maskProviderApiKey('sk-live-secret-key-1234');
+  ok(masked.indexOf('sk-l') === 0 && masked.indexOf('1234') >= 0 && masked.indexOf('secret') < 0,
+    '示例密钥保留头尾并打码中段');
+  ok(sampleBox.firstProviderModelId(' kimi-k2 , other ') === 'kimi-k2', '示例取逗号分隔的第一个模型ID');
+  const chat = sampleBox.formatProviderSampleRequest(
+    'OpenAI-chat-completions', 'https://api.moonshot.cn/v1', 'sk-abcdefghijklmnopqrstuv', 'kimi-k2,backup'
+  );
+  ok(/^POST https:\/\/api\.moonshot\.cn\/v1\/chat\/completions/m.test(chat), '文本模型示例是 POST chat/completions');
+  ok(chat.indexOf('"model": "kimi-k2"') >= 0 && chat.indexOf('backup') < 0, '文本模型示例只用第一个模型ID');
+  ok(/Authorization: Bearer sk-a\*\*\*\*stuv/.test(chat) && chat.indexOf('sk-abcdefghijklmnopqrstuv') < 0,
+    '文本模型示例 Authorization 已脱敏');
+  const vision = sampleBox.formatProviderSampleRequest(
+    'OpenAI-chat-completions-image_url', 'https://api.example.com', 'k', 'qwen-vl-ocr'
+  );
+  ok(vision.indexOf('image_url') >= 0 && vision.indexOf('max_tokens') >= 0, '视觉模型示例含 image_url 与 max_tokens');
+  const scnet = sampleBox.formatProviderSampleRequest(
+    'OCR-SCnet', 'https://api.scnet.cn/api/llm/v1/ocr/recognize', 'token-abcdef', 'ID_CARD,GENERAL'
+  );
+  ok(/^POST https:\/\/api\.scnet\.cn\/api\/llm\/v1\/ocr\/recognize/m.test(scnet), 'SCnet 示例打到 recognize 端点');
+  ok(/name="ocrType"/.test(scnet) && /ID_CARD/.test(scnet) && !/GENERAL/.test(scnet.split('ocrType')[1] || ''),
+    'SCnet 示例 ocrType 取第一个模型ID');
+  const mineru = sampleBox.formatProviderSampleRequest(
+    'MinerU', 'https://ocr.example.com/file_parse', 'mk-12345678', 'MinerU'
+  );
+  ok(/^POST https:\/\/ocr\.example\.com\/file_parse/m.test(mineru), 'MinerU 示例 POST 到 file_parse');
+  ok(/name="files"/.test(mineru) && /hybrid-auto-engine/.test(mineru), 'MinerU 示例含 files 与解析字段');
+}
 ok(/function diagFail\(/.test(bg) && /DIAG_STORE_KEY = 'wpaDiag'/.test(bg), '后台有诊断黑匣子写入');
 const ocrSelBox = {};
 try {

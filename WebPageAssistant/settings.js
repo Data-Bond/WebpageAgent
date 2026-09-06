@@ -98,6 +98,146 @@
     return list.find((t) => t.id === canon) || list[0];
   }
 
+  function firstProviderModelId(models) {
+    const parts = String(models || '').split(',');
+    for (let i = 0; i < parts.length; i++) {
+      const s = parts[i].trim();
+      if (s) return s;
+    }
+    return '';
+  }
+
+  function maskProviderApiKey(key) {
+    const s = String(key || '').trim();
+    if (!s) return '<未填写>';
+    if (s.length <= 8) return s.slice(0, 1) + '****' + s.slice(-1);
+    return s.slice(0, 4) + '****' + s.slice(-4);
+  }
+
+  function chatCompletionsUrlForSample(baseURL) {
+    let u = String(baseURL || '').trim().replace(/\/+$/, '');
+    if (!u) u = '<未填写 Base URL>';
+    const suffix = '/chat/completions';
+    if (u.endsWith(suffix)) u = u.slice(0, -suffix.length);
+    if (!/\/v\d+[a-zA-Z0-9.]*$/.test(u)) u += '/v1';
+    return u + suffix;
+  }
+
+  function scnetOcrUrlForSample(baseURL) {
+    let u = String(baseURL || '').trim().replace(/\/+$/, '');
+    if (!u) u = 'https://api.scnet.cn';
+    if (/\/ocr\/recognize$/i.test(u) || /\/recognize$/i.test(u)) return u;
+    if (/scnet\.cn/i.test(u) && !/\/api\//i.test(u)) return u + '/api/llm/v1/ocr/recognize';
+    if (/\/ocr$/i.test(u)) return u + '/recognize';
+    if (/\/v\d+$/i.test(u) || /\/llm\/v\d+$/i.test(u)) return u + '/ocr/recognize';
+    return u + '/ocr/recognize';
+  }
+
+  function scnetOcrTypeForSample(model) {
+    const stripped = String(model || '').trim().replace(/^(scnet|ocr)[_/-]*/i, '');
+    const upper = stripped.replace(/-/g, '_').toUpperCase();
+    if (/^[A-Z][A-Z0-9_]{1,80}$/.test(upper)) return upper;
+    return 'GENERAL';
+  }
+
+  function formatProviderSampleRequest(providerType, baseURL, apiKey, models) {
+    const type = String(providerType || '').trim();
+    const model = firstProviderModelId(models) || '<第一个模型ID>';
+    const auth = 'Authorization: Bearer ' + maskProviderApiKey(apiKey);
+    const boundary = '----WebKitFormBoundaryExample';
+    if (type === 'OCR-SCnet') {
+      const url = scnetOcrUrlForSample(baseURL);
+      const ocrType = firstProviderModelId(models) ? scnetOcrTypeForSample(firstProviderModelId(models)) : 'GENERAL';
+      return [
+        'POST ' + url,
+        auth,
+        'Content-Type: multipart/form-data; boundary=' + boundary,
+        '',
+        '--' + boundary,
+        'Content-Disposition: form-data; name="file"; filename="image.jpg"',
+        'Content-Type: image/jpeg',
+        '',
+        '<图像文件二进制>',
+        '--' + boundary,
+        'Content-Disposition: form-data; name="ocrType"',
+        '',
+        ocrType,
+        '--' + boundary + '--'
+      ].join('\n');
+    }
+    if (type === 'MinerU') {
+      const url = String(baseURL || '').trim().replace(/\/+$/, '') || '<未填写 MinerU /file_parse 端点>';
+      return [
+        '# 第一个模型ID：' + model + '（本协议不把 model 写入 body）',
+        'POST ' + url,
+        auth,
+        'Content-Type: multipart/form-data; boundary=' + boundary,
+        '',
+        '--' + boundary,
+        'Content-Disposition: form-data; name="files"; filename="document.pdf"',
+        'Content-Type: application/pdf',
+        '',
+        '<PDF或图像文件二进制>',
+        '--' + boundary,
+        'Content-Disposition: form-data; name="lang_list"',
+        '',
+        'ch',
+        '--' + boundary,
+        'Content-Disposition: form-data; name="backend"',
+        '',
+        'hybrid-auto-engine',
+        '--' + boundary,
+        'Content-Disposition: form-data; name="parse_method"',
+        '',
+        'auto',
+        '--' + boundary,
+        'Content-Disposition: form-data; name="formula_enable"',
+        '',
+        'true',
+        '--' + boundary,
+        'Content-Disposition: form-data; name="table_enable"',
+        '',
+        'true',
+        '--' + boundary,
+        'Content-Disposition: form-data; name="return_md"',
+        '',
+        'true',
+        '--' + boundary + '--'
+      ].join('\n');
+    }
+    const url = chatCompletionsUrlForSample(baseURL);
+    const isVision = type === 'OpenAI-chat-completions-image_url';
+    const payload = isVision
+      ? {
+        model: model,
+        messages: [
+          { role: 'system', content: '<OCR系统提示词>' },
+          {
+            role: 'user',
+            content: [
+              { type: 'image_url', image_url: { url: 'data:image/png;base64,<图像>' } },
+              { type: 'text', text: '<OCR指令>' }
+            ]
+          }
+        ],
+        max_tokens: 4096
+      }
+      : {
+        model: model,
+        messages: [
+          { role: 'system', content: '<系统提示词>' },
+          { role: 'user', content: '<本轮任务与页面快照>' }
+        ]
+      };
+    return [
+      'POST ' + url,
+      'Content-Type: application/json',
+      auth,
+      '',
+      JSON.stringify(payload, null, 2)
+    ].join('\n');
+  }
+
   function addProviderRow(container, data, kind) {
     const isOcr = kind === 'ocr';
     const types = providerTypesOf(isOcr ? 'ocr' : 'text');
@@ -152,7 +292,18 @@
       if (!modelsNow || modelsNow === lastDefaultModels) models.value = meta.defaultModels || '';
       lastDefaultUrl = meta.defaultBaseURL || '';
       lastDefaultModels = meta.defaultModels || '';
+      refreshSample();
     });
+    const sampleLabel = mk('div', 'provider-sample-label', { textContent: '请求示例（基于第一个模型ID，密钥已脱敏）' });
+    const samplePre = mk('pre', 'provider-sample');
+    function refreshSample() {
+      samplePre.textContent = formatProviderSampleRequest(typeSel.value, baseURL.value, apiKey.value, models.value);
+    }
+    [baseURL, apiKey, models].forEach((el) => {
+      el.addEventListener('input', refreshSample);
+      el.addEventListener('change', refreshSample);
+    });
+    refreshSample();
     const del = mk('button', 'btn danger', { type: 'button', textContent: '✕ 删除', title: '删除该 provider' });
     del.addEventListener('click', () => { row.remove(); });
     row.appendChild(makeField('类型 providerType', typeSel));
@@ -160,6 +311,8 @@
     row.appendChild(makeField('Base URL', baseURL));
     row.appendChild(makeField('API Key', apiKey));
     row.appendChild(makeField(isOcr ? '模型ID / ocrType（逗号分隔）' : '模型ID（逗号分隔）', models));
+    row.appendChild(sampleLabel);
+    row.appendChild(samplePre);
     row.appendChild(del);
     container.appendChild(row);
     return row;
