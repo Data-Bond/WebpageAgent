@@ -68,11 +68,15 @@ read_line_or_timeout() {
   return 1
 }
 
-read_extract_choice() {
+read_conflict_choice() {
+  local include_rename="${1:-0}"
   while true; do
     echo '  [1] 覆盖（默认，回车或 10 秒）' >&2
     echo '  [2] 取消' >&2
-    echo '  [3] 改名' >&2
+    if [ "$include_rename" = 1 ]; then
+      echo '  [3] 改名' >&2
+    fi
+    echo '  [4] 保留现有文件，跳过本次下载/解压缩' >&2
     printf '请选择 [1]: ' >&2
     local raw=''
     if ! raw="$(read_line_or_timeout 10)"; then
@@ -87,7 +91,14 @@ read_extract_choice() {
     case "$key" in
       ''|1) echo overwrite; return 0 ;;
       2|c|cancel|n|q|取消) echo cancel; return 0 ;;
-      3|r|rename|改名) echo rename; return 0 ;;
+      3|r|rename|改名)
+        if [ "$include_rename" = 1 ]; then
+          echo rename
+          return 0
+        fi
+        echo "无效选择：${raw}，请重试。" >&2
+        ;;
+      4|k|keep|skip|保留|跳过) echo keep; return 0 ;;
       *) echo "无效选择：${raw}，请重试。" >&2 ;;
     esac
   done
@@ -140,10 +151,10 @@ open_browser() {
   local c
   if [ "$(uname -s)" = Darwin ]; then
     if [ "$kind" = edge ]; then
-      open -na 'Microsoft Edge' --args --new-window "$url" 2>/dev/null \
+      open -na 'Microsoft Edge' --args --app="$url" 2>/dev/null \
         || open -a 'Microsoft Edge' "$url" 2>/dev/null || return 1
     else
-      open -na 'Google Chrome' --args --new-window "$url" 2>/dev/null \
+      open -na 'Google Chrome' --args --app="$url" 2>/dev/null \
         || open -a 'Google Chrome' "$url" 2>/dev/null || return 1
     fi
     return 0
@@ -151,14 +162,14 @@ open_browser() {
   if [ "$kind" = edge ]; then
     for c in microsoft-edge microsoft-edge-stable microsoft-edge-beta msedge; do
       if command -v "$c" >/dev/null 2>&1; then
-        "$c" --new-window "$url" >/dev/null 2>&1 &
+        "$c" --app="$url" >/dev/null 2>&1 &
         return 0
       fi
     done
   else
     for c in google-chrome google-chrome-stable chromium chromium-browser chrome; do
       if command -v "$c" >/dev/null 2>&1; then
-        "$c" --new-window "$url" >/dev/null 2>&1 &
+        "$c" --app="$url" >/dev/null 2>&1 &
         return 0
       fi
     done
@@ -243,12 +254,31 @@ ZIP_NAME="${REST%%	*}"
 ZIP_URL="${REST#*	}"
 
 clear_installer_temps
-STAGE="$HERE/${TMP_PREFIX}$("$PY" -c 'import uuid; print(uuid.uuid4().hex)')"
-mkdir -p -- "$STAGE"
-ZIP_PATH="$STAGE/pkg.zip"
-
-echo "Downloading ${ZIP_NAME} (${ZIP_URL})"
-curl -fsSL -A "$UA" -o "$ZIP_PATH" "$ZIP_URL"
+ZIP_NAME="$(printf '%s' "$ZIP_NAME" | sed 's#.*/##;s#.*\\##')"
+[ -n "$ZIP_NAME" ] || ZIP_NAME='WebpageAgent-latest.zip'
+ZIP_PATH="$HERE/$ZIP_NAME"
+echo
+echo '下载链接（2 秒后开始下载）：'
+echo "$ZIP_URL"
+sleep 2
+if [ -e "$ZIP_PATH" ] || [ -L "$ZIP_PATH" ]; then
+  echo
+  echo "已存在同名文件（全路径）：${ZIP_PATH}"
+  ZIP_MODE="$(read_conflict_choice 0)"
+  if [ "$ZIP_MODE" = cancel ]; then
+    echo '已取消下载。'
+    exit 0
+  fi
+  if [ "$ZIP_MODE" != keep ]; then
+    echo "Downloading ${ZIP_NAME}"
+    curl -fsSL -A "$UA" -o "$ZIP_PATH" "$ZIP_URL"
+  else
+    echo "保留现有文件，跳过下载：${ZIP_PATH}"
+  fi
+else
+  echo "Downloading ${ZIP_NAME}"
+  curl -fsSL -A "$UA" -o "$ZIP_PATH" "$ZIP_URL"
+fi
 
 ROOT="$("$PY" -c '
 import sys, zipfile
@@ -265,15 +295,19 @@ print(root)
 ' "$ZIP_PATH")"
 
 OUT_DIR="$HERE/$ROOT"
+SKIP_EXTRACT=0
 if [ -e "$OUT_DIR" ] || [ -L "$OUT_DIR" ]; then
   echo
-  echo "解压目标已存在：${OUT_DIR}"
-  MODE="$(read_extract_choice)"
+  echo "解压目标已存在（全路径）：${OUT_DIR}"
+  MODE="$(read_conflict_choice 1)"
   if [ "$MODE" = cancel ]; then
     echo '已取消解压。'
     exit 0
   fi
-  if [ "$MODE" = rename ]; then
+  if [ "$MODE" = keep ]; then
+    echo "保留现有目录，跳过解压缩：${OUT_DIR}"
+    SKIP_EXTRACT=1
+  elif [ "$MODE" = rename ]; then
     stamp="$(date +%Y%m%d-%H%M%S)"
     new_name="$(unique_extract_name "${ROOT}-${stamp}")"
     OUT_DIR="$HERE/$new_name"
@@ -285,18 +319,22 @@ else
   echo "Extracting to $HERE"
 fi
 
-UNPACK="$STAGE/unpack"
-mkdir -p -- "$UNPACK"
-unzip -q -o "$ZIP_PATH" -d "$UNPACK"
-SRC="$UNPACK/$ROOT"
-if [ ! -d "$SRC" ]; then
-  echo "Zip extracted, but folder not found: $SRC" >&2
-  exit 1
+if [ "$SKIP_EXTRACT" -eq 0 ]; then
+  STAGE="$HERE/${TMP_PREFIX}$("$PY" -c 'import uuid; print(uuid.uuid4().hex)')"
+  mkdir -p -- "$STAGE"
+  UNPACK="$STAGE/unpack"
+  mkdir -p -- "$UNPACK"
+  unzip -q -o "$ZIP_PATH" -d "$UNPACK"
+  SRC="$UNPACK/$ROOT"
+  if [ ! -d "$SRC" ]; then
+    echo "Zip extracted, but folder not found: $SRC" >&2
+    exit 1
+  fi
+  if [ -e "$OUT_DIR" ] || [ -L "$OUT_DIR" ]; then
+    remove_dir_or_link "$OUT_DIR"
+  fi
+  mv -- "$SRC" "$OUT_DIR"
 fi
-if [ -e "$OUT_DIR" ] || [ -L "$OUT_DIR" ]; then
-  remove_dir_or_link "$OUT_DIR"
-fi
-mv -- "$SRC" "$OUT_DIR"
 
 LATEST="$HERE/WebpageAgent-Latest"
 echo "Creating directory link: ${LATEST} -> ${OUT_DIR}"

@@ -114,11 +114,13 @@ function Get-UniqueExtractName {
   }
 }
 
-function Read-ExtractConflictChoice {
+function Read-ConflictChoice {
+  param([switch]$IncludeRename)
   while ($true) {
     Write-Host '  [1] 覆盖（默认，回车或 10 秒）'
     Write-Host '  [2] 取消'
-    Write-Host '  [3] 改名'
+    if ($IncludeRename) { Write-Host '  [3] 改名' }
+    Write-Host '  [4] 保留现有文件，跳过本次下载/解压缩'
     Write-Host -NoNewline '请选择 [1]: '
     $raw = Read-LineOrTimeout -Seconds 10
     if ($null -eq $raw) {
@@ -129,19 +131,40 @@ function Read-ExtractConflictChoice {
     $key = $trim.ToLowerInvariant()
     if ($key -eq '' -or $key -eq '1') { return 'overwrite' }
     if ($key -eq '2' -or $key -eq 'c' -or $key -eq 'cancel' -or $key -eq 'n' -or $key -eq 'q' -or $trim -eq '取消') { return 'cancel' }
-    if ($key -eq '3' -or $key -eq 'r' -or $key -eq 'rename' -or $trim -eq '改名') { return 'rename' }
+    if ($IncludeRename -and ($key -eq '3' -or $key -eq 'r' -or $key -eq 'rename' -or $trim -eq '改名')) { return 'rename' }
+    if ($key -eq '4' -or $key -eq 'k' -or $key -eq 'keep' -or $key -eq 'skip' -or $trim -eq '保留' -or $trim -eq '跳过') { return 'keep' }
     Write-Host ("无效选择：{0}，请重试。" -f $raw)
   }
+}
+
+function Get-ZipRootName {
+  param([string]$ZipPath)
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $archive = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+  try {
+    foreach ($entry in $archive.Entries) {
+      $full = ($entry.FullName -replace '\\', '/')
+      if ($full) { return $full.Split('/')[0] }
+    }
+  } finally {
+    $archive.Dispose()
+  }
+  return $null
 }
 
 function Expand-WebpageAgentZip {
   param([string]$ZipPath, [string]$Here, [string]$ZipRoot)
   $outDir = [IO.Path]::GetFullPath((Join-Path $Here $ZipRoot))
+  $mode = 'extract'
   if (Test-Path -LiteralPath $outDir) {
     Write-Host ''
-    Write-Host ("解压目标已存在：{0}" -f $outDir)
-    $mode = Read-ExtractConflictChoice
+    Write-Host ("解压目标已存在（全路径）：{0}" -f $outDir)
+    $mode = Read-ConflictChoice -IncludeRename
     if ($mode -eq 'cancel') { return $null }
+    if ($mode -eq 'keep') {
+      Write-Host ("保留现有目录，跳过解压缩：{0}" -f $outDir)
+      return $outDir
+    }
     if ($mode -eq 'rename') {
       $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
       $newName = Get-UniqueExtractName -BaseDir $Here -Suggested ('{0}-{1}' -f $ZipRoot, $stamp)
@@ -154,16 +177,22 @@ function Expand-WebpageAgentZip {
     Write-Host "Extracting to $Here"
   }
 
-  $unpack = Join-Path (Split-Path -Parent $ZipPath) 'unpack'
-  Expand-Archive -LiteralPath $ZipPath -DestinationPath $unpack -Force
-  $src = Join-Path $unpack $ZipRoot
-  if (-not (Test-Path -LiteralPath $src -PathType Container)) {
-    throw "Zip extracted, but folder not found: $src"
+  $stage = Join-Path $Here ($tmpPrefix + [Guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $stage | Out-Null
+  try {
+    $unpack = Join-Path $stage 'unpack'
+    Expand-Archive -LiteralPath $ZipPath -DestinationPath $unpack -Force
+    $src = Join-Path $unpack $ZipRoot
+    if (-not (Test-Path -LiteralPath $src -PathType Container)) {
+      throw "Zip extracted, but folder not found: $src"
+    }
+    if (Test-Path -LiteralPath $outDir) {
+      Remove-DirOrLink -Path $outDir
+    }
+    Move-Item -LiteralPath $src -Destination $outDir
+  } finally {
+    Remove-DirOrLink -Path $stage
   }
-  if (Test-Path -LiteralPath $outDir) {
-    Remove-DirOrLink -Path $outDir
-  }
-  Move-Item -LiteralPath $src -Destination $outDir
   if (-not (Test-Path -LiteralPath $outDir -PathType Container)) {
     throw "Zip extracted, but folder not found: $outDir"
   }
@@ -188,6 +217,17 @@ function Get-AppPathExe {
     }
   }
   return $null
+}
+
+function Open-ExtensionsPage {
+  param([string]$Kind)
+  if ($Kind -eq 'edge') {
+    $cmd = 'Set-Clipboard -Value ([string]([char]101+[char]100+[char]103+[char]101+[char]58+[char]47+[char]47+[char]101+[char]120+[char]116+[char]101+[char]110+[char]115+[char]105+[char]111+[char]110+[char]115+[char]47)); Start-Process msedge; Start-Sleep 2; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(''^l''); Start-Sleep -m 200; [System.Windows.Forms.SendKeys]::SendWait(''^v''); Start-Sleep -m 100; [System.Windows.Forms.SendKeys]::SendWait(''{ENTER}'')'
+  } else {
+    $cmd = 'Set-Clipboard -Value ([string]([char]99+[char]104+[char]114+[char]111+[char]109+[char]101+[char]58+[char]47+[char]47+[char]101+[char]120+[char]116+[char]101+[char]110+[char]115+[char]105+[char]111+[char]110+[char]115+[char]47)); Start-Process chrome; Start-Sleep 2; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(''^l''); Start-Sleep -m 200; [System.Windows.Forms.SendKeys]::SendWait(''^v''); Start-Sleep -m 100; [System.Windows.Forms.SendKeys]::SendWait(''{ENTER}'')'
+  }
+  $p = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $cmd) -Wait -PassThru
+  if ($p.ExitCode -ne 0) { throw 'open extensions page failed' }
 }
 
 function Find-BrowserExe {
@@ -257,35 +297,37 @@ if ($zips.Count -gt 1) {
 }
 
 Clear-InstallerTemps -BaseDir $here
-$stage = Join-Path $here ($tmpPrefix + [Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $stage | Out-Null
-$zip = Join-Path $stage 'pkg.zip'
-$outDir = $null
-try {
-  $url = [string]$zipAsset.browser_download_url
-  Write-Host ("Downloading {0} ({1})" -f $zipAsset.name, $url)
-  Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -UserAgent $ua
-
-  Add-Type -AssemblyName System.IO.Compression.FileSystem
-  $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
-  try {
-    $root = $null
-    foreach ($entry in $archive.Entries) {
-      $full = ($entry.FullName -replace '\\', '/')
-      if ($full) {
-        $root = $full.Split('/')[0]
-        break
-      }
-    }
-  } finally {
-    $archive.Dispose()
+$url = [string]$zipAsset.browser_download_url
+$zipName = [IO.Path]::GetFileName(([string]$zipAsset.name).Trim())
+if (-not $zipName) { $zipName = 'WebpageAgent-latest.zip' }
+$zip = [IO.Path]::GetFullPath((Join-Path $here $zipName))
+Write-Host ''
+Write-Host '下载链接（2 秒后开始下载）：'
+Write-Host $url
+Start-Sleep -Seconds 2
+if (Test-Path -LiteralPath $zip) {
+  Write-Host ''
+  Write-Host ("已存在同名文件（全路径）：{0}" -f $zip)
+  $zipMode = Read-ConflictChoice
+  if ($zipMode -eq 'cancel') {
+    Write-Host '已取消下载。'
+    Read-Host '按 Enter 键退出'
+    exit 0
   }
-  if (-not $root) { throw 'Zip has no entries.' }
-
-  $outDir = Expand-WebpageAgentZip -ZipPath $zip -Here $here -ZipRoot $root
-} finally {
-  Remove-DirOrLink -Path $stage
+  if ($zipMode -ne 'keep') {
+    Write-Host ("Downloading {0}" -f $zipName)
+    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -UserAgent $ua
+  } else {
+    Write-Host ("保留现有文件，跳过下载：{0}" -f $zip)
+  }
+} else {
+  Write-Host ("Downloading {0}" -f $zipName)
+  Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -UserAgent $ua
 }
+
+$root = Get-ZipRootName -ZipPath $zip
+if (-not $root) { throw 'Zip has no entries.' }
+$outDir = Expand-WebpageAgentZip -ZipPath $zip -Here $here -ZipRoot $root
 
 if (-not $outDir) {
   Write-Host '已取消解压。'
@@ -334,12 +376,17 @@ if ($browserKind -eq 'edge') {
   $extUrl = 'chrome://extensions/'
 }
 
-$exe = Find-BrowserExe $browserKind
-if ($exe) {
-  Write-Host ("正在打开新的 {0} 窗口：{1}" -f $browserName, $extUrl)
-  Start-Process -FilePath $exe -ArgumentList @('--new-window', $extUrl)
-} else {
-  Write-Host ("未找到 {0}，请手动打开：{1}" -f $browserName, $extUrl)
+Write-Host ("正在打开 {0} 并转到：{1}" -f $browserName, $extUrl)
+try {
+  Open-ExtensionsPage -Kind $browserKind
+} catch {
+  $exe = Find-BrowserExe $browserKind
+  if ($exe) {
+    Start-Process -FilePath $exe
+    Write-Host ("已启动 {0}，请在地址栏粘贴：{1}" -f $browserName, $extUrl)
+  } else {
+    Write-Host ("未找到 {0}，请手动打开：{1}" -f $browserName, $extUrl)
+  }
 }
 
 Write-Host ''
