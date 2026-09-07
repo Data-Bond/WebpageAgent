@@ -99,6 +99,17 @@ ok(/importScripts\('shared\/webSkill\.js'\)/.test(bg), '后台加载 webSkill �
 ok(/shared\/webSkill\.js',\s*'panel\.js'/.test(bg), '面板注入先加载 webSkill.js');
 ok(/【技能变量占位符】/.test(bg) && /\{\{变量名\}\}/.test(bg), '运行时手册钉死技能变量占位符规则');
 ok(/includeValues: !!msg\.includeValues/.test(bg), '导出透传 includeValues');
+ok(/listWebSkills: true, exportWebSkills: true, importWebSkills: true/.test(bg),
+  '设置页端口允许列出/导出/导入 WEB-SKILL');
+ok(/id="exportSkillsSelectedBtn"/.test(settingsHtml) && /id="exportSkillsAllBtn"/.test(settingsHtml)
+  && /id="skillSelectAllBtn"/.test(settingsHtml) && /id="skillInvertBtn"/.test(settingsHtml)
+  && /导出含个人数据/.test(settingsHtml) && /exportWebSkills/.test(settingsSrc)
+  && /includeValues: !!\(\$\('exportSkillValues'\)/.test(settingsSrc)
+  && /web-skill\.json/.test(settingsSrc) && /web-skill-pack\.json/.test(bg)
+  && !/web-skill\.md/.test(settingsSrc) && !/web-skill-pack\.md/.test(bg),
+  '设置页可导出 WEB-SKILL JSON，含全选反选与个人数据开关');
+ok(/id="uploadSkillsInput"/.test(settingsHtml) && /importWebSkills/.test(settingsSrc),
+  '重载可选择文件导入 WEB-SKILL');
 ok(/skillContext: activeSkillContext/.test(panelSrc), '发送任务携带技能变量上下文');
 ok(/substituteSkillVars/.test(bg), '执行 ops 前替换技能变量');
 ok(/header-action/.test(panelSrc), '标题栏文本按钮样式统一');
@@ -1477,7 +1488,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.4.1', '锁步版本为 5.4.1');
+ok(manifestVer === '5.4.2', '锁步版本为 5.4.2');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -2264,8 +2275,40 @@ ok(/diagCapKb: 50/.test(bg) && /id="diagCapKb"/.test(settingsHtml) && /诊断探
   '诊断探针日志上限默认 50KB 且可在全局配置改');
 ok(/诊断记录/.test(settingsHtml) && /诊断数据/.test(settingsHtml) && /cmd === 'exportDiag'/.test(bg),
   '全局配置可下载诊断数据');
-ok(/id="downloadDataBtn"/.test(settingsHtml) && /配置重载/.test(settingsHtml) && /id="reloadConfigBtn"/.test(settingsHtml),
-  '导入导出拆成数据下载与配置重载两张卡');
+ok(/id="downloadConfigBtn"/.test(settingsHtml) && />下载</.test(settingsHtml)
+  && /导出WEB-SKILL/.test(settingsHtml) && /下载其他数据/.test(settingsHtml)
+  && />重载</.test(settingsHtml) && /导入配置/.test(settingsHtml) && /导入WEB-SKILL/.test(settingsHtml)
+  && /id="importConfigBtn"/.test(settingsHtml) && /id="importSkillsBtn"/.test(settingsHtml),
+  '下载与重载分组：配置 / WEB-SKILL / 其他数据，以及导入配置与导入技能');
+(function () {
+  const downloadCardHtml = settingsHtml.slice(settingsHtml.indexOf('id="downloadCard"'), settingsHtml.indexOf('id="reloadCard"'));
+  ok(!/subhead/.test(downloadCardHtml) && !/导出选中/.test(downloadCardHtml)
+    && /id="downloadConfigBtn">下载配置</.test(downloadCardHtml)
+    && /id="exportSkillsBtn">导出WEB-SKILL</.test(downloadCardHtml)
+    && /id="downloadOtherBtn">下载其他数据</.test(downloadCardHtml)
+    && downloadCardHtml.indexOf('downloadConfigBtn') < downloadCardHtml.indexOf('exportSkillsBtn')
+    && downloadCardHtml.indexOf('exportSkillsBtn') < downloadCardHtml.indexOf('downloadOtherBtn'),
+    '下载卡片一行三个入口，后续操作在弹出框');
+  const reloadCardHtml = settingsHtml.slice(settingsHtml.indexOf('id="reloadCard"'), settingsHtml.indexOf('诊断记录'));
+  ok(/id="importConfigBtn">导入配置</.test(reloadCardHtml)
+    && /id="importSkillsBtn">导入WEB-SKILL</.test(reloadCardHtml)
+    && !/subhead/.test(reloadCardHtml) && !/选择文件并导入/.test(reloadCardHtml),
+    '重载卡片两个导入按钮直接选文件');
+})();
+ok(/id="exportSkillsModal"/.test(settingsHtml) && /id="exportOtherModal"/.test(settingsHtml)
+  && /openModal\('exportSkillsModal'\)/.test(settingsSrc)
+  && /openModal\('exportOtherModal'\)/.test(settingsSrc)
+  && /id="downloadOtherConfirm"/.test(settingsHtml),
+  '导出技能与下载其他数据走弹出框');
+ok(/id="exportPickerModal"/.test(settingsHtml) && /下载配置/.test(settingsHtml)
+  && settingsHtml.indexOf('id="exportPickerConfirm"') < settingsHtml.indexOf('id="exportConfigBody"')
+  && /data-kind/.test(settingsSrc) && /textIndexes/.test(settingsSrc) && /providerPickerLabel/.test(settingsSrc)
+  && /cb\.checked = false/.test(settingsSrc)
+  && /topCard\('文本模型 System Prompt'/.test(settingsSrc)
+  && !/appendExportLeaf\(kids, '文本模型 System Prompt'/.test(settingsSrc)
+  && /fillConfigPicker/.test(settingsSrc) && /fillRecordsPicker/.test(settingsSrc)
+  && /id="exportRecordsBody"/.test(settingsHtml) && /诊断数据/.test(settingsHtml),
+  '下载配置弹窗只含配置项，记录数据在下载其他数据；System Prompt 与 provider 分卡勾选');
 ok(/ARCHIVE_REDACT_MAX_BYTES = 20 \* 1024/.test(bg) && /function planArchiveRedactChunks/.test(bg),
   '存档脱敏不超过 20KB 不分拆');
 ok(/provider-row:nth-child\(8n\+1\)/.test(settingsHtml) && /#dceaff/.test(settingsHtml),
@@ -2279,15 +2322,6 @@ ok(/provider-test/.test(settingsSrc) && /连接性测试/.test(settingsSrc) && /
 ok(/id="resultModal"/.test(settingsHtml) && /data-close-modal="resultModal"/.test(settingsHtml)
   && /providerTestResult/.test(settingsSrc),
   'provider 测试结果（含错误）显示在可关闭弹出框');
-ok(/id="exportPickerModal"/.test(settingsHtml) && /记录数据/.test(settingsHtml) && /配置数据/.test(settingsHtml)
-  && /flex-direction: column/.test(settingsHtml)
-  && settingsHtml.indexOf('id="exportPickerConfirm"') < settingsHtml.indexOf('id="exportRecordsBody"')
-  && settingsHtml.indexOf('id="exportRecordsBody"') < settingsHtml.indexOf('id="exportConfigBody"')
-  && /data-kind/.test(settingsSrc) && /textIndexes/.test(settingsSrc) && /providerPickerLabel/.test(settingsSrc)
-  && /cb\.checked = false/.test(settingsSrc)
-  && /topCard\('文本模型 System Prompt'/.test(settingsSrc)
-  && !/appendExportLeaf\(kids, '文本模型 System Prompt'/.test(settingsSrc),
-  '数据下载弹窗上下排列，按钮在前，System Prompt 与 provider 分卡勾选');
 const pickerNameBox = {};
 try {
   vm.runInNewContext(
@@ -3091,8 +3125,11 @@ ok(/if \(!running\) setRunning\(true\);\s*upsertLlmCallCard/.test(panelSrc),
 ok(/可输入\/可新建 combobox/.test(bg) && /allow-create/.test(bg),
   'PLAYBOOK 要求可输入 combobox 走 selectOption');
 const readmeSrc = fs.readFileSync(path.join(__dirname, 'README.md'), 'utf8');
-ok(/图 1/.test(readmeSrc) && /六句指令完成发布软件流程自动化/.test(readmeSrc),
-  'README 能做什么有图 1 解说');
+ok(/<img src="doc\/screenshot1\.png"[\s\S]*\*\*图1\. 六句指令完成发布软件流程自动化\*\*/.test(readmeSrc)
+  && !/记录首页/.test(readmeSrc),
+  'README 图1 解说在图片下方且无流程长句');
+ok(/技能\r?\n\r?\n<img src="doc\/screenshot1\.png"/.test(readmeSrc), 'README 截图前空一行');
+ok(/\*\*图1\. 六句指令完成发布软件流程自动化\*\*\r?\n\r?\n## 安装/.test(readmeSrc), 'README 图注后空一行');
 ok(/doc\/screenshot1\.png/.test(readmeSrc) && fs.existsSync(path.join(__dirname, 'doc/screenshot1.png')),
   'README 引用 doc/screenshot1.png 且文件存在');
 ok(/max-width:100%/.test(readmeSrc), 'README 截图随页面宽度缩放');

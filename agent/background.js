@@ -6122,6 +6122,12 @@ function broadcastUiConfig(cfg) {
   settingsPorts.forEach((p) => { post(p, settingsPayload); });
 }
 
+function broadcastWebSkills(skills) {
+  const payload = { type: 'webSkills', skills: (skills || []).map(publicWebSkill) };
+  settingsPorts.forEach((p) => { post(p, payload); });
+  panelPorts.forEach((p) => { post(p, payload); });
+}
+
 function postToTab(tabId, fallbackPort, obj) {
   const current = panelPorts.get(tabId);
   if (current && hydratedPanelTabs.has(tabId)) {
@@ -7160,7 +7166,8 @@ chrome.runtime.onConnect.addListener((port) => {
   }
   const SETTINGS_CMDS = {
     getConfig: true, saveConfig: true, testLLM: true, testProvider: true, exportConfig: true, importConfig: true,
-    exportDiag: true, clearDiag: true, diagFail: true, ping: true
+    exportDiag: true, clearDiag: true, diagFail: true, ping: true,
+    listWebSkills: true, exportWebSkills: true, importWebSkills: true
   };
   const tab = port.sender && port.sender.tab;
   const tabId = tab ? tab.id : null;
@@ -7178,6 +7185,8 @@ chrome.runtime.onConnect.addListener((port) => {
       diagHit('settings');
       const config = await getConfigMerged();
       postMsg({ type: 'config', config: settingsConfigPayload(config) });
+      const skills = await loadWebSkills();
+      postMsg({ type: 'webSkills', skills: skills.map(publicWebSkill) });
       return;
     }
     if (tabId != null) await restorePendingState(tabId);
@@ -7555,6 +7564,7 @@ chrome.runtime.onConnect.addListener((port) => {
           return;
         }
         postMsg({ type: 'webSkillSaved', ok: true, skill: publicWebSkill(v.skill), skills: next.map(publicWebSkill) });
+        broadcastWebSkills(next);
       })();
     } else if (cmd === 'deleteWebSkill') {
       (async () => {
@@ -7567,6 +7577,7 @@ chrome.runtime.onConnect.addListener((port) => {
           return;
         }
         postMsg({ type: 'webSkillDeleted', ok: true, id: id, skills: next.map(publicWebSkill) });
+        broadcastWebSkills(next);
       })();
     } else if (cmd === 'exportWebSkills') {
       (async () => {
@@ -7581,7 +7592,8 @@ chrome.runtime.onConnect.addListener((port) => {
           type: 'webSkillsExport',
           ok: true,
           json: JSON.stringify(exportWebSkillPack(picked, { includeValues: !!msg.includeValues }), null, 2),
-          count: picked.length
+          count: picked.length,
+          filename: picked.length === 1 ? 'web-skill.json' : 'web-skill-pack.json'
         });
       })();
     } else if (cmd === 'importWebSkills') {
@@ -7617,6 +7629,7 @@ chrome.runtime.onConnect.addListener((port) => {
           return;
         }
         postMsg({ type: 'webSkillsImported', ok: true, imported: added.length, skills: next.map(publicWebSkill) });
+        broadcastWebSkills(next);
       })();
     } else if (cmd === 'buildSkillDraft') {
       (async () => {

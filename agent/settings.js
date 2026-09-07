@@ -35,6 +35,8 @@
   let reconnecting = false;
   let pendingProviderTestId = '';
   let pendingDownloads = { config: false, diag: false };
+  let cachedSkills = [];
+  let selectedSkillIds = {};
 
   function $(id) { return document.getElementById(id); }
 
@@ -628,13 +630,10 @@
     el.className = 'status' + (kind === 'ok' ? ' ok' : kind === 'err' ? ' err' : '');
   }
 
-  function fillExportPicker() {
+  function fillRecordsPicker() {
     const records = $('exportRecordsBody');
-    const configBody = $('exportConfigBody');
-    if (!records || !configBody) return;
-    records.textContent = '';
-    configBody.textContent = '';
-    setExportPickerStatus('');
+    if (!records || records.getAttribute('data-filled') === '1') return;
+    records.setAttribute('data-filled', '1');
     appendExportLeaf(records, '诊断数据', { 'data-record': 'diag' });
     const hoursWrap = mk('div', 'export-hours');
     const hoursLab = mk('label', 'field');
@@ -657,6 +656,13 @@
     const hoursHint = mk('div', 'hint', { textContent: '勾选「诊断数据」后生效。无错误时仍会下载文件并写明「没有错误」。' });
     hoursWrap.appendChild(hoursHint);
     records.appendChild(hoursWrap);
+  }
+
+  function fillConfigPicker() {
+    const configBody = $('exportConfigBody');
+    if (!configBody) return;
+    configBody.textContent = '';
+    setExportPickerStatus('');
     function topCard(label, attrs) {
       const wrap = mk('div', 'export-group');
       const lab = mk('label', 'export-parent');
@@ -697,10 +703,20 @@
     if ($('exportPickerIncludeKeys')) $('exportPickerIncludeKeys').checked = false;
   }
 
-  function collectExportPick() {
+  function collectRecordsPick() {
+    const pick = { diagRecords: false, diagHours: 24 };
+    const records = $('exportRecordsBody');
+    if (records) {
+      records.querySelectorAll('input[data-record]').forEach((el) => {
+        if (el.checked && el.getAttribute('data-record') === 'diag') pick.diagRecords = true;
+      });
+    }
+    pick.diagHours = clampInt($('downloadDiagHours') && $('downloadDiagHours').value, 1, 24, 24);
+    return pick;
+  }
+
+  function collectConfigPick() {
     const pick = {
-      diagRecords: false,
-      diagHours: 24,
       diag: false,
       ui: false,
       runtime: false,
@@ -710,14 +726,7 @@
       textIndexes: [],
       ocrIndexes: []
     };
-    const records = $('exportRecordsBody');
     const configBody = $('exportConfigBody');
-    if (records) {
-      records.querySelectorAll('input[data-record]').forEach((el) => {
-        if (el.checked && el.getAttribute('data-record') === 'diag') pick.diagRecords = true;
-      });
-    }
-    pick.diagHours = clampInt($('downloadDiagHours') && $('downloadDiagHours').value, 1, 24, 24);
     if (!configBody) return pick;
     configBody.querySelectorAll('input[data-card]').forEach((el) => {
       if (!el.checked) return;
@@ -746,8 +755,73 @@
     return (pick.textIndexes && pick.textIndexes.length) || (pick.ocrIndexes && pick.ocrIndexes.length);
   }
 
-  function exportPickHasAny(pick) {
-    return !!(pick && (pick.diagRecords || exportConfigPickHasAny(pick)));
+  function compactSkillUrl(url) {
+    try {
+      const u = new URL(url);
+      return u.host + u.pathname + (u.search ? u.search : '');
+    } catch (e) {
+      return String(url || '');
+    }
+  }
+
+  function selectedSkillIdList() {
+    return Object.keys(selectedSkillIds).filter((id) => selectedSkillIds[id]);
+  }
+
+  function setSkillStatus(text, kind) {
+    const el = $('settingsSkillStatus');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = 'status' + (kind === 'ok' ? ' ok' : kind === 'err' ? ' err' : '');
+  }
+
+  function setOtherStatus(text, kind) {
+    const el = $('downloadOtherStatus');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = 'status' + (kind === 'ok' ? ' ok' : kind === 'err' ? ' err' : '');
+  }
+
+  function renderSettingsSkillList() {
+    const box = $('settingsSkillList');
+    if (!box) return;
+    box.textContent = '';
+    if (!cachedSkills.length) {
+      box.appendChild(mk('div', 'skill-export-empty', {
+        textContent: '还没有 WEB-SKILL，可在对话面板构建或在下方「重载」导入 JSON'
+      }));
+      return;
+    }
+    cachedSkills.slice().sort((a, b) => {
+      return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+    }).forEach((skill) => {
+      if (!skill || !skill.id) return;
+      const row = mk('label', 'skill-export-row');
+      const cb = mk('input', null, { type: 'checkbox' });
+      cb.checked = !!selectedSkillIds[skill.id];
+      cb.addEventListener('change', () => {
+        if (cb.checked) selectedSkillIds[skill.id] = true;
+        else delete selectedSkillIds[skill.id];
+      });
+      const meta = mk('div', 'skill-export-meta');
+      meta.appendChild(mk('div', 'skill-export-name', { textContent: skill.name || '(未命名)' }));
+      meta.appendChild(mk('div', 'skill-export-url', { textContent: compactSkillUrl(skill.pageUrl) }));
+      row.appendChild(cb);
+      row.appendChild(meta);
+      box.appendChild(row);
+    });
+  }
+
+  function exportSkills(ids) {
+    if (!ids || !ids.length) {
+      setSkillStatus('请先勾选要导出的技能', 'err');
+      return;
+    }
+    if (!send('exportWebSkills', {
+      ids: ids,
+      includeValues: !!($('exportSkillValues') && $('exportSkillValues').checked)
+    })) setSkillStatus('未连接后台', 'err');
+    else setSkillStatus('正在导出…');
   }
 
   function collectDownloadConfig() {
@@ -798,6 +872,7 @@
     if (type === 'pong') return;
     if (type === 'config') {
       fillSettings(msg.config);
+      send('listWebSkills');
       if (reconnecting) {
         reconnecting = false;
         setStatus('');
@@ -824,6 +899,30 @@
       if (msg.ok) forceFill = true;
       if (msg.ok) setStatus('已导入并保存配置 ✓', 'ok');
       else setStatus('导入配置失败：' + (msg.error || '文件无效'), 'err');
+    } else if (type === 'webSkills') {
+      cachedSkills = Array.isArray(msg.skills) ? msg.skills : [];
+      renderSettingsSkillList();
+    } else if (type === 'webSkillsExport') {
+      if (msg.ok && typeof msg.json === 'string') {
+        const n = msg.count != null ? msg.count : 1;
+        const name = msg.filename || (n === 1 ? 'web-skill.json' : 'web-skill-pack.json');
+        downloadTextFile(msg.json, name, 'application/json');
+        setSkillStatus('已导出 ' + n + ' 条 WEB-SKILL ✓', 'ok');
+        setStatus('已导出 ' + n + ' 条 WEB-SKILL ✓', 'ok');
+      } else {
+        setSkillStatus('导出失败：' + (msg.error || '未知错误'), 'err');
+      }
+    } else if (type === 'webSkillsImported') {
+      if (msg.ok) {
+        cachedSkills = Array.isArray(msg.skills) ? msg.skills : cachedSkills;
+        renderSettingsSkillList();
+        const n = msg.imported != null ? msg.imported : 0;
+        setSkillStatus('已导入 ' + n + ' 条（同 id 已作为新条目）', 'ok');
+        setStatus('已导入 ' + n + ' 条 WEB-SKILL ✓', 'ok');
+      } else {
+        setSkillStatus('导入失败：' + (msg.error || '文件无效'), 'err');
+        setStatus('导入 WEB-SKILL 失败：' + (msg.error || '文件无效'), 'err');
+      }
     } else if (type === 'diagExport') {
       if (diagExportTimer) { clearTimeout(diagExportTimer); diagExportTimer = null; }
       if (typeof msg.json === 'string') {
@@ -843,6 +942,7 @@
       if (pendingDownloads.diag) {
         pendingDownloads.diag = false;
         finishDownloadStatus(detail);
+        setOtherStatus(detail, 'ok');
       } else {
         setStatus(detail, 'ok');
       }
@@ -919,14 +1019,16 @@
   }
 
   function wire() {
+    fillRecordsPicker();
+    renderSettingsSkillList();
     document.addEventListener('input', (e) => {
       const t = e && e.target;
-      if (t && t.closest && t.closest('#exportPickerModal, #resultModal')) return;
+      if (t && t.closest && t.closest('#exportPickerModal, #exportSkillsModal, #exportOtherModal, #resultModal, #downloadCard, #reloadCard')) return;
       markDirty();
     }, true);
     document.addEventListener('change', (e) => {
       const t = e && e.target;
-      if (t && t.closest && t.closest('#exportPickerModal, #resultModal')) return;
+      if (t && t.closest && t.closest('#exportPickerModal, #exportSkillsModal, #exportOtherModal, #resultModal, #downloadCard, #reloadCard')) return;
       markDirty();
     }, true);
     document.addEventListener('click', (e) => {
@@ -950,25 +1052,33 @@
       setStatus('测试中…');
       send('testLLM', { config: collectConfig() });
     });
-    $('downloadDataBtn').addEventListener('click', () => {
-      fillExportPicker();
+    $('downloadConfigBtn').addEventListener('click', () => {
+      fillConfigPicker();
       openModal('exportPickerModal');
     });
+    $('exportSkillsBtn').addEventListener('click', () => {
+      renderSettingsSkillList();
+      send('listWebSkills');
+      openModal('exportSkillsModal');
+    });
+    $('downloadOtherBtn').addEventListener('click', () => {
+      fillRecordsPicker();
+      setOtherStatus('');
+      openModal('exportOtherModal');
+    });
     $('exportPickerConfirm').addEventListener('click', () => {
-      const pick = collectExportPick();
-      if (!exportPickHasAny(pick)) {
+      const pick = collectConfigPick();
+      if (!exportConfigPickHasAny(pick)) {
         setExportPickerStatus('请至少勾选一项再下载', 'err');
         return;
       }
-      const needConfig = exportConfigPickHasAny(pick);
-      const needDiag = !!pick.diagRecords;
       const includeKeys = !!($('exportPickerIncludeKeys') && $('exportPickerIncludeKeys').checked);
-      if (includeKeys && needConfig && (pick.textIndexes.length || pick.ocrIndexes.length)
+      if (includeKeys && (pick.textIndexes.length || pick.ocrIndexes.length)
         && !window.confirm('将导出完整 API 密钥。确认继续？')) return;
-      pendingDownloads = { config: needConfig, diag: needDiag };
-      let sent = true;
-      if (needConfig) {
-        const configPick = {
+      pendingDownloads = { config: true, diag: false };
+      const sent = send('exportConfig', {
+        includeKeys: includeKeys,
+        pick: {
           diag: pick.diag,
           ui: pick.ui,
           runtime: pick.runtime,
@@ -977,31 +1087,60 @@
           ocrPrompt: pick.ocrPrompt,
           textIndexes: pick.textIndexes,
           ocrIndexes: pick.ocrIndexes
-        };
-        sent = send('exportConfig', {
-          includeKeys: includeKeys,
-          pick: configPick,
-          config: collectDownloadConfig()
-        }) && sent;
-      }
-      if (needDiag) {
-        const hours = pick.diagHours;
-        if (!send('exportDiag', { hours: hours })) sent = false;
-        else {
-          if (diagExportTimer) clearTimeout(diagExportTimer);
-          diagExportTimer = setTimeout(() => {
-            diagExportTimer = null;
-            pendingDownloads.diag = false;
-            setStatus('导出超时：后台未响应。请到 chrome://extensions 重新加载插件后再试。', 'err');
-          }, 8000);
-        }
-      }
+        },
+        config: collectDownloadConfig()
+      });
       if (!sent) {
         pendingDownloads = { config: false, diag: false };
         return;
       }
       closeModal('exportPickerModal');
       setStatus('正在下载…');
+    });
+    $('downloadOtherConfirm').addEventListener('click', () => {
+      const pick = collectRecordsPick();
+      if (!pick.diagRecords) {
+        setOtherStatus('请至少勾选一项再下载', 'err');
+        return;
+      }
+      setOtherStatus('');
+      pendingDownloads = { config: false, diag: true };
+      const hours = pick.diagHours;
+      if (!send('exportDiag', { hours: hours })) {
+        pendingDownloads = { config: false, diag: false };
+        return;
+      }
+      if (diagExportTimer) clearTimeout(diagExportTimer);
+      diagExportTimer = setTimeout(() => {
+        diagExportTimer = null;
+        pendingDownloads.diag = false;
+        setStatus('导出超时：后台未响应。请到 chrome://extensions 重新加载插件后再试。', 'err');
+      }, 8000);
+      closeModal('exportOtherModal');
+      setStatus('正在下载…');
+    });
+    $('exportSkillsSelectedBtn').addEventListener('click', () => {
+      exportSkills(selectedSkillIdList());
+    });
+    $('exportSkillsAllBtn').addEventListener('click', () => {
+      const ids = cachedSkills.map((s) => s.id).filter(Boolean);
+      if (!ids.length) {
+        setSkillStatus('技能库为空', 'err');
+        return;
+      }
+      exportSkills(ids);
+    });
+    $('skillSelectAllBtn').addEventListener('click', () => {
+      cachedSkills.forEach((s) => { if (s && s.id) selectedSkillIds[s.id] = true; });
+      renderSettingsSkillList();
+    });
+    $('skillInvertBtn').addEventListener('click', () => {
+      cachedSkills.forEach((s) => {
+        if (!s || !s.id) return;
+        if (selectedSkillIds[s.id]) delete selectedSkillIds[s.id];
+        else selectedSkillIds[s.id] = true;
+      });
+      renderSettingsSkillList();
     });
     document.addEventListener('click', (e) => {
       const t = e && e.target;
@@ -1013,9 +1152,11 @@
       if (e.key !== 'Escape') return;
       closeModal('resultModal');
       closeModal('exportPickerModal');
+      closeModal('exportSkillsModal');
+      closeModal('exportOtherModal');
     });
-    $('reloadConfigBtn').addEventListener('click', () => {
-      if (formDirty && !window.confirm('当前有未保存修改，重载将用文件覆盖本页已识别的字段。继续？')) return;
+    $('importConfigBtn').addEventListener('click', () => {
+      if (formDirty && !window.confirm('当前有未保存修改，导入将用文件覆盖本页已识别的字段。继续？')) return;
       $('uploadConfigInput').click();
     });
     $('uploadConfigInput').addEventListener('change', async () => {
@@ -1028,6 +1169,24 @@
         return;
       }
       if (send('importConfig', { raw: String(text) })) setStatus('正在导入…');
+    });
+    $('importSkillsBtn').addEventListener('click', () => {
+      $('uploadSkillsInput').click();
+    });
+    $('uploadSkillsInput').addEventListener('change', async () => {
+      const file = $('uploadSkillsInput').files && $('uploadSkillsInput').files[0];
+      $('uploadSkillsInput').value = '';
+      if (!file) return;
+      let text;
+      try { text = await file.text(); } catch (e) {
+        setStatus('读取文件失败：' + String(e && e.message || e), 'err');
+        setSkillStatus('读取文件失败：' + String(e && e.message || e), 'err');
+        return;
+      }
+      if (send('importWebSkills', { raw: String(text) })) {
+        setStatus('正在导入 WEB-SKILL…');
+        setSkillStatus('正在导入…');
+      }
     });
     $('clearDiagBtn').addEventListener('click', () => {
       if (!window.confirm('清空本机保存的错误与活动轨迹？不含配置与对话。')) return;

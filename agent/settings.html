@@ -59,6 +59,42 @@
       color: #4a5270;
       margin-bottom: 10px;
     }
+    .subhead {
+      font-size: 12px;
+      font-weight: 700;
+      color: #4a5270;
+      margin: 16px 0 6px;
+    }
+    .skill-export-list {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #f7f8fc;
+      max-height: 280px;
+      overflow: auto;
+      padding: 4px 8px;
+      margin: 6px 0 8px;
+    }
+    .skill-export-empty {
+      padding: 10px 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .skill-export-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 7px 2px;
+      border-bottom: 1px solid var(--line);
+    }
+    .skill-export-row:last-child { border-bottom: none; }
+    .skill-export-row input { margin-top: 3px; flex: 0 0 auto; }
+    .skill-export-meta { min-width: 0; }
+    .skill-export-name { font-weight: 600; color: var(--text); }
+    .skill-export-url {
+      color: var(--muted);
+      font-size: 11px;
+      word-break: break-all;
+    }
     label.field {
       display: flex;
       flex-direction: column;
@@ -389,26 +425,30 @@
       </div>
     </div>
 
-    <div class="card">
-      <div class="heading">数据下载</div>
-      <div class="hint">按需勾选后下载。记录数据在上、配置数据在下；可只下其中一类，也可同时下（会分别生成文件）。配置默认掩码密钥，需要明文时在弹出框勾选并确认（文件名含 SECRETS）。</div>
+    <div class="card" id="downloadCard">
+      <div class="heading">下载</div>
+      <div class="hint">按类别分别下载。点按钮后在弹出框里勾选或导出；配置与记录会生成不同文件，WEB-SKILL 为 JSON。</div>
       <div class="io-bar">
-        <button type="button" class="btn" id="downloadDataBtn">⬇ 数据下载</button>
+        <button type="button" class="btn" id="downloadConfigBtn">下载配置</button>
+        <button type="button" class="btn" id="exportSkillsBtn">导出WEB-SKILL</button>
+        <button type="button" class="btn" id="downloadOtherBtn">下载其他数据</button>
       </div>
     </div>
 
-    <div class="card">
-      <div class="heading">配置重载</div>
-      <div class="hint">用 JSON 覆盖本页已勾选范围内的配置。文件中没有的字段保持现状；密钥为 ******** 时沿用本机已有值。</div>
+    <div class="card" id="reloadCard">
+      <div class="heading">重载</div>
+      <div class="hint">选择 JSON 文件载入。配置文件中没有的字段保持现状；密钥为 ******** 时沿用本机已有值。WEB-SKILL 同 id 会作为新条目导入。</div>
       <div class="io-bar">
-        <button type="button" class="btn" id="reloadConfigBtn">⬆ 选择文件并重载</button>
+        <button type="button" class="btn" id="importConfigBtn">导入配置</button>
+        <button type="button" class="btn" id="importSkillsBtn">导入WEB-SKILL</button>
         <input id="uploadConfigInput" type="file" accept=".json,application/json" hidden>
+        <input id="uploadSkillsInput" type="file" accept=".json,application/json" hidden>
       </div>
     </div>
 
     <div class="card">
       <div class="heading">诊断记录</div>
-      <div class="hint">记录功能探针（含成功路径的活动轨迹）与错误类，不含 API 密钥、提示词、页面内容或附件。保留最近 24 小时，并受上限约束。下载诊断数据请用上方「数据下载」。</div>
+      <div class="hint">记录功能探针（含成功路径的活动轨迹）与错误类，不含 API 密钥、提示词、页面内容或附件。保留最近 24 小时，并受上限约束。下载诊断数据请用上方「下载」里的「下载其他数据」。</div>
       <label class="field">
         诊断探针日志的上限（KB）
         <input id="diagCapKb" type="number" min="10" max="200" step="1" value="50">
@@ -530,26 +570,53 @@
     <div class="modal-backdrop" data-close-modal="exportPickerModal"></div>
     <div class="modal-dialog wide" role="dialog" aria-labelledby="exportPickerTitle" aria-modal="true">
       <button type="button" class="modal-x" data-close-modal="exportPickerModal" aria-label="关闭">×</button>
-      <div class="modal-title" id="exportPickerTitle">数据下载</div>
-      <div class="hint">默认不勾选。记录数据在上、配置数据在下。每个 provider 按「名称」独立勾选；两段 System Prompt 各是独立卡片。</div>
+      <div class="modal-title" id="exportPickerTitle">下载配置</div>
+      <div class="hint">默认不勾选。每个 provider 按「名称」独立勾选；两段 System Prompt 各是独立卡片。</div>
       <div class="io-bar">
         <button type="button" class="btn primary" id="exportPickerConfirm">下载所选</button>
         <button type="button" class="btn" data-close-modal="exportPickerModal">取消</button>
       </div>
       <div class="status" id="exportPickerStatus"></div>
-      <div class="export-cols">
-        <div class="export-col">
-          <div class="export-col-title">记录数据</div>
-          <div id="exportRecordsBody"></div>
-        </div>
-        <div class="export-col">
-          <div class="export-col-title">配置数据</div>
-          <div id="exportConfigBody"></div>
-          <label class="check-row" style="margin-top:10px">
-            <input type="checkbox" id="exportPickerIncludeKeys"> 导出完整密钥
-          </label>
-        </div>
+      <div id="exportConfigBody"></div>
+      <label class="check-row" style="margin-top:10px">
+        <input type="checkbox" id="exportPickerIncludeKeys"> 导出完整密钥
+      </label>
+    </div>
+  </div>
+
+  <div class="modal" id="exportSkillsModal" hidden>
+    <div class="modal-backdrop" data-close-modal="exportSkillsModal"></div>
+    <div class="modal-dialog wide" role="dialog" aria-labelledby="exportSkillsTitle" aria-modal="true">
+      <button type="button" class="modal-x" data-close-modal="exportSkillsModal" aria-label="关闭">×</button>
+      <div class="modal-title" id="exportSkillsTitle">导出WEB-SKILL</div>
+      <div class="hint">可多选。导出为 JSON（.json）。点选是否把变量里的个人数据写进文件。</div>
+      <div class="io-bar">
+        <button type="button" class="btn" id="exportSkillsSelectedBtn">导出选中</button>
+        <button type="button" class="btn" id="exportSkillsAllBtn">导出全部</button>
+        <button type="button" class="btn" id="skillSelectAllBtn">全选</button>
+        <button type="button" class="btn" id="skillInvertBtn">反选</button>
+        <button type="button" class="btn" data-close-modal="exportSkillsModal">取消</button>
       </div>
+      <label class="check-row">
+        <input type="checkbox" id="exportSkillValues"> 导出含个人数据
+      </label>
+      <div id="settingsSkillList" class="skill-export-list"></div>
+      <div class="status" id="settingsSkillStatus"></div>
+    </div>
+  </div>
+
+  <div class="modal" id="exportOtherModal" hidden>
+    <div class="modal-backdrop" data-close-modal="exportOtherModal"></div>
+    <div class="modal-dialog" role="dialog" aria-labelledby="exportOtherTitle" aria-modal="true">
+      <button type="button" class="modal-x" data-close-modal="exportOtherModal" aria-label="关闭">×</button>
+      <div class="modal-title" id="exportOtherTitle">下载其他数据</div>
+      <div class="hint">即原先的记录数据（含诊断）。勾选后下载；无错误时仍会下载文件并写明「没有错误」。</div>
+      <div class="io-bar">
+        <button type="button" class="btn primary" id="downloadOtherConfirm">下载所选</button>
+        <button type="button" class="btn" data-close-modal="exportOtherModal">取消</button>
+      </div>
+      <div class="status" id="downloadOtherStatus"></div>
+      <div id="exportRecordsBody"></div>
     </div>
   </div>
   <script src="settings.js"></script>

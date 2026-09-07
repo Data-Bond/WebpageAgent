@@ -4551,7 +4551,7 @@
         case 'webSkillsExport':
           if (msg.ok && typeof msg.json === 'string') {
             const n = msg.count != null ? msg.count : 1;
-            downloadJsonText(msg.json, n === 1 ? 'web-skill.json' : 'web-skill-pack.json');
+            downloadJsonText(msg.json, msg.filename || (n === 1 ? 'web-skill.json' : 'web-skill-pack.json'));
             els.skillLibStatus.textContent = '已导出 ' + n + ' 条 SKILL';
           } else {
             els.skillLibStatus.textContent = '导出失败：' + (msg.error || '未知错误');
