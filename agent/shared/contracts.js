@@ -251,7 +251,7 @@
   };
   var DIAG_CODES = {
     Error: 1, Timeout: 1, Quota: 1, Bridge: 1, Inject: 1, Offscreen: 1,
-    HTTP_429: 1, HTTP_AUTH: 1, HTTP_4xx: 1, HTTP_5xx: 1, Unhandled: 1
+    HTTP_429: 1, HTTP_AUTH: 1, HTTP_4xx: 1, HTTP_5xx: 1, Unhandled: 1, Cancel: 1
   };
   var DIAG_HOURS = { 1: 1, 6: 1, 24: 1 };
 
@@ -303,6 +303,8 @@
 
   function classifyDiagCode(err, codeHint) {
     var hint = String(codeHint || '');
+    if (hint === 'Cancel') return 'Cancel';
+    if (err && err.cancelled) return 'Cancel';
     var msg = '';
     if (err && typeof err === 'object') {
       if (err.code === 'LLM_TIMEOUT') return 'Timeout';
@@ -329,7 +331,13 @@
 
   function makeDiagRecord(input) {
     input = input || {};
-    if (isDiagNoise(input.err)) return null;
+    var hint = String(input.code || '');
+    if (hint === 'Cancel') {
+      var cancelMsg = String((input.err && input.err.message) || input.err || '');
+      if (/No tab with id|tab was discarded|message port closed|Receiving end does not exist/i.test(cancelMsg)) return null;
+    } else if (isDiagNoise(input.err)) {
+      return null;
+    }
     var probe = normalizeDiagProbe(input.probe);
     if (!probe) return null;
     var rec = {

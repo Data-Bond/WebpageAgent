@@ -6,7 +6,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、pagebridge.js 的 BRIDGE_VERSION 相同。
-  var CONTENT_VERSION = '5.4.2';
+  var CONTENT_VERSION = '5.5.0';
   if (window.__dsContentLoaded === CONTENT_VERSION) return;
   try {
     if (typeof window.__dsContentDispose === 'function') window.__dsContentDispose();

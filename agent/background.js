@@ -379,6 +379,28 @@ function diagFail(probe, err, extra) {
   enqueueDiagWrite(rec);
 }
 
+function diagCancel(probe, extra) {
+  extra = extra || {};
+  const rec = WPA_CONTRACTS.makeDiagRecord({
+    probe: probe || 'panel',
+    err: extra.err || cancelledError(),
+    code: 'Cancel',
+    ms: extra.ms,
+    world: extra.world,
+    op: extra.op,
+    trail: diagTrail.slice(),
+    now: Date.now()
+  });
+  if (!rec) return;
+  enqueueDiagWrite(rec);
+}
+
+function noteCallCancelled(reporter, label, probe, startedAt) {
+  if (reporter && typeof reporter.cancelled === 'function') reporter.cancelled(label);
+  const ms = startedAt != null ? (Date.now() - startedAt) : undefined;
+  diagCancel(probe, { ms: ms });
+}
+
 function enqueueDiagMut(fn) {
   const run = diagWriteQueue.then(fn, fn);
   diagWriteQueue = run.catch(function () {});
@@ -1294,8 +1316,34 @@ function cancelledError() {
   return e;
 }
 
-function isUserCancelled(err, cancelRef) {
-  if (cancelRef && cancelRef.cancelled) return true;
+function asAbortSignal(cancelOrSignal) {
+  if (!cancelOrSignal) return null;
+  if (typeof cancelOrSignal.aborted === 'boolean' && typeof cancelOrSignal.addEventListener === 'function') {
+    return cancelOrSignal;
+  }
+  if (cancelOrSignal.signal && typeof cancelOrSignal.signal.aborted === 'boolean') {
+    return cancelOrSignal.signal;
+  }
+  return null;
+}
+
+function isCancelledNow(cancelOrSignal) {
+  if (!cancelOrSignal) return false;
+  if (cancelOrSignal.cancelled) return true;
+  const signal = asAbortSignal(cancelOrSignal);
+  return !!(signal && signal.aborted);
+}
+
+function isAbortLike(err) {
+  if (!err) return false;
+  if (err.cancelled) return true;
+  if (String(err.name || '') === 'AbortError') return true;
+  const msg = String(err.message || err || '');
+  return /The user aborted a request|signal is aborted|已停止/i.test(msg);
+}
+
+function isUserCancelled(err, cancelOrSignal) {
+  if (isCancelledNow(cancelOrSignal)) return true;
   return !!(err && err.cancelled);
 }
 
@@ -1307,15 +1355,84 @@ function makeCancelRef() {
     signal: ac.signal,
     abort: function () {
       this.cancelled = true;
-      try { ac.abort(); } catch (e) {}
+      const reason = cancelledError();
+      try { ac.abort(reason); } catch (e) {
+        try { ac.abort(); } catch (e2) {}
+      }
     }
   };
+}
+
+function absorbAbandonedPromise(promise, diagProbe) {
+  Promise.resolve(promise).then(function () {}, function (e) {
+    if (isAbortLike(e)) return;
+    if (typeof diagFail === 'function') diagFail(diagProbe || 'unhandled', e);
+  });
+}
+
+// 放弃等待，不拆后台 in-flight 请求：MV3 里 fetch.abort() 经常不立刻 reject。
+function awaitOrCancel(promise, cancelOrSignal, diagProbe) {
+  const signal = asAbortSignal(cancelOrSignal);
+  if (!signal) return promise;
+  if (isCancelledNow(cancelOrSignal)) {
+    absorbAbandonedPromise(promise, diagProbe);
+    return Promise.reject(cancelledError());
+  }
+  return new Promise(function (resolve, reject) {
+    var settled = false;
+    function finish(cb, arg) {
+      if (settled) return;
+      settled = true;
+      try { signal.removeEventListener('abort', onAbort); } catch (e) {}
+      cb(arg);
+    }
+    function onAbort() {
+      finish(reject, cancelledError());
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(function (v) {
+      if (signal.aborted) finish(reject, cancelledError());
+      else finish(resolve, v);
+    }, function (e) {
+      if (isCancelledNow(cancelOrSignal) || (e && e.cancelled)) {
+        if (!isAbortLike(e)) absorbAbandonedPromise(Promise.reject(e), diagProbe);
+        finish(reject, cancelledError());
+      } else finish(reject, e);
+    });
+  });
+}
+
+function sleepCancellable(ms, cancelOrSignal) {
+  const n = Math.max(0, Number(ms) || 0);
+  const signal = asAbortSignal(cancelOrSignal);
+  if (n <= 0) {
+    if (isCancelledNow(cancelOrSignal)) return Promise.reject(cancelledError());
+    return Promise.resolve();
+  }
+  return new Promise(function (resolve, reject) {
+    if (isCancelledNow(cancelOrSignal)) {
+      reject(cancelledError());
+      return;
+    }
+    const t = setTimeout(function () {
+      if (signal) {
+        try { signal.removeEventListener('abort', onAbort); } catch (e) {}
+      }
+      resolve();
+    }, n);
+    function onAbort() {
+      clearTimeout(t);
+      reject(cancelledError());
+    }
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 async function notifyCancelled(postMsg, cancelRef, origin, messages) {
   if (cancelRef && cancelRef.tabId != null) hideBusyMaskTab(cancelRef.tabId);
   if (cancelRef && cancelRef.notified) return 'cancelled';
   if (cancelRef) cancelRef.notified = true;
+  diagCancel('panel');
   if (origin && messages) {
     try { await saveHistory(origin, messages); } catch (e) {}
     rememberResumeCheckpoint(origin, messages, '用户停止了任务');
@@ -1586,96 +1703,100 @@ function addLlmUsage(base, add) {
 // 若 400 明确要求某个 temperature，自动用该值重试一次。
 async function callChatCompletions(baseURL, apiKey, model, messages, options) {
   const opts = options || {};
-  const url = chatCompletionsUrl(baseURL);
-  const headers = {
-    'Content-Type': 'application/json',
-    'Authorization': 'Bearer ' + (apiKey || '')
-  };
+  if (isCancelledNow(opts.signal)) throw cancelledError();
+  const diagProbe = opts.diagProbe || 'llm';
+  return awaitOrCancel((async function () {
+    const url = chatCompletionsUrl(baseURL);
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + (apiKey || '')
+    };
 
-  async function once(payload) {
-    const controller = new AbortController();
-    const timeoutMs = opts.timeoutMs || LLM_TEXT_TIMEOUT_BASE_MS;
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try { controller.abort(); } catch (e) {}
-    }, timeoutMs);
-    linkAbort(controller, opts.signal);
-    try {
-      return await fetch(url, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify(payload),
-        signal: controller.signal
-      });
-    } catch (e) {
-      if (isUserCancelled(e) || (opts.signal && opts.signal.aborted)) throw cancelledError();
-      if (timedOut) {
-        const err = new Error('请求大模型超时（' + Math.round(timeoutMs / 1000) + 's）@ ' + url);
-        err.code = 'LLM_TIMEOUT';
-        throw err;
-      }
-      throw new Error('请求大模型网络错误: ' + String(e && e.message || e) + ' @ ' + url);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  let temperature = opts.temperature;
-  let res;
-  try {
-    res = await once(chatCompletionsPayload(model, messages, opts, temperature));
-  } catch (e) {
-    if (isUserCancelled(e) || (opts.signal && opts.signal.aborted)) throw cancelledError();
-    throw e;
-  }
-  if (opts.signal && opts.signal.aborted) throw cancelledError();
-
-  if (!res.ok) {
-    let body = '';
-    try { body = await res.text(); } catch (e) { body = ''; }
-    const allowed = parseAllowedTemperature(body);
-    const tempRejected = res.status === 400 && /temperature/i.test(body);
-    let retryTemp = null;
-    if (tempRejected) {
-      if (allowed != null && allowed !== temperature) retryTemp = allowed;
-      else if (temperature != null) retryTemp = undefined;
-      else retryTemp = 1;
-    }
-    if (retryTemp !== null && retryTemp !== temperature) {
+    async function once(payload) {
+      const controller = new AbortController();
+      const timeoutMs = opts.timeoutMs || LLM_TEXT_TIMEOUT_BASE_MS;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try { controller.abort(); } catch (e) {}
+      }, timeoutMs);
+      linkAbort(controller, opts.signal);
       try {
-        res = await once(chatCompletionsPayload(model, messages, opts, retryTemp));
+        return await fetch(url, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
       } catch (e) {
-        if (isUserCancelled(e) || (opts.signal && opts.signal.aborted)) throw cancelledError();
-        throw e;
+        if (isUserCancelled(e, opts.signal)) throw cancelledError();
+        if (timedOut) {
+          const err = new Error('请求大模型超时（' + Math.round(timeoutMs / 1000) + 's）@ ' + url);
+          err.code = 'LLM_TIMEOUT';
+          throw err;
+        }
+        throw new Error('请求大模型网络错误: ' + String(e && e.message || e) + ' @ ' + url);
+      } finally {
+        clearTimeout(timer);
       }
-      if (opts.signal && opts.signal.aborted) throw cancelledError();
-      if (!res.ok) {
-        try { body = await res.text(); } catch (e) { body = ''; }
+    }
+
+    let temperature = opts.temperature;
+    let res;
+    try {
+      res = await once(chatCompletionsPayload(model, messages, opts, temperature));
+    } catch (e) {
+      if (isUserCancelled(e, opts.signal)) throw cancelledError();
+      throw e;
+    }
+    if (isCancelledNow(opts.signal)) throw cancelledError();
+
+    if (!res.ok) {
+      let body = '';
+      try { body = await res.text(); } catch (e) { body = ''; }
+      const allowed = parseAllowedTemperature(body);
+      const tempRejected = res.status === 400 && /temperature/i.test(body);
+      let retryTemp = null;
+      if (tempRejected) {
+        if (allowed != null && allowed !== temperature) retryTemp = allowed;
+        else if (temperature != null) retryTemp = undefined;
+        else retryTemp = 1;
+      }
+      if (retryTemp !== null && retryTemp !== temperature) {
+        try {
+          res = await once(chatCompletionsPayload(model, messages, opts, retryTemp));
+        } catch (e) {
+          if (isUserCancelled(e, opts.signal)) throw cancelledError();
+          throw e;
+        }
+        if (isCancelledNow(opts.signal)) throw cancelledError();
+        if (!res.ok) {
+          try { body = await res.text(); } catch (e) { body = ''; }
+          throw new Error('LLM 请求失败 HTTP ' + res.status + ' @ ' + url + ': ' + String(body).slice(0, 300));
+        }
+      } else {
         throw new Error('LLM 请求失败 HTTP ' + res.status + ' @ ' + url + ': ' + String(body).slice(0, 300));
       }
-    } else {
-      throw new Error('LLM 请求失败 HTTP ' + res.status + ' @ ' + url + ': ' + String(body).slice(0, 300));
     }
-  }
 
-  const data = await res.json();
-  if (typeof opts.onUsage === 'function') {
-    const usage = parseLlmUsage(data && data.usage);
-    if (usage) {
-      try { opts.onUsage(usage); } catch (e) {}
+    const data = await res.json();
+    if (typeof opts.onUsage === 'function') {
+      const usage = parseLlmUsage(data && data.usage);
+      if (usage) {
+        try { opts.onUsage(usage); } catch (e) {}
+      }
     }
-  }
-  let content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-  if (typeof content !== 'string') {
-    if (Array.isArray(content)) {
-      content = content.map((c) => (c && c.text) || '').join('');
+    let content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    if (typeof content !== 'string') {
+      if (Array.isArray(content)) {
+        content = content.map((c) => (c && c.text) || '').join('');
+      }
     }
-  }
-  if (typeof content !== 'string') {
-    throw new Error('LLM 返回格式异常');
-  }
-  return content;
+    if (typeof content !== 'string') {
+      throw new Error('LLM 返回格式异常');
+    }
+    return content;
+  })(), opts.signal, diagProbe);
 }
 
 const LLM_TRACE_MAX = 24;
@@ -1783,6 +1904,7 @@ function traceJson(rec) {
     requestShape: rec.requestShape || null,
     t0: rec.t0,
     t1: rec.t1,
+    cancelled: !!rec.cancelled,
     error: rec.error || '',
     usage: rec.usage || null,
     parseOk: rec.parseOk,
@@ -1872,6 +1994,20 @@ function makeApiReporter(postMsg) {
         elapsedMs: elapsedMs
       });
     },
+    cancelled: function (label) {
+      const id = currentId;
+      if (!id) return;
+      const rec = rememberLlmTrace(id, { cancelled: true, error: '已停止', t1: Date.now() });
+      const elapsedMs = rec && rec.t0 ? (rec.t1 - rec.t0) : undefined;
+      postMsg({
+        type: 'llmCall',
+        id: id,
+        phase: 'cancelled',
+        label: label || '模型',
+        error: '已停止',
+        elapsedMs: elapsedMs
+      });
+    },
     parsed: function (info) {
       const id = currentId;
       if (!id) return;
@@ -1955,36 +2091,16 @@ function isLlmTimeout(err) {
 }
 
 function isLlmTransientError(err) {
+  if (err && err.cancelled) return false;
   if (isLlmTimeout(err)) return true;
   const msg = String((err && err.message) || err || '');
+  if (/The user aborted a request|AbortError|signal is aborted/i.test(msg)) return false;
   if (/HTTP 429|HTTP 502|HTTP 503|HTTP 504/.test(msg)) return true;
   if (/upstream connect error|disconnect\/reset|connection termination|ECONNRESET|ETIMEDOUT|Failed to fetch|network/i.test(msg)) return true;
   return false;
 }
 
 let lastTextLlmAt = 0;
-
-function sleepCancellable(ms, signal) {
-  const n = Math.max(0, Number(ms) || 0);
-  if (n <= 0) return Promise.resolve();
-  return new Promise(function (resolve, reject) {
-    if (signal && signal.aborted) {
-      reject(cancelledError());
-      return;
-    }
-    const t = setTimeout(function () {
-      if (signal) {
-        try { signal.removeEventListener('abort', onAbort); } catch (e) {}
-      }
-      resolve();
-    }, n);
-    function onAbort() {
-      clearTimeout(t);
-      reject(cancelledError());
-    }
-    if (signal) signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
 
 async function waitLlmCallGap(config, signal) {
   const gap = clampInt(config && config.llmCallGapMs, 0, 10000, DEFAULT_CONFIG.llmCallGapMs);
@@ -2002,39 +2118,45 @@ async function callLLM(messages, kind, reporter, signal, opt) {
   const url = chatCompletionsUrl(tag.baseURL);
   const label = ((kind || 'text') === 'ocr') ? 'OCR' : '文本模型';
   const timeoutMs = llmTimeoutMs(kind || 'text', messages, tag.model);
-  if ((kind || 'text') === 'text') {
-    await waitLlmCallGap(config, signal);
-  }
-  diagHit((kind || 'text') === 'ocr' ? 'ocr' : 'llm');
-  if (reporter) {
-    const chars = estimateMessageChars(messages);
-    const payload = chatCompletionsPayload(tag.model, messages, {}, undefined);
-    reporter.request(label, {
-      model: tag.model,
-      chars: chars,
-      url: url,
-      timeoutMs: timeoutMs,
-      input: sanitizeLlmMessages(messages),
-      requestShape: describeChatCompletionsRequestShape(url, payload, messages),
-      prompt: extractUserPromptForArchive(messages)
-    });
-  }
+  const probe = ((kind || 'text') === 'ocr') ? 'ocr' : 'llm';
   const llmStarted = Date.now();
   let usageSeen = null;
   try {
+    if ((kind || 'text') === 'text') {
+      await waitLlmCallGap(config, signal);
+    }
+    if (isCancelledNow(signal)) throw cancelledError();
+    diagHit(probe);
+    if (reporter) {
+      const chars = estimateMessageChars(messages);
+      const payload = chatCompletionsPayload(tag.model, messages, {}, undefined);
+      reporter.request(label, {
+        model: tag.model,
+        chars: chars,
+        url: url,
+        timeoutMs: timeoutMs,
+        input: sanitizeLlmMessages(messages),
+        requestShape: describeChatCompletionsRequestShape(url, payload, messages),
+        prompt: extractUserPromptForArchive(messages)
+      });
+    }
     const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, {
       timeoutMs: timeoutMs,
       signal: signal,
+      diagProbe: probe,
       onUsage: function (u) { usageSeen = u; }
     });
-    if (signal && signal.aborted) throw cancelledError();
+    if (isCancelledNow(signal)) throw cancelledError();
     if ((kind || 'text') === 'text') lastTextLlmAt = Date.now();
     if (reporter) reporter.response(label, text, usageSeen);
     return text;
   } catch (e) {
+    if (isUserCancelled(e, signal)) {
+      noteCallCancelled(reporter, label, probe, llmStarted);
+      throw cancelledError();
+    }
     if ((kind || 'text') === 'text') lastTextLlmAt = Date.now();
-    if (isUserCancelled(e) || (signal && signal.aborted)) throw cancelledError();
-    diagFail((kind || 'text') === 'ocr' ? 'ocr' : 'llm', e, { ms: Date.now() - llmStarted });
+    diagFail(probe, e, { ms: Date.now() - llmStarted });
     if (reporter) reporter.failure(label, url, e);
     throw e;
   }
@@ -2193,7 +2315,7 @@ async function callTextLlmForRedact(messages, signal, opt) {
       return await callLLM(messages, 'text', null, signal, opt);
     } catch (e) {
       lastErr = e;
-      if (isUserCancelled(e) || (signal && signal.aborted)) throw cancelledError();
+      if (isUserCancelled(e, signal)) throw cancelledError();
       const can = isLlmTimeout(e) ? (i < timeoutRetry) : (isLlmTransientError(e) && i < errorRetry);
       if (!can) throw e;
     }
@@ -2205,13 +2327,13 @@ async function redactArchiveMarkdown(markdown, hint, onProgress, signal, opt) {
   const src = String(markdown || '');
   const policy = String(hint || '').trim();
   if (!policy) return src;
-  if (signal && signal.aborted) throw cancelledError();
+  if (isCancelledNow(signal)) throw cancelledError();
   const plan = planArchiveRedactChunks(src, ARCHIVE_REDACT_MAX_BYTES);
   const chunks = plan.chunks;
   const usingSections = plan.usingSections;
   const outputs = [];
   for (let i = 0; i < chunks.length; i++) {
-    if (signal && signal.aborted) throw cancelledError();
+    if (isCancelledNow(signal)) throw cancelledError();
     const body = usingSections
       ? (i === 0 ? String(plan.preamble || '') + chunks[i] : chunks[i])
       : chunks[i];
@@ -2386,18 +2508,23 @@ async function callOcrOpenAiVision({ fileName, uploadName, pngDataUrl, approxByt
     });
   }
   let ocrUsage = null;
+  const ocrStarted = Date.now();
   try {
     const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, {
       maxTokens: 4096,
       timeoutMs: 120000,
       signal: signal,
+      diagProbe: 'ocr',
       onUsage: function (u) { ocrUsage = u; }
     });
-    if (signal && signal.aborted) throw cancelledError();
+    if (isCancelledNow(signal)) throw cancelledError();
     if (reporter) reporter.response('OCR', text, ocrUsage);
     return text;
   } catch (e) {
-    if (isUserCancelled(e) || (signal && signal.aborted)) throw cancelledError();
+    if (isUserCancelled(e, signal)) {
+      noteCallCancelled(reporter, 'OCR', 'ocr', ocrStarted);
+      throw cancelledError();
+    }
     if (reporter) reporter.failure('OCR', url, e);
     throw e;
   }
@@ -2595,24 +2722,26 @@ async function callOcrScnet({ fileName, uploadName, pngDataUrl, approxBytes, sig
     const timer = setTimeout(function () { controller.abort(); }, 120000);
     linkAbort(controller, signal);
     try {
-      return await fetch(url, {
+      return await awaitOrCancel(fetch(url, {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + (tag.apiKey || '') },
         body: fd,
         signal: controller.signal
-      });
+      }), signal, 'ocr');
     } finally {
       clearTimeout(timer);
     }
   }
 
   let res;
+  const ocrStarted = Date.now();
+  try {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       res = await once();
       if (res.ok || res.status < 500 || attempt === 1) break;
     } catch (e) {
-      if (isUserCancelled(e) || (signal && signal.aborted)) throw cancelledError();
+      if (isUserCancelled(e, signal)) throw cancelledError();
       if (attempt === 1) {
         const err = new Error('SCNet OCR 请求失败: ' + String(e && e.message || e) + ' @ ' + url);
         if (reporter) reporter.failure('OCR', url, err);
@@ -2625,8 +2754,8 @@ async function callOcrScnet({ fileName, uploadName, pngDataUrl, approxBytes, sig
     if (reporter) reporter.failure('OCR', url, err);
     throw err;
   }
-  if (signal && signal.aborted) throw cancelledError();
-  const raw = await res.text();
+  if (isCancelledNow(signal)) throw cancelledError();
+  const raw = await awaitOrCancel(res.text(), signal, 'ocr');
   if (!res.ok) {
     const err = new Error('SCNet OCR 请求失败 HTTP ' + res.status + ' @ ' + url + ': ' + String(raw || '').slice(0, 300));
     if (reporter) reporter.failure('OCR', url, err);
@@ -2661,6 +2790,13 @@ async function callOcrScnet({ fileName, uploadName, pngDataUrl, approxBytes, sig
   }
   if (reporter) reporter.response('OCR', out);
   return out;
+  } catch (e) {
+    if (isUserCancelled(e, signal)) {
+      noteCallCancelled(reporter, 'OCR', 'ocr', ocrStarted);
+      throw cancelledError();
+    }
+    throw e;
+  }
 }
 
 // dataURL → Blob
@@ -2775,15 +2911,15 @@ async function fetchMineruTextUrl(textUrl, apiUrl, apiKey, signal) {
   const timer = setTimeout(function () { controller.abort(); }, 60000);
   linkAbort(controller, signal);
   try {
-    const res = await fetch(textUrl, { headers: headers, signal: controller.signal });
+    const res = await awaitOrCancel(fetch(textUrl, { headers: headers, signal: controller.signal }), signal, 'ocr');
     if (!res.ok) return null;
-    const body = await res.text();
+    const body = await awaitOrCancel(res.text(), signal, 'ocr');
     if (!body.trim()) return null;
     let parsed = null;
     try { parsed = JSON.parse(body); } catch (e) { parsed = null; }
     return (parsed && typeof parsed === 'object') ? findMineruText(parsed) : body;
   } catch (e) {
-    if (signal && signal.aborted) throw cancelledError();
+    if (isUserCancelled(e, signal)) throw cancelledError();
     return null;
   } finally {
     clearTimeout(timer);
@@ -2837,23 +2973,25 @@ async function callOcrMinerU({ fileName, uploadName, pngDataUrl, approxBytes, si
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 180000);
   linkAbort(controller, signal);
+  const ocrStarted = Date.now();
+  try {
   let res;
   try {
-    res = await fetch(url, {
+    res = await awaitOrCancel(fetch(url, {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + (tag.apiKey || '') },
       body: fd,
       signal: controller.signal
-    });
+    }), signal, 'ocr');
   } catch (e) {
     clearTimeout(timer);
-    if (signal && signal.aborted) throw cancelledError();
+    if (isUserCancelled(e, signal)) throw cancelledError();
     const err = new Error('MinerU OCR 请求失败: ' + String(e && e.message || e) + ' @ ' + url);
     if (reporter) reporter.failure('OCR', url, err);
     throw err;
   }
   clearTimeout(timer);
-  if (signal && signal.aborted) throw cancelledError();
+  if (isCancelledNow(signal)) throw cancelledError();
   if (!res.ok) {
     let body = '';
     try { body = (await res.text()).slice(0, 300); } catch (e) { body = ''; }
@@ -2862,7 +3000,7 @@ async function callOcrMinerU({ fileName, uploadName, pngDataUrl, approxBytes, si
     throw err;
   }
   // 不依赖 content-type：先读全部文本，再探测 JSON
-  const raw = await res.text();
+  const raw = await awaitOrCancel(res.text(), signal, 'ocr');
   let data = null;
   try { data = JSON.parse(raw); } catch (e) { data = null; }
   let out;
@@ -2889,6 +3027,13 @@ async function callOcrMinerU({ fileName, uploadName, pngDataUrl, approxBytes, si
   }
   if (reporter) reporter.response('OCR', out);
   return out;
+  } catch (e) {
+    if (isUserCancelled(e, signal)) {
+      noteCallCancelled(reporter, 'OCR', 'ocr', ocrStarted);
+      throw cancelledError();
+    }
+    throw e;
+  }
 }
 
 // ============ offscreen 文档管理（PDF 文本提取 / 页面渲染需要 DOM/canvas/worker） ============
@@ -4125,47 +4270,6 @@ function attachPreprocessHasUsableBody(pre) {
   return false;
 }
 
-function awaitOrCancel(promise, cancelRef) {
-  if (!cancelRef || !cancelRef.signal) return promise;
-  if (cancelRef.cancelled || cancelRef.signal.aborted) return Promise.reject(cancelledError());
-  return new Promise(function (resolve, reject) {
-    function onAbort() {
-      cleanup();
-      reject(cancelledError());
-    }
-    function cleanup() {
-      try { cancelRef.signal.removeEventListener('abort', onAbort); } catch (e) {}
-    }
-    cancelRef.signal.addEventListener('abort', onAbort, { once: true });
-    Promise.resolve(promise).then(function (v) {
-      cleanup();
-      resolve(v);
-    }, function (e) {
-      cleanup();
-      reject(e);
-    });
-  });
-}
-
-function sleepCancellable(ms, cancelRef) {
-  if (!cancelRef || !cancelRef.signal) {
-    return new Promise(function (resolve) { setTimeout(resolve, ms); });
-  }
-  if (cancelRef.cancelled || cancelRef.signal.aborted) return Promise.resolve();
-  return new Promise(function (resolve) {
-    let done = false;
-    function finish() {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      try { cancelRef.signal.removeEventListener('abort', finish); } catch (e) {}
-      resolve();
-    }
-    const timer = setTimeout(finish, ms);
-    cancelRef.signal.addEventListener('abort', finish, { once: true });
-  });
-}
-
 function attachVariantKey(kind, cfg) {
   const tag = resolveTag(cfg, 'ocr');
   return [
@@ -4417,7 +4521,7 @@ async function preprocessFiles({ files, origin, postMsg, cancelRef }) {
         continue;
       }
       try {
-        const ocrText = await awaitOrCancel(ensureAttachText(f, kind, attachCtx), cancelRef);
+        const ocrText = await awaitOrCancel(ensureAttachText(f, kind, attachCtx), cancelRef, kind === 'pdf' ? 'offscreen' : 'ocr');
         if (ocrText) ocrBlocks.push({
           text: formatAttachBodyTag(f) + '\n' + ocrText,
           id: fileIdentity(f)
@@ -5103,7 +5207,7 @@ function waitForPageStable(tabId, settleMs, cancelRef) {
 
     function beginSettle() {
       if (resolved || settling) return;
-      if (cancelRef && cancelRef.cancelled) { resolveNow(); return; }
+      if (isCancelledNow(cancelRef)) { resolveNow(); return; }
       settling = true;
       settleTimer = setTimeout(resolveNow, settle);
     }
@@ -5132,7 +5236,7 @@ function waitForPageStable(tabId, settleMs, cancelRef) {
 
     if (cancelRef) {
       pollId = setInterval(() => {
-        if (cancelRef.cancelled) resolveNow();
+        if (isCancelledNow(cancelRef)) resolveNow();
       }, 120);
       if (cancelRef.signal) {
         if (cancelRef.signal.aborted) resolveNow();
@@ -5155,7 +5259,7 @@ async function waitForDomQuiet(tabId, cancelRef, ms, origin) {
   }
   waitMs = clampInt(waitMs, 1000, 15000, DEFAULT_CONFIG.pageQuietMs);
   const deadline = Date.now() + waitMs;
-  while (Date.now() < deadline && !(cancelRef && cancelRef.cancelled)) {
+  while (Date.now() < deadline && !isCancelledNow(cancelRef)) {
     const probe = await callBridgeRetry(tabId, 'ISOLATED', 'probe', {});
     if (isProbeValid(probe)) {
       const key = [probe.domLen, probe.domDigest, probe.formDigest, probe.interactiveCount].join('|');
@@ -5165,7 +5269,12 @@ async function waitForDomQuiet(tabId, cancelRef, ms, origin) {
         return;
       }
     }
-    await sleepCancellable(350, cancelRef);
+    try {
+      await sleepCancellable(350, cancelRef);
+    } catch (e) {
+      if (isUserCancelled(e, cancelRef)) return;
+      throw e;
+    }
   }
 }
 
@@ -5180,13 +5289,18 @@ async function waitForSuggestSettle(tabId, cancelRef, targets, ms, origin) {
   }
   waitMs = clampInt(waitMs, 0, 5000, DEFAULT_CONFIG.suggestWaitMs);
   const deadline = Date.now() + waitMs;
-  while (Date.now() < deadline && !(cancelRef && cancelRef.cancelled)) {
+  while (Date.now() < deadline && !isCancelledNow(cancelRef)) {
     last = await callBridgeRetry(tabId, 'ISOLATED', 'viewPrint', { targets: targets || [] });
     const sig = (last && !last.__error && last.sig != null) ? String(last.sig) : '';
     if (sig === prev) stable += 1;
     else { stable = 0; prev = sig; }
     if (stable >= 2) return last;
-    await sleepCancellable(180, cancelRef);
+    try {
+      await sleepCancellable(180, cancelRef);
+    } catch (e) {
+      if (isUserCancelled(e, cancelRef)) return last;
+      throw e;
+    }
   }
   return last;
 }
@@ -6494,7 +6608,14 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
         }
         if (isLlmTransientError(e) && llmTries <= errorRetry) {
           postMsg({ type: 'status', text: '文本模型暂时不可用，正在重试（' + llmTries + '/' + errorRetry + '）…' });
-          await new Promise(function (r) { setTimeout(r, 400 * llmTries); });
+          try {
+            await sleepCancellable(400 * llmTries, cancelRef);
+          } catch (waitErr) {
+            if (isUserCancelled(waitErr, cancelRef)) {
+              return await notifyCancelled(postMsg, cancelRef, origin, messages);
+            }
+            throw waitErr;
+          }
           continue;
         }
         postMsg({ type: 'error', message: '调用大模型失败：' + String(e && e.message || e) });
@@ -6693,6 +6814,9 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
         }
         await syncFilesToPage(tabId, files, postMsg);
         await waitForDomQuiet(tabId, cancelRef, null, origin);
+        if (cancelRef.cancelled) {
+          return await notifyCancelled(postMsg, cancelRef, origin, messages);
+        }
       }
 
       const thisTargets = collectOpTargets(parsed.operations);
@@ -6721,6 +6845,9 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
         }
         await syncFilesToPage(tabId, files, postMsg);
         await waitForDomQuiet(tabId, cancelRef, null, origin);
+        if (cancelRef.cancelled) {
+          return await notifyCancelled(postMsg, cancelRef, origin, messages);
+        }
       } else if (!navigated && report &&
         (report.urlChanged || (typeof report.domChanged === 'number' && Math.abs(report.domChanged) > 30000))) {
         // SPA 路由切换（hash 变化）或整块视图重绘（如登录成功进入主界面）不会触发整页导航，
@@ -8014,10 +8141,17 @@ async function bootKernel() {
 
 try {
   self.addEventListener('unhandledrejection', function (ev) {
-    diagFail('unhandled', ev && ev.reason, { code: 'Unhandled' });
+    const reason = ev && ev.reason;
+    if (reason && reason.cancelled) {
+      try { if (ev.preventDefault) ev.preventDefault(); } catch (e) {}
+      return;
+    }
+    diagFail('unhandled', reason, { code: 'Unhandled' });
   });
   self.addEventListener('error', function (ev) {
-    diagFail('unhandled', ev && (ev.error || ev.message), { code: 'Unhandled' });
+    const err = ev && (ev.error || ev.message);
+    if (err && err.cancelled) return;
+    diagFail('unhandled', err, { code: 'Unhandled' });
   });
 } catch (e) {}
 

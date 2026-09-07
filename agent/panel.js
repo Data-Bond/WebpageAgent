@@ -2349,6 +2349,7 @@
 
   function llmCallBadgeClass(state) {
     if (state.phase === 'start' || state.phase === 'restored') return 'pending';
+    if (state.phase === 'cancelled') return 'warn';
     if (state.phase === 'error') return 'fail';
     if (state.parseOk === false) return 'warn';
     if (state.parseOk === true) return 'ok';
@@ -2358,6 +2359,7 @@
 
   function llmCallBadgeText(state) {
     if (state.phase === 'start') return '请求中';
+    if (state.phase === 'cancelled') return '已停止';
     if (state.phase === 'error') return '调用失败';
     if (state.parseOk === false) return '无法解析';
     if (state.parseOk === true) return '已解析';
@@ -2385,14 +2387,14 @@
   function looksLikeLlmStatusLine(text) {
     const s = String(text || '');
     if (!s) return true;
-    return / · (请求中|已收到|调用失败|无法解析|已解析|历史调用|调用)$/.test(s);
+    return / · (请求中|已收到|调用失败|无法解析|已解析|历史调用|已停止|调用)$/.test(s);
   }
 
   function parseStoredLlmStatusLine(text) {
     const bits = String(text || '').split(' · ').map(function (s) { return s.trim(); }).filter(Boolean);
     if (!bits.length) return {};
     const out = { label: bits[0] };
-    const badgeRe = /^(请求中|调用失败|无法解析|已解析|已收到|历史调用|调用)$/;
+    const badgeRe = /^(请求中|调用失败|无法解析|已解析|已收到|历史调用|已停止|调用)$/;
     const rest = [];
     for (let i = 1; i < bits.length; i++) {
       const b = bits[i];
@@ -2429,6 +2431,7 @@
       const k = keys[i];
       if (state[k] != null && state[k] !== '') o[k] = state[k];
     }
+    if (state.phase === 'cancelled') o.cancelled = true;
     if (state.parseNote && !looksLikeLlmStatusLine(state.parseNote)) o.parseNote = String(state.parseNote).slice(0, 400);
     const preview = llmOutputPreview(state.output) || state.outputPreview;
     if (preview) o.outputPreview = String(preview).slice(0, 120);
@@ -2484,6 +2487,7 @@
 
   function llmCallNoteText(state) {
     if (state.phase === 'error') return state.error || '请求失败';
+    if (state.phase === 'cancelled') return '用户停止了本次调用';
     const parseNote = (state.parseNote && !looksLikeLlmStatusLine(state.parseNote)) ? String(state.parseNote) : '';
     if (parseNote) return parseNote;
     if (state.phase === 'start') {
@@ -2599,7 +2603,7 @@
               label: '模型调用'
             }, saved, {
               id: m.llmId || ('restored-' + transcript.length),
-              phase: 'restored'
+              phase: saved.cancelled ? 'cancelled' : 'restored'
             }));
             const last = transcript[transcript.length - 1];
             if (last && last.llmId && m.at) last.at = m.at;
@@ -4403,6 +4407,14 @@
   }
 
   function handleCancelled(msg) {
+    const nodes = els.messages.querySelectorAll('.bubble.llm-call');
+    for (let i = 0; i < nodes.length; i++) {
+      const card = nodes[i];
+      const st = card._llm && card._llm.state;
+      if (st && st.phase === 'start' && card.dataset.llmId) {
+        upsertLlmCallCard({ id: card.dataset.llmId, phase: 'cancelled' });
+      }
+    }
     const text = msg && msg.summary != null ? String(msg.summary) : '已停止当前任务';
     if (running || stopping) addBubble('system', text);
     setRunning(false);

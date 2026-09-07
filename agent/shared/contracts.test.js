@@ -105,6 +105,16 @@ describe('WPA contracts kernel', () => {
     assert.deepEqual(rec.trail, ['llm', 'config']);
     assert.equal(C.makeDiagRecord({ probe: 'bridge', err: { message: 'No tab with id 9' } }), null);
     assert.equal(C.makeDiagRecord({ probe: 'evil', err: new Error('x') }), null);
+    assert.equal(C.makeDiagRecord({ probe: 'llm', err: { cancelled: true, message: '已停止' } }), null);
+    const cancelRec = C.makeDiagRecord({
+      probe: 'llm', err: { cancelled: true, message: '已停止' }, code: 'Cancel', ms: 97000
+    });
+    assert.equal(cancelRec.c, 'Cancel');
+    assert.equal(cancelRec.p, 'llm');
+    assert.equal(cancelRec.ms, 97000);
+    assert.equal(C.classifyDiagCode({ cancelled: true, message: '已停止' }), 'Cancel');
+    assert.equal(C.classifyDiagCode({ message: 'x' }, 'Cancel'), 'Cancel');
+    assert.ok(C.DIAG_CODES.Cancel);
 
     const now = Date.now();
     let store = { schemaVersion: 1, rows: [] };

@@ -156,6 +156,7 @@ function extractFn(src, name) {
 }
 const llmHelpers = [
   extractFn(panelSrc, 'llmCallBadgeText'),
+  extractFn(panelSrc, 'llmCallBadgeClass'),
   extractFn(panelSrc, 'formatElapsed'),
   extractFn(panelSrc, 'llmOutputPreview'),
   extractFn(panelSrc, 'looksLikeLlmStatusLine'),
@@ -168,7 +169,7 @@ const llmHelpers = [
 ok(llmHelpers.indexOf('function llmCallNoteText') >= 0, '可抽出卡片备注函数做行为断言');
 let llmUi = null;
 try {
-  llmUi = vm.runInNewContext(llmHelpers + '\n({ llmCallNoteText: llmCallNoteText, llmCallStatusLine: llmCallStatusLine, parseStoredLlmStatusLine: parseStoredLlmStatusLine, llmOutputPreview: llmOutputPreview, formatModelOutput: formatModelOutput })');
+  llmUi = vm.runInNewContext(llmHelpers + '\n({ llmCallNoteText: llmCallNoteText, llmCallStatusLine: llmCallStatusLine, parseStoredLlmStatusLine: parseStoredLlmStatusLine, llmOutputPreview: llmOutputPreview, formatModelOutput: formatModelOutput, llmCallBadgeText: llmCallBadgeText, llmCallBadgeClass: llmCallBadgeClass })');
 } catch (e) {
   ok(false, '卡片文案函数可在 vm 中执行: ' + (e && e.message));
 }
@@ -187,7 +188,9 @@ if (llmUi) {
   ok(title.indexOf('收41字') >= 0, '加粗标题含返回字数');
   ok(title.indexOf('已收到') < 0 && title.indexOf('已解析') < 0, '标题不重复徽章上的已收到/已解析');
   ok(/ · 已收到$/.test(title) === false, '标题不以状态词结尾');
-  ok(note.indexOf('已收到') < 0, '备注不再重复「已收到」');
+  ok(llmUi.llmCallBadgeText({ phase: 'cancelled' }) === '已停止', '停止后卡片徽章为已停止');
+  ok(llmUi.llmCallBadgeClass({ phase: 'cancelled' }) === 'warn', '停止后卡片不按失败红标');
+  ok(llmUi.llmCallNoteText({ phase: 'cancelled' }) === '用户停止了本次调用', '停止后卡片备注标明用户停止');
   ok(llmUi.llmCallStatusLine({
     phase: 'parsed', parseOk: true, label: '文本模型', model: 'glm-5.2',
     chars: 10000, outputChars: 170, elapsedMs: 7300
@@ -422,6 +425,9 @@ ok(transSandbox.isLlmTransientError({ message: 'LLM 请求失败 HTTP 503 @ http
   'HTTP 503 断连视为可重试瞬时错误');
 ok(transSandbox.isLlmTransientError({ message: 'HTTP 429' }), 'HTTP 429 视为可重试瞬时错误');
 ok(!transSandbox.isLlmTransientError({ message: 'HTTP 401 unauthorized' }), 'HTTP 401 不视为瞬时错误');
+ok(!transSandbox.isLlmTransientError({ cancelled: true, message: '已停止' }), '用户停止不视为瞬时错误');
+ok(!transSandbox.isLlmTransientError({ message: 'The user aborted a request' }), 'fetch abort 不视为瞬时错误');
+ok(transSandbox.isLlmTransientError({ message: 'Failed to fetch' }), 'Failed to fetch 仍是瞬时错误');
 ok(/【文件列表勾选】/.test(bg), 'PLAYBOOK 含文件列表勾选说明');
 ok(/setChecked\(\{text:"完整文件名"\}/.test(bg), 'PLAYBOOK 要求用 setChecked 选文件');
 ok(/不要因为页面外观无变化而重复操作/.test(bg), 'PLAYBOOK：verified=true 即成功，不因页面无变化重试');
@@ -807,6 +813,16 @@ ok(/cmd === 'prepareAttach'/.test(bg), '上传后可后台预解析附件');
 ok(/attachParseJobs/.test(bg) && /return await job/.test(extractFn(bg, 'ensureAttachText')),
   '发送时等待进行中的解析而非重开');
 ok(/function awaitOrCancel/.test(bg), '停止任务只取消等待，不杀后台解析');
+ok(/var settled = false/.test(extractFn(bg, 'awaitOrCancel')), 'awaitOrCancel 防止中止后二次 settle');
+ok(/function absorbAbandonedPromise/.test(bg), '放弃等待时仍接住内层 Promise');
+ok(/function asAbortSignal/.test(bg) && /function isCancelledNow/.test(bg), '取消判定同时认 AbortSignal 与 cancelRef');
+ok((bg.match(/function sleepCancellable/g) || []).length === 1, 'sleepCancellable 只定义一次');
+ok(/awaitOrCancel\(/.test(extractFn(bg, 'callChatCompletions')), 'LLM HTTP 等待与停止竞速，不卡在 fetch.abort');
+ok(/isCancelledNow\(opts\.signal\)/.test(extractFn(bg, 'callChatCompletions')), '已中止时不再开工 LLM HTTP');
+ok(/await sleepCancellable\(400 \* llmTries/.test(bg), '瞬时错误重试间隔可被停止打断');
+ok(/cancelled: function/.test(extractFn(bg, 'makeApiReporter')), '模型卡片有取消终态');
+ok(/function diagCancel\(/.test(bg) && /code: 'Cancel'/.test(bg), '主动停止写入诊断 Cancel');
+ok(/reason && reason\.cancelled/.test(bg), 'unhandledrejection 不把主动停止记成 Unhandled');
 ok(!/PDF_FAIL_TTL/.test(bg) && !/rememberPdfProcessFailure/.test(bg) && !/未再次等待/.test(bg),
   '不再用失败缓存让同文件直接失败');
 ok(/function fileContentHash/.test(bg) && /function fileContentHash/.test(panelSrc),
@@ -1488,7 +1504,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.4.2', '锁步版本为 5.4.2');
+ok(manifestVer === '5.5.0', '锁步版本为 5.5.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -2391,6 +2407,7 @@ if (sampleBox.formatProviderSampleRequest) {
   ok(/filename="ping.png"/.test(mineru) && /iVBORw0KGgo/.test(mineru), 'MinerU 示例文件为可复制的 ping.png');
 }
 ok(/function diagFail\(/.test(bg) && /DIAG_STORE_KEY = 'wpaDiag'/.test(bg), '后台有诊断黑匣子写入');
+ok(/Cancel: 1/.test(fs.readFileSync(path.join(ROOT, 'shared/contracts.js'), 'utf8')), '诊断码含 Cancel');
 const ocrSelBox = {};
 try {
   vm.runInNewContext(
@@ -3107,7 +3124,7 @@ ok(!/document\.body\.appendChild\(ta\)/.test(panelSrc), '面板复制不再向�
 ok(/running: !!keepRunning/.test(bg), '中间指令 done 携带 running，避免整批被当成结束');
 ok(/keepRunning = idx < instructions.length - 1/.test(bg), '多指令批次把 keepRunning 传给单条任务');
 ok(/keepRunning = idx < pending.length - 1/.test(bg), '恢复剩余指令时同样携带 keepRunning');
-ok(/function sleepCancellable/.test(bg) && /if \(cancelRef.cancelled\) resolveNow\(\)/.test(bg),
+ok(/function sleepCancellable/.test(bg) && /function waitForPageStable/.test(bg) && /isCancelledNow\(cancelRef\)/.test(bg),
   '页面等待可被停止立刻打断，不等 settle 超时');
 ok(/cmd !== 'cancelFromPanel'/.test(bg) && /cmd: 'cancelFromPanel'/.test(panelSrc),
   '端口断开时面板仍可通过 runtime 消息停止后台');
@@ -3134,8 +3151,115 @@ ok(/doc\/screenshot1\.png/.test(readmeSrc) && fs.existsSync(path.join(__dirname,
   'README 引用 doc/screenshot1.png 且文件存在');
 ok(/max-width:100%/.test(readmeSrc), 'README 截图随页面宽度缩放');
 
-if (failures) {
-  console.error('\n' + failures + ' 项断言失败');
-  process.exit(1);
+function runCancelPrimitiveTests() {
+  return new Promise(function (resolve, reject) {
+    const start = bg.indexOf('function cancelledError');
+    const end = bg.indexOf('\nasync function notifyCancelled');
+    if (start < 0 || end <= start) {
+      ok(false, '可截取取消原语做行为断言');
+      resolve();
+      return;
+    }
+    const sandbox = {
+      AbortController: AbortController,
+      Promise: Promise,
+      setTimeout: setTimeout,
+      clearTimeout: clearTimeout
+    };
+    try {
+      vm.runInNewContext(
+        bg.slice(start, end) +
+          '\nthis.awaitOrCancel = awaitOrCancel;\nthis.sleepCancellable = sleepCancellable;\nthis.makeCancelRef = makeCancelRef;',
+        sandbox
+      );
+    } catch (e) {
+      ok(false, '取消原语可在 vm 中执行: ' + (e && e.message));
+      resolve();
+      return;
+    }
+    const box = sandbox;
+    sandbox.diagFails = [];
+    sandbox.diagFail = function (p, e) { sandbox.diagFails.push({ probe: p, err: e }); };
+    (async function () {
+      const ac = new AbortController();
+      ac.abort();
+      let immediate = false;
+      try {
+        await box.awaitOrCancel(new Promise(function () {}), ac.signal);
+      } catch (e) {
+        immediate = !!(e && e.cancelled);
+      }
+      ok(immediate, 'awaitOrCancel 在已中止时立刻拒绝');
+
+      const ac2 = new AbortController();
+      const raced = box.awaitOrCancel(new Promise(function () {}), ac2.signal);
+      const t0 = Date.now();
+      setTimeout(function () { ac2.abort(); }, 8);
+      let fast = false;
+      try {
+        await raced;
+      } catch (e) {
+        fast = !!(e && e.cancelled) && (Date.now() - t0) < 400;
+      }
+      ok(fast, 'awaitOrCancel 中止后立刻放弃等待，不依赖 fetch.abort');
+
+      const ref = box.makeCancelRef();
+      const sp = box.sleepCancellable(8000, ref);
+      const t1 = Date.now();
+      setTimeout(function () { ref.abort(); }, 8);
+      let sleepFast = false;
+      try {
+        await sp;
+      } catch (e) {
+        sleepFast = !!(e && e.cancelled) && (Date.now() - t1) < 400;
+      }
+      ok(sleepFast, 'sleepCancellable 中止时拒绝，不等到超时');
+
+      const ref2 = box.makeCancelRef();
+      const hang = new Promise(function (r) { setTimeout(function () { r('late'); }, 40); });
+      const raced2 = box.awaitOrCancel(hang, ref2);
+      ref2.abort();
+      let discarded = false;
+      try {
+        await raced2;
+      } catch (e) {
+        discarded = !!(e && e.cancelled);
+      }
+      ok(discarded, '中止后即使原 Promise 随后成功也不再交付结果');
+
+      sandbox.diagFails.length = 0;
+      const ac3 = new AbortController();
+      ac3.abort();
+      try {
+        await box.awaitOrCancel(Promise.reject(new Error('HTTP 500 leftover')), ac3.signal, 'llm');
+      } catch (e) {
+        ok(!!(e && e.cancelled), '已中止时对外仍是 cancelledError');
+      }
+      await new Promise(function (r) { setTimeout(r, 20); });
+      ok(sandbox.diagFails.length === 1 && sandbox.diagFails[0].probe === 'llm',
+        '放弃等待后内层非取消失败仍写入诊断');
+
+      sandbox.diagFails.length = 0;
+      const ac4 = new AbortController();
+      ac4.abort();
+      const stopped = new Error('已停止');
+      stopped.cancelled = true;
+      try {
+        await box.awaitOrCancel(Promise.reject(stopped), ac4.signal);
+      } catch (e) {}
+      await new Promise(function (r) { setTimeout(r, 20); });
+      ok(sandbox.diagFails.length === 0, '放弃等待后内层取消不记 Unhandled');
+    })().then(resolve, reject);
+  });
 }
-console.log('\n全部断言通过');
+
+runCancelPrimitiveTests().then(function () {
+  if (failures) {
+    console.error('\n' + failures + ' 项断言失败');
+    process.exit(1);
+  }
+  console.log('\n全部断言通过');
+}).catch(function (e) {
+  console.error(e);
+  process.exit(1);
+});
