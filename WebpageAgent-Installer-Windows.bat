@@ -91,12 +91,15 @@ function Set-LatestJunction {
 }
 
 function Get-UniqueExtractName {
-  param([string]$BaseDir, [string]$Suggested)
+  param([string]$BaseDir, [string]$Suggested, [string]$Label = '新文件夹名', [string]$EnsureExtension = '')
   $invalid = [IO.Path]::GetInvalidFileNameChars()
   while ($true) {
-    Write-Host -NoNewline ("新文件夹名 [{0}]: " -f $Suggested)
+    Write-Host -NoNewline ("{0} [{1}]: " -f $Label, $Suggested)
     $raw = Read-Host
     $name = if ($null -eq $raw -or $raw.Trim() -eq '') { $Suggested } else { $raw.Trim() }
+    if ($EnsureExtension -and -not $name.EndsWith($EnsureExtension, [StringComparison]::OrdinalIgnoreCase)) {
+      $name = $name + $EnsureExtension
+    }
     if ($name -eq 'WebpageAgent-Latest' -or $name.StartsWith($tmpPrefix)) {
       Write-Host '不能使用 Latest 链接名或安装临时目录名。'
       continue
@@ -308,17 +311,26 @@ Start-Sleep -Seconds 2
 if (Test-Path -LiteralPath $zip) {
   Write-Host ''
   Write-Host ("已存在同名文件（全路径）：{0}" -f $zip)
-  $zipMode = Read-ConflictChoice
+  $zipMode = Read-ConflictChoice -IncludeRename
   if ($zipMode -eq 'cancel') {
     Write-Host '已取消下载。'
     Read-Host '按 Enter 键退出'
     exit 0
   }
-  if ($zipMode -ne 'keep') {
-    Write-Host ("Downloading {0}" -f $zipName)
+  if ($zipMode -eq 'keep') {
+    Write-Host ("保留现有文件，跳过下载：{0}" -f $zip)
+  } elseif ($zipMode -eq 'rename') {
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $base = [IO.Path]::GetFileNameWithoutExtension($zipName)
+    $ext = [IO.Path]::GetExtension($zipName)
+    if (-not $ext) { $ext = '.zip' }
+    $newName = Get-UniqueExtractName -BaseDir $here -Suggested ('{0}-{1}{2}' -f $base, $stamp, $ext) -Label '新文件名' -EnsureExtension $ext
+    $zip = [IO.Path]::GetFullPath((Join-Path $here $newName))
+    Write-Host ("Downloading {0}" -f $newName)
     Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -UserAgent $ua
   } else {
-    Write-Host ("保留现有文件，跳过下载：{0}" -f $zip)
+    Write-Host ("Downloading {0}" -f $zipName)
+    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -UserAgent $ua
   }
 } else {
   Write-Host ("Downloading {0}" -f $zipName)

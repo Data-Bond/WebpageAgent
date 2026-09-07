@@ -106,12 +106,19 @@ read_conflict_choice() {
 
 unique_extract_name() {
   local suggested="$1"
+  local label="${2:-新文件夹名}"
   local name dest
   while true; do
-    printf '新文件夹名 [%s]: ' "$suggested" >&2
+    printf '%s [%s]: ' "$label" "$suggested" >&2
     IFS= read -r name || name=''
     name="$(printf '%s' "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     [ -n "$name" ] || name="$suggested"
+    if [ "$label" = '新文件名' ]; then
+      case "$name" in
+        *.zip|*.ZIP) ;;
+        *) name="${name}.zip" ;;
+      esac
+    fi
     case "$name" in
       WebpageAgent-Latest|"$TMP_PREFIX"*)
         echo '不能使用 Latest 链接名或安装临时目录名。' >&2
@@ -264,16 +271,24 @@ sleep 2
 if [ -e "$ZIP_PATH" ] || [ -L "$ZIP_PATH" ]; then
   echo
   echo "已存在同名文件（全路径）：${ZIP_PATH}"
-  ZIP_MODE="$(read_conflict_choice 0)"
+  ZIP_MODE="$(read_conflict_choice 1)"
   if [ "$ZIP_MODE" = cancel ]; then
     echo '已取消下载。'
     exit 0
   fi
-  if [ "$ZIP_MODE" != keep ]; then
-    echo "Downloading ${ZIP_NAME}"
+  if [ "$ZIP_MODE" = keep ]; then
+    echo "保留现有文件，跳过下载：${ZIP_PATH}"
+  elif [ "$ZIP_MODE" = rename ]; then
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    zip_base="${ZIP_NAME%.zip}"
+    suggested="${zip_base}-${stamp}.zip"
+    new_name="$(unique_extract_name "$suggested" '新文件名')"
+    ZIP_PATH="$HERE/$new_name"
+    echo "Downloading ${new_name}"
     curl -fsSL -A "$UA" -o "$ZIP_PATH" "$ZIP_URL"
   else
-    echo "保留现有文件，跳过下载：${ZIP_PATH}"
+    echo "Downloading ${ZIP_NAME}"
+    curl -fsSL -A "$UA" -o "$ZIP_PATH" "$ZIP_URL"
   fi
 else
   echo "Downloading ${ZIP_NAME}"

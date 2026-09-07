@@ -43,9 +43,9 @@ const DEFAULT_CONFIG = {
   pdfTextMaxChars: 150000,
   ocrCacheMaxChars: 500000,
   attachContextMaxChars: 150000,
-  uiOpacity: 100,
-  panelScaleX: 70,
-  panelScaleY: 70,
+  uiOpacity: 80,
+  panelScaleX: 50,
+  panelScaleY: 90,
   archiveRedactHint: DEFAULT_ARCHIVE_REDACT_HINT,
   diagCapKb: 50
 };
@@ -4147,6 +4147,25 @@ function awaitOrCancel(promise, cancelRef) {
   });
 }
 
+function sleepCancellable(ms, cancelRef) {
+  if (!cancelRef || !cancelRef.signal) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+  if (cancelRef.cancelled || cancelRef.signal.aborted) return Promise.resolve();
+  return new Promise(function (resolve) {
+    let done = false;
+    function finish() {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { cancelRef.signal.removeEventListener('abort', finish); } catch (e) {}
+      resolve();
+    }
+    const timer = setTimeout(finish, ms);
+    cancelRef.signal.addEventListener('abort', finish, { once: true });
+  });
+}
+
 function attachVariantKey(kind, cfg) {
   const tag = resolveTag(cfg, 'ocr');
   return [
@@ -5058,50 +5077,71 @@ async function syncFilesToPage(tabId, files, postMsg) {
 // 等待标签页加载完成（导航结束后页面稳定）
 function waitForPageStable(tabId, settleMs, cancelRef) {
   return new Promise((resolve) => {
-    let settled = false;
+    let resolved = false;
+    let settling = false;
     const settle = settleMs != null ? settleMs : 1000;
     let pollId = null;
     let safetyId = null;
+    let settleTimer = null;
 
-    function finish() {
-      if (settled) return;
-      settled = true;
+    function cleanup() {
       try { chrome.tabs.onUpdated.removeListener(onUpdated); } catch (e) {}
+      try {
+        if (cancelRef && cancelRef.signal) cancelRef.signal.removeEventListener('abort', onAbort);
+      } catch (e2) {}
       if (safetyId) { clearTimeout(safetyId); safetyId = null; }
-      const done = () => {
-        if (pollId) { clearInterval(pollId); pollId = null; }
-        resolve();
-      };
-      if (cancelRef && cancelRef.cancelled) { done(); return; }
-      setTimeout(done, settle);
+      if (pollId) { clearInterval(pollId); pollId = null; }
+      if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+    }
+
+    function resolveNow() {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolve();
+    }
+
+    function beginSettle() {
+      if (resolved || settling) return;
+      if (cancelRef && cancelRef.cancelled) { resolveNow(); return; }
+      settling = true;
+      settleTimer = setTimeout(resolveNow, settle);
     }
 
     function onUpdated(tid, info) {
       if (tid === tabId && info.status === 'complete') {
-        finish();
+        beginSettle();
       }
+    }
+
+    function onAbort() {
+      resolveNow();
     }
 
     try {
       chrome.tabs.onUpdated.addListener(onUpdated);
       chrome.tabs.get(tabId, (tab) => {
         void chrome.runtime.lastError;
-        if (!settled && (!tab || tab.status === 'complete')) {
-          finish();
+        if (!resolved && (!tab || tab.status === 'complete')) {
+          beginSettle();
         }
       });
     } catch (e) {
-      finish();
+      beginSettle();
     }
 
     if (cancelRef) {
       pollId = setInterval(() => {
-        if (cancelRef.cancelled) finish();
+        if (cancelRef.cancelled) resolveNow();
       }, 120);
+      if (cancelRef.signal) {
+        if (cancelRef.signal.aborted) resolveNow();
+        else cancelRef.signal.addEventListener('abort', onAbort, { once: true });
+      }
     }
 
     // 安全超时
-    safetyId = setTimeout(finish, 15000);
+    safetyId = setTimeout(beginSettle, 15000);
   });
 }
 
@@ -5125,7 +5165,7 @@ async function waitForDomQuiet(tabId, cancelRef, ms, origin) {
         return;
       }
     }
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    await sleepCancellable(350, cancelRef);
   }
 }
 
@@ -5146,7 +5186,7 @@ async function waitForSuggestSettle(tabId, cancelRef, targets, ms, origin) {
     if (sig === prev) stable += 1;
     else { stable = 0; prev = sig; }
     if (stable >= 2) return last;
-    await new Promise(function (r) { setTimeout(r, 180); });
+    await sleepCancellable(180, cancelRef);
   }
   return last;
 }
@@ -6174,7 +6214,7 @@ async function restorePendingState(tabId) {
 }
 
 // 返回终端状态：'done' | 'ask' | 'error' | 'cancelled' | 'maxsteps'
-async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, sharedActionLog, continueAsk }) {
+async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, sharedActionLog, continueAsk, keepRunning }) {
   const postMsg = (obj) => postToTab(tabId, port, obj);
   const apiReporter = makeApiReporter(postMsg);
 
@@ -6869,7 +6909,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
           role: 'assistant',
           content: JSON.stringify({ action: 'done', summary: doneSummary })
         });
-        postMsg({ type: 'done', summary: doneSummary, output: JSON.stringify({ action: 'done', summary: doneSummary }) });
+        postMsg({ type: 'done', summary: doneSummary, output: JSON.stringify({ action: 'done', summary: doneSummary }), running: !!keepRunning });
         await saveHistory(origin, messages);
         clearResumeCheckpoint(origin);
         return 'done';
@@ -6918,7 +6958,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, s
         keepSlotForRetry();
         continue;
       }
-      postMsg({ type: 'done', summary: parsed.summary || llmText, output: llmText });
+      postMsg({ type: 'done', summary: parsed.summary || llmText, output: llmText, running: !!keepRunning });
       await saveHistory(origin, messages);
       clearResumeCheckpoint(origin);
       return 'done';
@@ -6967,7 +7007,8 @@ async function runMultiTask({ tabId, origin, instructions, files, port, cancelRe
     // 所有指令都携带用户附加的文件——页面导航后 content script 会被重新注入，
     // 文件存储会重置，需要重新同步才能在后续指令中使用 page.upload。
     // 附件字节随指令同步到页面供上传；正文仅在本步需要抽字段时才钉入对话。
-    const result = await runStreamingTask({ tabId, origin, task, files, port, cancelRef, sharedActionLog });
+    const keepRunning = idx < instructions.length - 1;
+    const result = await runStreamingTask({ tabId, origin, task, files, port, cancelRef, sharedActionLog, keepRunning });
 
     // ask 暂停：保存剩余指令，等用户回复后继续
     if (result === 'ask') {
@@ -7003,10 +7044,13 @@ async function runMultiTask({ tabId, origin, instructions, files, port, cancelRe
     // 指令间等待页面稳定 + 重新注入桥接（页面可能已导航）
     if (idx < instructions.length - 1 && !cancelRef.cancelled) {
       postMsg({ type: 'status', text: '等待页面就绪后执行下一条指令…' });
+      postMsg({ type: 'taskState', running: true, text: '本条指令完成，继续执行下一条…' });
       await waitForPageStable(tabId, null, cancelRef);
       if (cancelRef.cancelled) return await notifyCancelled(postMsg, cancelRef, origin, null);
       try { await inject(tabId); } catch (e) {}
       await waitForDomQuiet(tabId, cancelRef, null, origin);
+      if (cancelRef.cancelled) return await notifyCancelled(postMsg, cancelRef, origin, null);
+      postMsg({ type: 'taskState', running: true });
     }
   }
 
@@ -7034,7 +7078,8 @@ async function resumePendingInstructions({ tabId, origin, files, port, cancelRef
     const task = pending[idx];
     postMsg({ type: 'status', text: `继续指令 ${idx + 1}/${pending.length}：${truncate(task, 60)}` });
 
-    const result = await runStreamingTask({ tabId, origin, task, files, port, cancelRef, sharedActionLog });
+    const keepRunning = idx < pending.length - 1;
+    const result = await runStreamingTask({ tabId, origin, task, files, port, cancelRef, sharedActionLog, keepRunning });
 
     if (result === 'ask') {
       pausedOrigins.set(tabId, origin);
@@ -7067,6 +7112,7 @@ async function resumePendingInstructions({ tabId, origin, files, port, cancelRef
 
     if (idx < pending.length - 1 && !cancelRef.cancelled) {
       postMsg({ type: 'status', text: '等待页面就绪后执行下一条指令…' });
+      postMsg({ type: 'taskState', running: true, text: '本条指令完成，继续执行下一条…' });
       await waitForPageStable(tabId, null, cancelRef);
       if (cancelRef.cancelled) {
         await notifyCancelled(postMsg, cancelRef, origin, null);
@@ -7074,6 +7120,11 @@ async function resumePendingInstructions({ tabId, origin, files, port, cancelRef
       }
       try { await inject(tabId); } catch (e) {}
       await waitForDomQuiet(tabId, cancelRef, null, origin);
+      if (cancelRef.cancelled) {
+        await notifyCancelled(postMsg, cancelRef, origin, null);
+        return true;
+      }
+      postMsg({ type: 'taskState', running: true });
     }
   }
 
@@ -7663,7 +7714,17 @@ chrome.runtime.onConnect.addListener((port) => {
       hydratedPanelTabs.add(tabId);
       const queued = deferredTaskMessages.get(tabId) || [];
       deferredTaskMessages.delete(tabId);
-      for (const item of queued) postMsg(item);
+      const stillRunning = activeTasks.has(tabId);
+      for (const item of queued) {
+        if (stillRunning && item && item.type === 'done') {
+          postMsg(Object.assign({}, item, { running: true }));
+        } else {
+          postMsg(item);
+        }
+      }
+      if (stillRunning) {
+        postMsg({ type: 'taskState', running: true, text: '页面已跳转，正在继续原任务…' });
+      }
     } else if (cmd === 'panelStoreGet') {
       if (isSettings) return;
       (async () => {
@@ -7863,7 +7924,10 @@ chrome.runtime.onConnect.addListener((port) => {
         } finally {
           doneResolve();
           const cur = activeTasks.get(tabId);
-          if (cur && cur.cancelRef === cancelRef) activeTasks.delete(tabId);
+          if (cur && cur.cancelRef === cancelRef) {
+            activeTasks.delete(tabId);
+            postToTab(tabId, port, { type: 'taskState', running: false });
+          }
         }
       })();
     }
@@ -7908,6 +7972,18 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   skillDraftRuns.delete(tabId);
   stopActiveTask(tabId, { closeOffscreen: false });
   activeTasks.delete(tabId);
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.cmd !== 'cancelFromPanel') return;
+  if (sender && sender.id && chrome.runtime && sender.id !== chrome.runtime.id) return;
+  const tabId = sender.tab && sender.tab.id;
+  if (tabId == null) {
+    try { sendResponse({ ok: false }); } catch (e) {}
+    return;
+  }
+  stopActiveTask(tabId, { closeOffscreen: false });
+  try { sendResponse({ ok: true }); } catch (e2) {}
 });
 
 async function bootKernel() {

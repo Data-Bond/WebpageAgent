@@ -1466,7 +1466,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.3.1', '锁步版本为 5.3.1');
+ok(manifestVer === '5.4.0', '锁步版本为 5.4.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -2761,8 +2761,12 @@ ok(/options_ui/.test(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')),
 ok(/textContent: '全局配置'/.test(panelSrc), '弹出框第一行有全局配置按钮');
 ok(/port\.name !== 'panel' && port\.name !== 'settings'/.test(bg), '后台接受 settings 端口');
 ok(/cmd === 'openGlobalSettings'/.test(bg) && /settings\.html/.test(bg), '可打开全局配置标签页');
-ok(/uiOpacity: 100/.test(bg) && /panelScaleX: 70/.test(bg) && /panelScaleY: 70/.test(bg),
-  '界面透明度默认 100、放大比例默认 70×70');
+ok(/uiOpacity: 80/.test(bg) && /panelScaleX: 50/.test(bg) && /panelScaleY: 90/.test(bg),
+  '界面透明度默认 80、放大比例默认 50×90');
+ok(/value="80"/.test(settingsHtml) && /id="uiOpacityVal">80%/.test(settingsHtml),
+  '全局配置页透明度默认 80%');
+ok(/id="panelScaleX"[\s\S]*?value="50"/.test(settingsHtml) && /id="panelScaleY"[\s\S]*?value="90"/.test(settingsHtml),
+  '全局配置页放大默认横向 50、纵向 90');
 ok(/function applyUiKnobs\(/.test(bg) && /uiOpacity/.test(settingsHtml), '全局配置含插件界面透明度');
 ok(/:host\.expanded/.test(panelSrc) && /--wpa-scale-x/.test(panelSrc), '放大面板用宽高比例而非 transform');
 ok(/shell\.style\.width = w \+ 'px'/.test(extractFn(panelSrc, 'applyPanelSize')), '放大时用像素宽高打在页面 iframe 上');
@@ -3055,6 +3059,24 @@ ok(fs.existsSync(path.join(__dirname, 'tests/fixtures/hidden-row-actions.html'))
 ok(/maxSteps: 60/.test(bg) && /pageMaxSteps/.test(panelSrc), '默认 maxSteps 与面板本页配置同源量级');
 ok(/copyTextOffscreen/.test(bg) && /cmd === 'copyText'/.test(offscreenSrc), '复制走扩展 offscreen 而非宿主 DOM');
 ok(!/document\.body\.appendChild\(ta\)/.test(panelSrc), '面板复制不再向宿主插入 textarea');
+ok(/running: !!keepRunning/.test(bg), '中间指令 done 携带 running，避免整批被当成结束');
+ok(/keepRunning = idx < instructions.length - 1/.test(bg), '多指令批次把 keepRunning 传给单条任务');
+ok(/keepRunning = idx < pending.length - 1/.test(bg), '恢复剩余指令时同样携带 keepRunning');
+ok(/function sleepCancellable/.test(bg) && /if \(cancelRef.cancelled\) resolveNow\(\)/.test(bg),
+  '页面等待可被停止立刻打断，不等 settle 超时');
+ok(/cmd !== 'cancelFromPanel'/.test(bg) && /cmd: 'cancelFromPanel'/.test(panelSrc),
+  '端口断开时面板仍可通过 runtime 消息停止后台');
+ok(/if \(msg.taskRunning\) setRunning\(true\)/.test(panelSrc), 'ready.taskRunning 立即恢复停止按钮');
+ok(/msg.running === false/.test(panelSrc), 'taskState.running=false 才把按钮改回发送');
+ok(/本条指令完成，继续执行下一条/.test(panelSrc), '中间 done 不展示任务完成');
+ok(!/runningBeforeDisconnect = running;\s*portDead = true;\s*setRunning\(false\)/.test(panelSrc),
+  '端口断开不再把停止按钮改成发送');
+ok(/停止指令已发出；若后台仍在运行，请再次点击停止/.test(panelSrc),
+  '停止超时后仍保留停止按钮');
+ok(/stillRunning && item && item.type === 'done'/.test(bg),
+  '面板重连回放队列时，运行中任务的 done 不会把界面打成空闲');
+ok(/if \(!running\) setRunning\(true\);\s*upsertLlmCallCard/.test(panelSrc),
+  '任务过程中的模型调用会把停止按钮拉回来');
 
 if (failures) {
   console.error('\n' + failures + ' 项断言失败');

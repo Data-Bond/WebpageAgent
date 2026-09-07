@@ -463,7 +463,7 @@
   }
 
   function syncOpacityLabel() {
-    const n = clampInt($('uiOpacity').value, 20, 100, 100);
+    const n = clampInt($('uiOpacity').value, 20, 100, 80);
     $('uiOpacityVal').textContent = n + '%';
   }
 
@@ -487,9 +487,9 @@
       busyMaskEnabled: !!$('busyMaskEnabled').checked,
       snapshotPiiMask: !!$('snapshotPiiMask').checked,
       archiveRedactHint: String($('archiveRedactHint').value || '').slice(0, 2000),
-      uiOpacity: clampInt($('uiOpacity').value, 20, 100, 100),
-      panelScaleX: clampInt($('panelScaleX').value, 30, 100, 70),
-      panelScaleY: clampInt($('panelScaleY').value, 30, 100, 70),
+      uiOpacity: clampInt($('uiOpacity').value, 20, 100, 80),
+      panelScaleX: clampInt($('panelScaleX').value, 30, 100, 50),
+      panelScaleY: clampInt($('panelScaleY').value, 30, 100, 90),
       diagCapKb: clampInt($('diagCapKb').value, 10, 200, 50),
       selectedTextTag: currentConfig ? currentConfig.selectedTextTag : null,
       selectedOcrTag: currentConfig ? currentConfig.selectedOcrTag : null
@@ -538,9 +538,9 @@
         : (defs.archiveRedactHint || '');
       hintEl.value = hint;
     }
-    $('uiOpacity').value = String(clampInt(cfg.uiOpacity, 20, 100, 100));
-    $('panelScaleX').value = String(clampInt(cfg.panelScaleX, 30, 100, 70));
-    $('panelScaleY').value = String(clampInt(cfg.panelScaleY, 30, 100, 70));
+    $('uiOpacity').value = String(clampInt(cfg.uiOpacity, 20, 100, 80));
+    $('panelScaleX').value = String(clampInt(cfg.panelScaleX, 30, 100, 50));
+    $('panelScaleY').value = String(clampInt(cfg.panelScaleY, 30, 100, 90));
     if ($('diagCapKb')) $('diagCapKb').value = String(clampInt(cfg.diagCapKb, 10, 200, 50));
     syncOpacityLabel();
     } finally {

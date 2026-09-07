@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '5.3.1';
+  var BRIDGE_VERSION = '5.4.0';
   var SNAPSHOT_TIME_BUDGET_MS = 2800;
 
   function install() {

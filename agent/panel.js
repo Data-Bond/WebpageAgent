@@ -36,9 +36,9 @@
   const CSS_STRING = `
     :host {
       all: initial;
-      --wpa-alpha: 1;
-      --wpa-scale-x: 0.7;
-      --wpa-scale-y: 0.7;
+      --wpa-alpha: 0.8;
+      --wpa-scale-x: 0.5;
+      --wpa-scale-y: 0.9;
       --wpa-header-h: 56px;
       position: absolute;
       inset: 0;
@@ -3032,24 +3032,24 @@
   }
 
   function requestStop() {
-    if (!running || stopping) return;
+    if (stopping) return;
     stopping = true;
-    els.sendBtn.disabled = true;
-    els.sendBtn.textContent = '停止中';
-    els.sendBtn.title = '正在停止…';
+    setRunning(true);
     try {
       if (port && !portDead) port.postMessage({ cmd: 'cancel' });
     } catch (e) {}
+    try {
+      chrome.runtime.sendMessage({ cmd: 'cancelFromPanel' }, () => void chrome.runtime.lastError);
+    } catch (e2) {}
     addBubble('status', '正在停止当前任务…');
     clearStopWatch();
-    // 后台若卡在无法中断的页面脚本里，超时后仍恢复输入，避免面板锁死
+    // 后台若仍在收尾，超时后恢复「停止」而不是「发送」，避免无法再次终止
     stopWatchId = setTimeout(() => {
       stopWatchId = null;
-      if (running) {
-        addBubble('status', '停止已发出；若页面脚本仍在收尾，输入已恢复。');
-        setRunning(false);
-        els.userInput.focus();
-      }
+      if (!running) return;
+      stopping = false;
+      setRunning(true);
+      addBubble('status', '停止指令已发出；若后台仍在运行，请再次点击停止。');
     }, 12000);
   }
 
@@ -3501,8 +3501,8 @@
     const anchorTop = prev.top;
     if (panelExpanded) {
       host.classList.add('expanded');
-      const sx = panelScaleFrac('--wpa-scale-x', 0.7);
-      const sy = panelScaleFrac('--wpa-scale-y', 0.7);
+      const sx = panelScaleFrac('--wpa-scale-x', 0.5);
+      const sy = panelScaleFrac('--wpa-scale-y', 0.9);
       const box = pageViewportBox();
       const w = Math.max(280, Math.round(Math.min(box.w * sx, box.w - 16)));
       const h = Math.max(200, Math.round(Math.min(box.h * sy, box.h - 16)));
@@ -3542,9 +3542,9 @@
   }
 
   function applyPanelChrome(cfg) {
-    const opacity = clampInt(cfg && cfg.uiOpacity, 20, 100, 100);
-    const sx = clampInt(cfg && cfg.panelScaleX, 30, 100, 70);
-    const sy = clampInt(cfg && cfg.panelScaleY, 30, 100, 70);
+    const opacity = clampInt(cfg && cfg.uiOpacity, 20, 100, 80);
+    const sx = clampInt(cfg && cfg.panelScaleX, 30, 100, 50);
+    const sy = clampInt(cfg && cfg.panelScaleY, 30, 100, 90);
     host.style.setProperty('--wpa-alpha', String(opacity / 100));
     host.style.setProperty('--wpa-scale-x', String(sx / 100));
     host.style.setProperty('--wpa-scale-y', String(sy / 100));
@@ -4331,6 +4331,7 @@
 
   // ============ 消息分发 ============
   async function handleReady(msg) {
+    if (msg.taskRunning) setRunning(true);
     if (msg.origin) origin = msg.origin;
     if (origin) {
       if (msg.injectError) {
@@ -4352,7 +4353,9 @@
       }
       // SW 重启后 visibleTabs 会丢失，若面板可见则重新上报
       if (!shell.hidden) reportVisibility(true);
-      if (runningBeforeDisconnect && !msg.taskRunning) {
+      if (msg.taskRunning) {
+        setRunning(true);
+      } else if (runningBeforeDisconnect) {
         addBubble('error', '浏览器后台已重启，之前的运行中任务已中断，请确认页面状态后重新发送。');
         setRunning(false);
       }
@@ -4382,6 +4385,11 @@
 
   function handleDone(msg) {
     addAssistantBubble(msg.summary != null ? String(msg.summary) : '完成', msg.output);
+    if (msg.running) {
+      addBubble('status', '本条指令完成，继续执行下一条…');
+      setRunning(true);
+      return;
+    }
     addBubble('system', '任务完成');
     setRunning(false);
     els.userInput.focus();
@@ -4395,9 +4403,8 @@
   }
 
   function handleCancelled(msg) {
-    if (!running && !stopping) return;
     const text = msg && msg.summary != null ? String(msg.summary) : '已停止当前任务';
-    addBubble('system', text);
+    if (running || stopping) addBubble('system', text);
     setRunning(false);
     els.userInput.focus();
   }
@@ -4408,6 +4415,7 @@
         case 'ready': handleReady(msg); break;
         case 'taskState':
           if (msg.running) setRunning(true);
+          else if (msg.running === false) setRunning(false);
           break;
         case 'config': handleConfig(msg); break;
         case 'configSaved':
@@ -4470,6 +4478,7 @@
           pastedAttachNameFailed(msg);
           break;
         case 'llmCall':
+          if (!running) setRunning(true);
           upsertLlmCallCard(msg);
           break;
         case 'llmCallDownload':
@@ -4495,12 +4504,14 @@
           addBubble('status', '已同步附件 ' + (msg.count != null ? msg.count : 0) + ' 个');
           break;
         case 'step':
+          if (!running) setRunning(true);
           addAssistantBubble(
             msg.summary != null ? String(msg.summary) : ('步骤 ' + msg.step),
             msg.output
           );
           break;
         case 'tool':
+          if (!running) setRunning(true);
           addBubble(msg.ok ? 'status' : 'error', msg.text != null ? String(msg.text) : '');
           break;
         case 'ask': handleAsk(msg); break;
@@ -4626,9 +4637,8 @@
       port.onDisconnect.addListener(() => {
         void chrome.runtime.lastError;
         if (gen !== connectGen || port !== thisPort) return;
-        runningBeforeDisconnect = running;
+        runningBeforeDisconnect = running || stopping;
         portDead = true;
-        setRunning(false);
         stopHeartbeat();
         if (isPanelVisible()) {
           triggerReconnect();
