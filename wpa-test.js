@@ -449,6 +449,17 @@ const cascFn = cascFnStart >= 0
 ok(cascFn && !/page\.sleep/.test(cascFn), 'selectCascaderOption 验证循环不用尚未创建的 page.sleep');
 ok(/await sleepMs\(100\)/.test(cascFn), 'selectCascaderOption 验证循环使用 sleepMs');
 ok(/\.ivu-select-item/.test(bridge), 'iView 下拉选项纳入 OPTION_SEL');
+ok(/\[class\*="dropdown-item"\]/.test(bridge) && /\[class\*="select-option"\]/.test(bridge),
+  '选项收集含泛化 dropdown-item/select-option class');
+ok(/\[class\*="editable-select"\]/.test(bridge) && /\[class\*="select-dropdown"\]/.test(bridge),
+  '宿主与弹层含 editable-select / select-dropdown 泛化选择器');
+ok(/function looksLikeSelectHost/.test(bridge) && /function collectGenericOptionsIn/.test(bridge),
+  '泛化识别 combobox 宿主并收割弹层内 li');
+ok(/user-select\|select-none/.test(bridge), '不把 user-select-none 当成下拉宿主');
+ok(/canCreate && searchAvailable && opened/.test(bridge),
+  '可新建 combobox 仅在下拉已展开时才回车创建');
+ok(/page\.selectOption\(sel, comboVal\)/.test(bridge), '对 combobox setVal 改走 selectOption');
+ok(/comboboxHostOf\(el\) \? 'combobox'/.test(bridge), '快照把可输入下拉标成 combobox widget');
 ok(/value\.ok === false && !value\.continueBatch\) break/.test(bridge),
   '同一批 operations 中 helper 返回 ok:false 时停止后续操作（disabled 软失败除外）');
 ok(/function cascaderClickTarget/.test(bridge), '带复选框的级联节点点击勾选框而不是展开箭头');
@@ -1466,7 +1477,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.4.0', '锁步版本为 5.4.0');
+ok(manifestVer === '5.4.1', '锁步版本为 5.4.1');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -3077,6 +3088,14 @@ ok(/stillRunning && item && item.type === 'done'/.test(bg),
   '面板重连回放队列时，运行中任务的 done 不会把界面打成空闲');
 ok(/if \(!running\) setRunning\(true\);\s*upsertLlmCallCard/.test(panelSrc),
   '任务过程中的模型调用会把停止按钮拉回来');
+ok(/可输入\/可新建 combobox/.test(bg) && /allow-create/.test(bg),
+  'PLAYBOOK 要求可输入 combobox 走 selectOption');
+const readmeSrc = fs.readFileSync(path.join(__dirname, 'README.md'), 'utf8');
+ok(/图 1/.test(readmeSrc) && /六句指令完成发布软件流程自动化/.test(readmeSrc),
+  'README 能做什么有图 1 解说');
+ok(/doc\/screenshot1\.png/.test(readmeSrc) && fs.existsSync(path.join(__dirname, 'doc/screenshot1.png')),
+  'README 引用 doc/screenshot1.png 且文件存在');
+ok(/max-width:100%/.test(readmeSrc), 'README 截图随页面宽度缩放');
 
 if (failures) {
   console.error('\n' + failures + ' 项断言失败');

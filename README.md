@@ -10,6 +10,10 @@
 - 根据页面快照执行白名单操作，不运行任意脚本
 - 配置可导入导出；任务可存为可复用技能
 
+**图 1.** 六句指令完成发布软件流程自动化：在目标仓库页用六步自然语言走完「记录首页 → 创建发行版 → 选择 Tag → 生成描述 → 发布 → 返回首页」。
+
+<img src="doc/screenshot1.png" alt="图 1 六句指令完成发布软件流程自动化" style="max-width:100%;height:auto;" />
+
 ## 安装
 
 **Windows（推荐）** 打开 [安装脚本页面](https://gitcode.com/hpcscc/WebpageAgent/blob/main/WebpageAgent-Installer-Windows.bat)，点击页面上的「下载」，把 `WebpageAgent-Installer-Windows.bat` 存到希望安装插件的目录（保存时核对文件名和 `.bat` 后缀，不要变成 `.txt`）。然后双击运行。

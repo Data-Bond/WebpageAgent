@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '5.4.0';
+  var BRIDGE_VERSION = '5.4.1';
   var SNAPSHOT_TIME_BUDGET_MS = 2800;
 
   function install() {
@@ -1886,6 +1886,7 @@
       '.ivu-cascader-menu-item', '.ant-cascader-menu-item',
       'li[id^="cascader-menu-"]', 'li[id*="-cascader-menu-"]',
       '.van-option', '.dropdown-item', '[data-value]',
+      '[class*="dropdown-item"], [class*="select-item"], [class*="select-option"]',
       PAGER_ITEM_SELECTOR,
       // 复选/单选框：框架包装器（iView/element/ant/layui/vant/nut）、ARIA 角色与原生 label 包裹。
       // 真实 input 被框架用 opacity:0 隐藏，可见可点的是包装器——不收录包装器，快照里就看不到复选框。
@@ -2182,6 +2183,7 @@
         var scope = root && root.querySelectorAll ? root : document;
         var hosts = scope.querySelectorAll(
           '.ivu-cascader, .el-cascader, .ant-cascader, .ivu-select, .el-select, .ant-select, ' +
+          '[class*="editable-select"], ' +
           TAG_HOST_SEL
         );
         var parts = [];
@@ -2198,6 +2200,13 @@
         if (!el || !el.closest) return '';
         var host = el.closest('.ivu-cascader, .el-cascader, .ant-cascader, .ivu-select, .el-select, .ant-select');
         if (!host) {
+          host = widgetRoot(el);
+          if (host && looksLikeSelectHost(host)) {
+            var comboInp = comboboxTriggerOf(host, el);
+            var iv = '';
+            try { iv = String((comboInp && ('value' in comboInp ? comboInp.value : '')) || '').trim(); } catch (eC) {}
+            if (iv) return iv.slice(0, 80);
+          }
           host = el.closest(TAG_HOST_SEL);
           if (!host) return '';
           var chips = tagChipTexts(host);
@@ -3090,7 +3099,7 @@
           icon: icon,
           title: el.getAttribute ? (el.getAttribute('title') || '').slice(0, 60) : '',
           box: box,
-          widget: box ? boxWidgetOf(el) : (tagHostOf(el) ? 'tags' : undefined),
+          widget: box ? boxWidgetOf(el) : (tagHostOf(el) ? 'tags' : (comboboxHostOf(el) ? 'combobox' : undefined)),
           checked: box ? readBoxChecked(el) : undefined,
           cascaderRole: isCascaderSearchInput(el)
             ? 'filter'
@@ -3944,7 +3953,7 @@
     }
 
     // ============ 下拉框共用工具 ============
-    // 选项候选选择器：覆盖 layui/element-ui/ant/vant/select2/chosen/easyUI/jQuery-UI/bootstrap-select/级联 等
+    // 选项候选：具名库 + 泛化 class 子串（devui-dropdown-item / t-select-option 等）
     var OPTION_SEL = '[role="option"], [role="listbox"] li, li[aria-selected], ' +
       'dd[lay-value], li[lay-value], .layui-select-option, ' +
       '.el-select-dropdown__item, .el-option, .el-cascader-node, .el-cascader-menu__item, ' +
@@ -3956,7 +3965,11 @@
       '.dropdown-item, .dropdown-menu li a, ' +
       '.select2-results__option, .chosen-results li, .active-result, ' +
       '.ui-menu-item, .ui-menu-item-wrapper, .combobox-item, .combo-p li, ' +
-      'li[data-value], dd[data-value], div[role="option"]';
+      'li[data-value], dd[data-value], div[role="option"], ' +
+      '[class*="dropdown-item"], [class*="select-item"], [class*="select-option"], [class*="option-item"]';
+
+    var GENERIC_OPTION_SEL = '[class*="dropdown-item"], [class*="select-item"], [class*="select-option"], ' +
+      '[class*="option-item"], [class*="option-content"], [role="option"]';
 
     var CASCADER_OPTION_SEL = '.el-cascader-node, .el-cascader-menu__item, .el-cascader__suggestion-item, ' +
       '.el-cascader__suggestion-list li, .el-cascader__suggestion-panel li, ' +
@@ -3981,7 +3994,10 @@
     function popupHasOptionNodes(popup) {
       if (!popup || !popup.querySelector) return false;
       try {
-        return !!(popup.querySelector(CASCADER_OPTION_SEL) || popup.querySelector(OPTION_SEL));
+        if (popup.querySelector(CASCADER_OPTION_SEL) || popup.querySelector(OPTION_SEL)) return true;
+        if (popup.querySelector(GENERIC_OPTION_SEL)) return true;
+        var lis = popup.querySelectorAll('li');
+        return !!(lis && lis.length);
       } catch (e) {
         return false;
       }
@@ -4001,12 +4017,16 @@
       '.combo-p', '.combo-panel', '.combobox-item-wrapper',
       '.n-select-menu', '.n-base-select-menu',
       '.rc-virtual-list', '.van-popup', '.van-popover',
-      '[role="listbox"]', '[role="presentation"].el-select-dropdown'
+      '[role="listbox"]', '[role="presentation"].el-select-dropdown',
+      '[class*="select-dropdown"], [class*="dropdown-menu"], [class*="select-popup"], ' +
+      '[class*="picker-dropdown"], [class*="overlay-pane"], [class*="select-panel"]'
     ].join(', ');
 
     var WIDGET_SEL = '.el-select, .el-cascader, .ant-select, .ivu-select, .ivu-cascader, .layui-form-select, ' +
       '.select2-container, .chosen-container, .n-select, .van-dropdown-menu, .combo, ' +
-      '.bootstrap-select, [role="combobox"]';
+      '.bootstrap-select, [role="combobox"], [class*="editable-select"], [class*="select-input"], ' +
+      '.t-select, .arco-select, .semi-select, .p-dropdown, .p-autocomplete, .v-select, .v-autocomplete, ' +
+      '.q-select, .devui-select, [allow-create]';
 
     // 规范化文本：去全部空白并小写——消除选项换行/全半角空格/大小写差异造成的误匹配
     function normText(s) {
@@ -4053,15 +4073,111 @@
       return out;
     }
 
+    function widgetAnchor(el) {
+      if (!el) return null;
+      var tag = String(el.tagName || '').toUpperCase();
+      if (/^(INPUT|TEXTAREA|BUTTON|SVG|PATH|I|SPAN)$/.test(tag) && el.parentElement) return el.parentElement;
+      return el;
+    }
+
+    function looksLikeSelectHost(el) {
+      if (!el || el.nodeType !== 1) return false;
+      var tag = String(el.tagName || '').toUpperCase();
+      if (/^(INPUT|TEXTAREA|SELECT|OPTION|BUTTON|SVG|PATH|HTML|BODY|FORM)$/.test(tag)) return false;
+      var cn = classNameOfNode(el);
+      if (/user-select|select-none|select-text|select-all|select-auto/i.test(cn)) return false;
+      if (/editable-select|combobox|autocomplete|typeahead|selectize/i.test(cn)) return true;
+      if (/\b(t-select|arco-select|semi-select|p-dropdown|p-autocomplete|v-select|v-autocomplete|q-select|devui-select|n-select)\b/i.test(cn)) return true;
+      try {
+        if (el.getAttribute && (el.getAttribute('allow-create') != null || el.getAttribute('role') === 'combobox')) return true;
+      } catch (e0) {}
+      if (/\b[\w-]+-select(?:-[\w]+)*\b/i.test(cn) || /\b[\w-]+Select\b/.test(cn)) {
+        try {
+          if (el.querySelector && el.querySelector('input:not([type="hidden"]), [role="combobox"]')) return true;
+        } catch (e1) {}
+      }
+      return false;
+    }
+
     function widgetRoot(trigger) {
       if (!trigger) return null;
+      var start = widgetAnchor(trigger) || trigger;
       try {
-        if (trigger.closest) {
-          var w = trigger.closest(WIDGET_SEL);
+        if (start.closest) {
+          var w = start.closest(WIDGET_SEL);
           if (w) return w;
         }
       } catch (e) {}
+      var n = start;
+      for (var i = 0; i < 8 && n && n.nodeType === 1; i++) {
+        if (looksLikeSelectHost(n)) return n;
+        n = n.parentElement;
+      }
       return trigger;
+    }
+
+    function comboboxTriggerOf(host, el) {
+      if (el && String(el.tagName || '').toUpperCase() === 'INPUT' && isSearchTypedInput(el, el)) return el;
+      var root = host || el;
+      if (root && root.querySelector) {
+        try {
+          var nodes = root.querySelectorAll('input:not([type="hidden"])');
+          for (var i = 0; i < nodes.length; i++) {
+            if (isSearchTypedInput(nodes[i], nodes[i])) return nodes[i];
+          }
+        } catch (e) {}
+      }
+      return el || host;
+    }
+
+    function comboboxHostOf(el) {
+      if (!el) return null;
+      if (cascaderHostOf(el)) return null;
+      var root = widgetRoot(el);
+      if (root && looksLikeSelectHost(root)) return root;
+      if (looksLikeSelectHost(el)) return el;
+      return null;
+    }
+
+    function hostAllowsCreate(el) {
+      var n = el;
+      for (var i = 0; i < 8 && n && n.nodeType === 1; i++) {
+        try {
+          if (n.hasAttribute && n.hasAttribute('allow-create')) return true;
+        } catch (e0) {}
+        var cn = classNameOfNode(n);
+        if (/allow-create|creatable|editable-select/i.test(cn)) return true;
+        n = n.parentElement;
+      }
+      var si = null;
+      try { si = findSearchInput(el); } catch (e1) {}
+      var ph = '';
+      try { ph = String((si && (si.getAttribute && si.getAttribute('placeholder') || si.placeholder)) || ''); } catch (e2) {}
+      if (/创建|新建|or create|create a (new )?tag/i.test(ph)) return true;
+      return false;
+    }
+
+    function isViewportOverlayShell(el) {
+      if (!el || !el.getBoundingClientRect) return false;
+      try {
+        var r = el.getBoundingClientRect();
+        var vw = window.innerWidth || 0;
+        var vh = window.innerHeight || 0;
+        return vw > 0 && vh > 0 && r.width > vw * 0.85 && r.height > vh * 0.85;
+      } catch (e) { return false; }
+    }
+
+    function popupContentRoot(el) {
+      if (!el) return null;
+      if (isViewportOverlayShell(el) && el.querySelector) {
+        try {
+          var inner = el.querySelector(
+            '[class*="dropdown-menu"], [class*="select-dropdown"], [role="listbox"], ul, ol'
+          );
+          if (inner && !isHiddenPopup(inner)) return inner;
+        } catch (e) {}
+      }
+      return el;
     }
 
     function isHiddenPopup(el) {
@@ -4113,7 +4229,8 @@
       if (root && root.querySelector) {
         var inner = root.querySelector(
           'dl, .layui-anim, [role="listbox"], .el-select-dropdown, .el-cascader__dropdown, ' +
-          '.el-cascader-panel, .el-cascader-menus, .el-cascader-menu, .el-cascader__suggestion-panel, .dropdown-menu, .combo-panel'
+          '.el-cascader-panel, .el-cascader-menus, .el-cascader-menu, .el-cascader__suggestion-panel, .dropdown-menu, .combo-panel, ' +
+          '[class*="dropdown-menu"], [class*="select-dropdown"]'
         );
         if (inner && !isHiddenPopup(inner)) return inner;
       }
@@ -4134,15 +4251,19 @@
       }
       var pops = queryAllDeep(POPUP_SEL);
       var best = null;
-      var bestDist = Infinity;
+      var bestScore = -Infinity;
       for (var i = 0; i < pops.length; i++) {
         if (isHiddenPopup(pops[i])) continue;
-        if (isCascader && !popupHasOptionNodes(pops[i])) continue;
-        var dist = popupDistance(trigger, pops[i]);
-        if (dist < bestDist) { bestDist = dist; best = pops[i]; }
+        var el = popupContentRoot(pops[i]) || pops[i];
+        if (isHiddenPopup(el)) continue;
+        if (isViewportOverlayShell(el) && !popupHasOptionNodes(el)) continue;
+        if (isCascader && !popupHasOptionNodes(el)) continue;
+        var dist = popupDistance(trigger, el);
+        if (dist > (isCascader ? 1600 : 900)) continue;
+        var score = (popupHasOptionNodes(el) ? 1000 : 0) - dist;
+        if (score > bestScore) { bestScore = score; best = el; }
       }
-      // 普通下拉 480px；级联建议列表常 teleport 到 body，放宽到 1600px。
-      if (best && bestDist < (isCascader ? 1600 : 480)) return best;
+      if (best && bestScore > -900) return best;
       return null;
     }
 
@@ -4161,10 +4282,13 @@
       var rootExp = expanded(root);
       if (rootExp === true) return true;
       if (root && root.classList) {
+        var cn = classNameOfNode(root);
         if (root.classList.contains('is-focus') || root.classList.contains('is-reverse') ||
             root.classList.contains('ant-select-open') || root.classList.contains('el-select--open') ||
             root.classList.contains('layui-form-selected') || root.classList.contains('select2-container--open') ||
-            root.classList.contains('ivu-select-visible') || root.classList.contains('n-select--open')) {
+            root.classList.contains('ivu-select-visible') || root.classList.contains('n-select--open') ||
+            /\b(open|opened|expanded|is-focus|is-reverse|focused)\b/i.test(cn) ||
+            /dropdown-open|select-open|is-open|select-visible/i.test(cn)) {
           return true;
         }
       }
@@ -4175,7 +4299,11 @@
     function findArrow(trigger) {
       var root = widgetRoot(trigger) || trigger;
       if (!root || !root.querySelector) return null;
-      var hit = root.querySelector('.el-input__suffix, .el-select__caret, .el-icon-arrow-up, .el-icon-arrow-down, .ant-select-arrow, .layui-edge, .select2-selection__arrow, .ivu-select-arrow');
+      var hit = root.querySelector(
+        '.el-input__suffix, .el-select__caret, .el-icon-arrow-up, .el-icon-arrow-down, ' +
+        '.ant-select-arrow, .layui-edge, .select2-selection__arrow, .ivu-select-arrow, ' +
+        '[class*="arrow-icon"], [class*="select-arrow"], [class*="select__arrow"], [class*="caret"]'
+      );
       return hit || null;
     }
 
@@ -4192,6 +4320,64 @@
         }
       } catch (e) {}
       return ((el.innerText || el.textContent || '').trim()).replace(/\s+/g, ' ');
+    }
+
+    function isSkippableOptionText(t) {
+      var s = String(t || '').replace(/\s+/g, '');
+      if (!s || s.length > 120) return true;
+      if (isCascaderPlaceholderText(t)) return true;
+      if (/^(请选择|请选择Tag|请选择标签|Select|Choose|None)$/i.test(s)) return true;
+      return false;
+    }
+
+    function collectGenericOptionsIn(root, limit, withSelector) {
+      if (!root || !root.querySelectorAll) return [];
+      var raw = [];
+      try { raw = safeAll(root, GENERIC_OPTION_SEL + ', li'); } catch (e) { return []; }
+      var seen = new Set();
+      var cands = [];
+      for (var i = 0; i < raw.length; i++) {
+        var e = raw[i];
+        if (seen.has(e)) continue;
+        seen.add(e);
+        if (!isLaidOut(e)) continue;
+        if (e.tagName === 'OPTION') continue;
+        try {
+          if (e.querySelector && e.querySelector('input, textarea, select')) continue;
+        } catch (e0) {}
+        var dis = false;
+        try {
+          dis = !!(e.getAttribute && (e.getAttribute('aria-disabled') === 'true' || e.getAttribute('disabled') != null));
+        } catch (eD) {}
+        var cn = classNameOfNode(e);
+        if (dis || /\b(disabled|is-disabled|is-group|group-title)\b/i.test(cn)) continue;
+        var t0 = optionTextOf(e);
+        if (isSkippableOptionText(t0)) continue;
+        cands.push(e);
+      }
+      var leaves = [];
+      for (var j = 0; j < cands.length; j++) {
+        var nested = false;
+        for (var k = 0; k < cands.length; k++) {
+          if (j === k) continue;
+          try {
+            if (cands[j].contains && cands[j].contains(cands[k])) { nested = true; break; }
+          } catch (e1) {}
+        }
+        if (!nested) leaves.push(cands[j]);
+      }
+      var outG = [];
+      for (var n = 0; n < leaves.length && (!limit || outG.length < limit); n++) {
+        var node = leaves[n];
+        var text = optionTextOf(node).slice(0, 80);
+        var v = node.getAttribute ? (node.getAttribute('data-value') || node.getAttribute('lay-value') || node.getAttribute('value') || '') : '';
+        var s = '';
+        if (withSelector) {
+          try { var u = uniqueSelector(node); s = u && u.selector ? u.selector : ''; } catch (err) { s = ''; }
+        }
+        outG.push({ el: node, text: text, value: v, selector: s });
+      }
+      return outG;
     }
 
     function collectOptionsIn(root, limit, withSelector) {
@@ -4227,6 +4413,7 @@
         }
         out.push({ el: e, text: t.slice(0, 80), value: v, selector: s });
       }
+      if (!out.length) return collectGenericOptionsIn(root, limit, withSelector);
       return out;
     }
 
@@ -5271,6 +5458,17 @@
               }
               return await selectCascaderOption(el, cascVal, { filter: cascVal });
             }
+            var comboHost = comboboxHostOf(el);
+            if (comboHost) {
+              var comboVal = String(val == null ? '' : val);
+              if (!comboVal.trim()) {
+                var cTrig = comboboxTriggerOf(comboHost, el);
+                var cSi = findSearchInput(cTrig) || (el.tagName === 'INPUT' ? el : null);
+                if (cSi) typeInto(cSi, '');
+                return { ok: true, kind: 'mutation', via: 'combobox-clear', verified: true };
+              }
+              return await page.selectOption(sel, comboVal);
+            }
             var tagHost = tagHostOf(el);
             if (tagHost) return await fillTagWidget(tagHost, val);
             var isContentEditable = el.isContentEditable ||
@@ -5721,12 +5919,14 @@
                 max: limit, truncated: deco.truncated, searchAvailable: false, opened: true, via: 'decorated'
               });
             }
-            var opened = await ensureOpenDropdown(w.trigger);
-            var list = await harvestOptions(w.trigger, limit);
+            var listHost = widgetRoot(el);
+            var listTrigger = (!w.native && !w.decorated) ? (comboboxTriggerOf(listHost, el) || w.trigger) : w.trigger;
+            var opened = await ensureOpenDropdown(listTrigger);
+            var list = await harvestOptions(listTrigger, limit);
             return catalogPayload(list, {
               max: limit,
               opened: opened,
-              searchAvailable: !!findSearchInput(w.trigger),
+              searchAvailable: !!findSearchInput(listTrigger),
               truncated: list.length >= limit,
               via: listCascade ? 'cascader' : ''
             });
@@ -5754,13 +5954,15 @@
                 query: q, reason: 'decoratedSelectListedFromSource'
               });
             }
-            var opened = await ensureOpenDropdown(w.trigger);
-            var typed = await applyFilterQuery(w.trigger, q);
-            var list = await harvestOptions(w.trigger, limit);
+            var filterHost = widgetRoot(el);
+            var filterTrigger = (!w.native && !w.decorated) ? (comboboxTriggerOf(filterHost, el) || w.trigger) : w.trigger;
+            var opened = await ensureOpenDropdown(filterTrigger);
+            var typed = await applyFilterQuery(filterTrigger, q);
+            var list = await harvestOptions(filterTrigger, limit);
             return catalogPayload(list, {
               max: limit,
               opened: opened,
-              searchAvailable: typed || !!findSearchInput(w.trigger),
+              searchAvailable: typed || !!findSearchInput(filterTrigger),
               truncated: list.length >= limit,
               query: q,
               reason: typed ? '' : 'noSearchInput',
@@ -5858,12 +6060,18 @@
               try { return selectNativeOption(w.decorated, raw); } catch (e) { /* 静态 option 未命中时再走弹层搜索 */ }
             }
 
-            var trigger = w.trigger;
+            var comboRoot = widgetRoot(el);
+            var trigger = comboboxTriggerOf(comboRoot, el) || w.trigger;
             var queries = filterQueries(raw);
             var opened = await ensureOpenDropdown(trigger);
             var searchAvailable = !!findSearchInput(trigger);
             var harvested = await harvestOptions(trigger, MAX_LIST_OPTIONS);
             var usedQuery = '';
+
+            function looksLikeCreateOption(item) {
+              var t = String(item && item.text || '');
+              return /创建|新建|Add\s|Create\s/i.test(t) && (rankMatch(t, raw) >= 0 || t.indexOf(raw) >= 0);
+            }
 
             function matchHarvest(list) {
               var ambiguous = null;
@@ -5883,7 +6091,7 @@
               var verified = false;
               while (Date.now() < verifyUntil) {
                 var cls = String(winner.el.className || '');
-                var marked = /selected|layui-this|is-checked|chosen|ant-select-item-option-selected/.test(cls) ||
+                var marked = /selected|layui-this|is-checked|chosen|ant-select-item-option-selected|active|is-active/.test(cls) ||
                   (winner.el.getAttribute && winner.el.getAttribute('aria-selected') === 'true');
                 var triggerValue = '';
                 try { triggerValue = String(('value' in trigger ? trigger.value : '') || trigger.innerText || trigger.textContent || ''); } catch (e) {}
@@ -5919,6 +6127,41 @@
                     ok: false, reason: 'ambiguous', opened: opened, searchAvailable: true,
                     truncated: harvested.length >= MAX_LIST_OPTIONS, query: usedQuery
                   });
+                }
+              }
+            }
+
+            var canCreate = hostAllowsCreate(trigger) || hostAllowsCreate(comboRoot);
+            if (!canCreate) {
+              for (var cj = 0; cj < harvested.length; cj++) {
+                if (looksLikeCreateOption(harvested[cj])) { canCreate = true; break; }
+              }
+            }
+            if (canCreate && searchAvailable && opened) {
+              usedQuery = raw;
+              typeInto(findSearchInput(trigger) || trigger, raw);
+              await page.sleep(220);
+              harvested = await harvestOptions(trigger, MAX_LIST_OPTIONS);
+              matched = matchHarvest(harvested);
+              if (matched && matched.winner) return await clickWinner(matched.winner);
+              for (var ck = 0; ck < harvested.length; ck++) {
+                if (looksLikeCreateOption(harvested[ck])) return await clickWinner(harvested[ck]);
+              }
+              var createInput = findSearchInput(trigger);
+              if (createInput) {
+                fireKey(createInput, 'Enter', 13);
+                await page.sleep(180);
+                try { createInput.blur(); } catch (eC) {}
+                var createdVal = '';
+                try {
+                  createdVal = String(('value' in createInput ? createInput.value : '') || createInput.innerText || '');
+                } catch (eV) {}
+                var createdOk = rankMatch(createdVal, raw) >= 0;
+                if (createdOk) {
+                  return {
+                    ok: true, kind: 'mutation', via: 'combobox-create', text: raw,
+                    actual: createdVal, verified: true, searchUsed: true
+                  };
                 }
               }
             }
