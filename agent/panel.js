@@ -1960,7 +1960,7 @@
     );
     const archiveSaveFull = mkArchiveAction(
       '保存对话（用户 prompt、API 请求结构与系统响应）',
-      '下载用户输入、时间线，以及每次调用大模型 API 的请求结构（字段为解释词，不含网页快照等正文）。'
+      '下载用户输入、时间线，以及每次调用大模型 API 的请求结构（系统提示词与页面快照为解释词，不含网页快照正文；其余 content 为完整正文）。'
     );
     const archiveSaveUser = mkArchiveAction(
       '保存对话（仅用户输入）',
@@ -2439,7 +2439,7 @@
     if (state.requestShape && typeof state.requestShape === 'object') {
       try {
         const dumped = JSON.stringify(state.requestShape);
-        if (dumped && dumped.length < 20000) o.requestShape = JSON.parse(dumped);
+        if (dumped && dumped.length < 1500000) o.requestShape = JSON.parse(dumped);
       } catch (e) {}
     }
     return o;
@@ -3142,7 +3142,7 @@
       ''
     ];
     if (!userOnly) {
-      lines.push('API 请求仅保存结构：字段值为解释词，不含网页快照、附件正文、图像 dataURL 等正文。');
+      lines.push('API 请求保存实际 messages.content；系统提示词+运行时手册与页面快照仍为解释词（不含网页快照正文），图像 dataURL 与密钥不写入。');
       lines.push('');
     }
     if (!items.length) {

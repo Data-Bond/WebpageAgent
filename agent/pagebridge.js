@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '5.5.0';
+  var BRIDGE_VERSION = '5.6.0';
   var SNAPSHOT_TIME_BUDGET_MS = 2800;
 
   function install() {
@@ -2242,6 +2242,57 @@
       } catch (e) { return ''; }
     }
 
+    function isPlaceholderSelectText(t) {
+      var s = String(t || '').replace(/\s+/g, ' ').trim();
+      if (!s) return true;
+      return /^(请选择|请输入|请挑选|请点击选择)(\s|$)/.test(s) ||
+        /^(select|choose|pick)(\s|$)/i.test(s);
+    }
+
+    // 已提交的下拉展示值。弹层打开时 input.value 多半是过滤词，不能当成已选。
+    // 弹层未检测到时（GitCode 等传送门下拉常报 notOpened）则以关闭态的 input/已选标签为准。
+    function comboCommittedText(trigger) {
+      if (!trigger) return '';
+      var open = false;
+      try { open = !!findPopupForTrigger(trigger); } catch (e0) {}
+      var near = '';
+      try { near = String(widgetSelectedTextNear(trigger) || '').replace(/\s+/g, ' ').trim(); } catch (e1) {}
+      var inpVal = '';
+      try {
+        var inp = null;
+        try { inp = findSearchInput(trigger); } catch (eS) { inp = null; }
+        if (!inp && trigger && String(trigger.tagName || '').toUpperCase() === 'INPUT') inp = trigger;
+        if (inp && ('value' in inp)) inpVal = String(inp.value || '').replace(/\s+/g, ' ').trim();
+      } catch (e2) {}
+      var t = '';
+      if (open) {
+        t = near && near !== inpVal ? near : '';
+      } else {
+        t = inpVal || near;
+      }
+      if (isPlaceholderSelectText(t)) return '';
+      return String(t || '').slice(0, 120);
+    }
+
+    function comboSelectionMatches(trigger, raw) {
+      var selected = comboCommittedText(trigger);
+      var want = String(raw || '').replace(/\s+/g, ' ').trim();
+      if (!selected || !want) return false;
+      var a = normText(selected);
+      var b = normText(want);
+      if (!a || !b) return false;
+      if (a === b) return true;
+      return b.length >= 2 && a.indexOf(b) >= 0;
+    }
+
+    function alreadySelectedPayload(trigger, raw) {
+      return {
+        ok: true, kind: 'mutation', via: 'already-selected',
+        text: raw, actual: comboCommittedText(trigger),
+        verified: true, opened: false, changed: false
+      };
+    }
+
     // ============ 复选/单选框识别（iView/element/ant/layui/vant/nut 与原生 label 包裹） ============
     var CHECKED_CLASSES = ['ivu-checkbox-checked', 'ivu-checkbox-wrapper-checked', 'is-checked',
       'ant-checkbox-checked', 'ant-checkbox-wrapper-checked', 'layui-form-checked',
@@ -2551,6 +2602,7 @@
       var tag = (entry && entry.tag) || '';
       return (inOverlay ? '\t' : '') + (isNew ? '*' : '') + '[' + (entry && entry.idx) + ']<' + tag
         + attr('label', entry && entry.label)
+        + attr('sec', entry && entry.sec)
         + attr('text', entry && entry.text)
         + attr('value', entry && entry.value)
         + attr('box', entry && entry.box)
@@ -2564,6 +2616,104 @@
         + attr('hint', entry && entry.hint)
         + attr('handoff', entry && entry.handoff)
         + '>';
+    }
+
+    var SECTION_HEAD_SEL = 'legend, h1, h2, h3, h4, h5, h6, [role="heading"], ' +
+      '.el-collapse-item__header, .el-collapse-item__title, .ivu-card-head, .ivu-card-title, ' +
+      '.ant-card-head-title, .ant-collapse-header, .panel-title, .card-title, ' +
+      '.el-dialog__title, .ivu-modal-header-inner, .modal-title, .n-card-header, .n-collapse-item__header';
+
+    function isSectionHeadingNode(node) {
+      if (!node || !node.tagName) return false;
+      var tag = String(node.tagName || '').toUpperCase();
+      if (/^H[1-6]$/.test(tag) || tag === 'LEGEND') return true;
+      try {
+        if (node.getAttribute && node.getAttribute('role') === 'heading') return true;
+      } catch (e) {}
+      return /card-head|card-title|collapse-item__header|collapse-item__title|collapse-header|panel-title|dialog__title|modal-header|modal-title|n-card-header/i.test(classNameOfNode(node));
+    }
+
+    function headingTextOf(node, skipNorm) {
+      if (!node) return '';
+      var t = '';
+      try { t = String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e) { t = ''; }
+      if (!t || t.length < 2 || t.length > 48) return '';
+      if (skipNorm && normText(t) === skipNorm) return '';
+      if (FIELD_CONSTRAINT_RE.test(t) && t.length > 24) return '';
+      return t.slice(0, 40);
+    }
+
+    function nearestSectionTitle(el, skipLabel) {
+      if (!el) return '';
+      var skip = normText(skipLabel);
+      var n = el;
+      for (var depth = 0; depth < 14 && n && n.parentElement; depth++) {
+        var parent = n.parentElement;
+        try {
+          if (parent.tagName === 'FIELDSET') {
+            var lg = parent.querySelector && parent.querySelector('legend');
+            var lt = headingTextOf(lg, skip);
+            if (lt) return lt;
+          }
+        } catch (eFs) {}
+        try {
+          if (parent.getAttribute && parent.getAttribute('role') === 'group') {
+            var al = parent.getAttribute('aria-label') || '';
+            if (al && normText(al) !== skip) return String(al).replace(/\s+/g, ' ').trim().slice(0, 40);
+          }
+        } catch (eG) {}
+        var sib = n.previousElementSibling;
+        var hops = 0;
+        while (sib && hops < 4) {
+          if (isSectionHeadingNode(sib)) {
+            var st = headingTextOf(sib, skip);
+            if (st) return st;
+          }
+          try {
+            var inner = sib.querySelector && sib.querySelector(SECTION_HEAD_SEL);
+            if (inner && isSectionHeadingNode(inner) && !(el.contains && el.contains(inner))) {
+              var it = headingTextOf(inner, skip);
+              if (it) return it;
+            }
+          } catch (eIn) {}
+          sib = sib.previousElementSibling;
+          hops++;
+        }
+        try {
+          var firstHead = parent.querySelector && parent.querySelector(SECTION_HEAD_SEL);
+          if (firstHead && firstHead !== el && !(el.contains && el.contains(firstHead))) {
+            var ft = headingTextOf(firstHead, skip);
+            if (ft) return ft;
+          }
+        } catch (eHead) {}
+        n = parent;
+      }
+      return '';
+    }
+
+    function fieldStableName(ent) {
+      var raw = (ent && (ent.label || ent.placeholder || ent.name)) || '';
+      return stripStarLabel(raw).replace(/\s+/g, ' ').trim();
+    }
+
+    function applyDuplicateLabelSections(elements, index) {
+      var list = Array.isArray(elements) ? elements : [];
+      var counts = {};
+      var i;
+      for (i = 0; i < list.length; i++) {
+        var key = normText(fieldStableName(list[i]));
+        if (!key || key.length < 2) continue;
+        counts[key] = (counts[key] || 0) + 1;
+      }
+      for (i = 0; i < list.length; i++) {
+        var ent = list[i];
+        var name = fieldStableName(ent);
+        var nk = normText(name);
+        if (!nk || counts[nk] < 2) continue;
+        var live = index && ent ? index[ent.idx] : null;
+        var sec = nearestSectionTitle(live, name);
+        if (sec && normText(sec) !== nk) ent.sec = sec;
+      }
     }
 
     function desktopHandoffOf(entry) {
@@ -3129,6 +3279,7 @@
         }
         elements.push(entry);
       }
+      applyDuplicateLabelSections(elements, snapIndex);
       lastSnapElements = elements;
       var starFields = collectStarFields(elements);
       var outlineLines = [];
@@ -4259,11 +4410,12 @@
         if (isViewportOverlayShell(el) && !popupHasOptionNodes(el)) continue;
         if (isCascader && !popupHasOptionNodes(el)) continue;
         var dist = popupDistance(trigger, el);
-        if (dist > (isCascader ? 1600 : 900)) continue;
+        var maxDist = isCascader ? 1600 : 2000;
+        if (dist > maxDist) continue;
         var score = (popupHasOptionNodes(el) ? 1000 : 0) - dist;
         if (score > bestScore) { bestScore = score; best = el; }
       }
-      if (best && bestScore > -900) return best;
+      if (best && bestScore > -2000) return best;
       return null;
     }
 
@@ -6062,10 +6214,21 @@
 
             var comboRoot = widgetRoot(el);
             var trigger = comboboxTriggerOf(comboRoot, el) || w.trigger;
+            if (comboSelectionMatches(trigger, raw) || comboSelectionMatches(el, raw) ||
+                (comboRoot && comboSelectionMatches(comboRoot, raw))) {
+              return alreadySelectedPayload(trigger || el, raw);
+            }
             var queries = filterQueries(raw);
             var opened = await ensureOpenDropdown(trigger);
             var searchAvailable = !!findSearchInput(trigger);
             var harvested = await harvestOptions(trigger, MAX_LIST_OPTIONS);
+            if (!harvested.length) {
+              var loose = collectOpenPopupOptions(MAX_LIST_OPTIONS);
+              if (loose.length) {
+                harvested = loose;
+                opened = true;
+              }
+            }
             var usedQuery = '';
 
             function looksLikeCreateOption(item) {
@@ -6164,6 +6327,11 @@
                   };
                 }
               }
+            }
+
+            if (comboSelectionMatches(trigger, raw) || comboSelectionMatches(el, raw) ||
+                (comboRoot && comboSelectionMatches(comboRoot, raw))) {
+              return alreadySelectedPayload(trigger || el, raw);
             }
 
             return catalogPayload(harvested, {

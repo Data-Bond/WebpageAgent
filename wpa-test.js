@@ -86,6 +86,7 @@ ok(/保存对话（仅用户输入）/.test(panelSrc), '可仅保存用户输入
 ok(/### 输入 prompt/.test(panelSrc) && /### API 请求结构/.test(panelSrc), '完整存档写入 prompt 与 API 请求结构');
 ok(/不含网页快照/.test(panelSrc), '存档声明不含快照正文');
 ok(/requestShape/.test(panelSrc) && /function describeChatCompletionsRequestShape/.test(bg), '调用卡片持久化请求结构');
+ok(/dumped\.length < 1500000/.test(panelSrc), '会话持久化请求结构上限覆盖完整 content');
 ok(/keepFiles/.test(panelSrc) && /keepFiles/.test(bg), '清空历史可选择保留附件');
 ok(/function saveConversation/.test(panelSrc) && /function archiveItems/.test(panelSrc), '保存对话从 transcript 导出');
 ok(/function openArchiveModal/.test(panelSrc), '点击标题栏打开清空/存档页');
@@ -265,9 +266,9 @@ if (archiveBox.buildArchiveMarkdown) {
           body: {
             model: '<模型ID>',
             messages: [
-              { role: 'system', content: '<系统提示词+运行时手册（约2500字）>' },
-              { role: 'user', content: '<当前用户指令（约80字）>' },
-              { role: 'user', content: '<页面快照（约87000字）>' }
+              { role: 'system', content: '<系统提示词+运行时手册>（约2500字）' },
+              { role: 'user', content: '【当前指令】只执行下面这一条。\n用户任务：你能看到本页是什么吗？' },
+              { role: 'user', content: '<页面快照>（约87000字）' }
             ]
           }
         }
@@ -275,7 +276,7 @@ if (archiveBox.buildArchiveMarkdown) {
     }
   ], false);
   ok(md.indexOf('### 输入 prompt') >= 0 && md.indexOf('你能看到本页是什么吗？') >= 0, '存档含用户 prompt');
-  ok(md.indexOf('### API 请求结构') >= 0 && md.indexOf('<页面快照（约87000字）>') >= 0, '存档含 API 请求结构解释词');
+  ok(md.indexOf('### API 请求结构') >= 0 && md.indexOf('<页面快照>（约87000字）') >= 0, '存档含 API 请求结构解释词');
   ok(md.indexOf(snapLeak) < 0, '存档不写入快照正文');
   ok(md.indexOf('不含网页快照') >= 0, '存档页头说明不含快照正文');
 }
@@ -394,6 +395,17 @@ ok(/引擎也会用当前指令全文与卡片标题消歧/.test(bg), 'PLAYBOOK 
 ok(/function pickByTaskHint/.test(bridge), 'clickByText 可用当前指令与卡片标题消歧');
 ok(/function looksLikeDoneProse/.test(bg), '引擎可把完成说明收成 done');
 ok(/JSON_ONLY_HINT/.test(bg), '执行结果回执要求下一轮只输出 JSON');
+ok(/evalPrev/.test(bg) && /【证据链】/.test(bg), 'PLAYBOOK 要求 see/expect/evalPrev 证据链');
+ok(/"checks"/.test(bg) && /引擎核对/.test(bg) && /区块›标签/.test(bg), 'PLAYBOOK 要求 checks 与区块›标签');
+ok(/function evaluateSnapshotChecks/.test(bg) && /function decideDoneByChecks/.test(bg), '引擎可核对 checks 并据此放行/拦截 done');
+ok(/function nearestSectionTitle/.test(bridge) && /function applyDuplicateLabelSections/.test(bridge), '快照同名控件补 sec');
+ok(/kind: 'snapshot'/.test(bg) && /messages\.concat\(\[snapshotUser\]\)/.test(bg), '快照消息带 kind 且只拼进本轮请求');
+ok(!/pendingBoundedAfterChecks/.test(bg), '有 checks 时不再跨步自动 done');
+ok(/!normalizeChecks\(parsed\.checks\)\.length/.test(bg), '单步引擎收工仅限没有 checks');
+ok(/上步 checks 已全部满足/.test(bg), 'checks 全 met 时快照提示立刻 done');
+ok(/function lastEvidenceFromMessages/.test(bg) && /【上步期待】/.test(bg), '快照前注入上步期待');
+ok(/function compactRunResult/.test(bg), '工具结果写入历史前会压缩');
+ok(!/【变化报告】' \+ JSON.stringify\(report\)/.test(bg), '变化报告不再写入整份探针 JSON');
 ok(/function attachTaskHintToOps/.test(bg), '执行前把当前指令注入 clickByText hint');
 ok(/function looksLikeCssSelector/.test(bridge), 'within 能区分 CSS 与标题文案');
 ok(/function findRootByVisibleText/.test(bridge), 'within 标题文案按可见文本定位容器');
@@ -440,6 +452,8 @@ ok(/t === 'hidden' && !\(e\.name \|\| e\.id\)/.test(bridge), 'formDigest 纳入�
 ok(/级联\/cascader 菜单项不是复选框，禁止用 setChecked/.test(bg), 'PLAYBOOK 区分级联菜单与复选框');
 ok(/function isCascaderChoice/.test(bridge), '级联菜单项不按表单复选框识别');
 ok(/下拉\/级联选项不能用 setChecked/.test(bridge), 'setChecked 遇到级联项时改指 selectOption');
+ok(/via: 'already-selected'/.test(bridge), 'selectOption 对已显示目标值幂等成功');
+ok(/function comboSelectionMatches/.test(bridge), 'combobox 已选文本与目标比对');
 ok(/via: 'multi'/.test(bridge), 'selectOption 接受多个目标文本');
 ok(/不要整段 \.el-cascader__tags/.test(bridge), '已选文本只收标签，不混入筛选框输入');
 ok(/传入数组 page\.selectOption/.test(bg), 'PLAYBOOK 说明多选级联可传入文本数组');
@@ -949,6 +963,7 @@ try {
       '\nthis.describeChatCompletionsRequestShape = describeChatCompletionsRequestShape;' +
       '\nthis.describeMultipartRequestShape = describeMultipartRequestShape;' +
       '\nthis.extractUserPromptForArchive = extractUserPromptForArchive;' +
+      '\nthis.labelMessageForShape = labelMessageForShape;' +
       '\nthis.shapeRequestUrl = shapeRequestUrl;',
     shapeSandbox
   );
@@ -967,7 +982,9 @@ if (shapeSandbox.describeChatCompletionsRequestShape) {
       kind: 'task',
       content: '【当前指令】只执行下面这一条。\n用户任务：' + userTask + '\n已附加文件（上传用 key；正文仅在需要抽字段时另发）：\n- a.pdf'
     },
-    { role: 'user', content: '【页面快照】只执行最新【当前指令】\n{"elements":[{"text":"' + snapSecret + '"}]}' }
+    { role: 'user', kind: 'snapshot', content: '【页面快照】只执行最新【当前指令】\n{"elements":[{"text":"' + snapSecret + '"}]}' },
+    { role: 'user', content: '【执行结果】\nVERIFY FAILED result={"ok":false,"reason":"notOpened"}' },
+    { role: 'user', content: '【引擎约束】上一轮网页操作未成功或未通过验证，禁止直接宣称完成。' }
   ];
   const payload = shapeSandbox.chatCompletionsPayload('Kimi-K2.7-Code', messages, { maxTokens: 4096 }, 1);
   const shape = shapeSandbox.describeChatCompletionsRequestShape(
@@ -983,12 +1000,46 @@ if (shapeSandbox.describeChatCompletionsRequestShape) {
   ok(shape.method === 'POST' && /<API端点>\/v1\/chat\/completions/.test(shape.url), '结构含方法与路径');
   ok(shape.body.model === '<模型ID>' && shape.body.max_tokens === '<max_tokens整数>', '可选字段以解释词占位且保留键名');
   ok(shape.body.temperature === '<temperature数值>', '已传 temperature 出现在结构中');
-  ok(shape.body.messages.length === 3 && shape.body.messages[0].role === 'system', 'messages 角色序列保留');
+  ok(shape.body.messages.length === 5 && shape.body.messages[0].role === 'system', 'messages 角色序列保留');
   ok(/系统提示词/.test(shape.body.messages[0].content) && /约/.test(shape.body.messages[0].content), 'system 内容为解释词+字数');
-  ok(/当前用户指令/.test(shape.body.messages[1].content), '用户指令消息用解释词');
-  ok(/页面快照/.test(shape.body.messages[2].content), '快照消息用解释词');
+  ok(shape.body.messages[1].content.indexOf(userTask) >= 0 && shape.body.messages[1].content.indexOf('【当前指令】') >= 0,
+    '用户指令消息保存完整正文');
+  ok(/<页面快照>/.test(shape.body.messages[2].content) && /约/.test(shape.body.messages[2].content), '快照消息用解释词');
+  ok(shape.body.messages[3].content.indexOf('VERIFY FAILED') >= 0, '工具结果保存完整正文');
+  ok(shape.body.messages[4].content.indexOf('禁止直接宣称完成') >= 0, '引擎约束保存完整正文');
   ok(shape.headers.Authorization === '<Bearer API密钥>', 'Authorization 不输出真实密钥');
   ok(shapeSandbox.extractUserPromptForArchive(messages) === userTask, '从请求中抽出用户 prompt');
+  ok(shapeSandbox.labelMessageForShape({ role: 'user', kind: 'snapshot', content: '【上步期待】x\nSECRET' }) === '<页面快照>',
+    '有 kind=snapshot 即解释词，不看正文开头');
+  ok(shapeSandbox.labelMessageForShape({ role: 'user', content: '【页面快照】\n{"elements":[{"text":"' + snapSecret + '"}]}' }) === '',
+    '无 kind 即使正文以【页面快照】开头也不当快照');
+  const leadSecret = 'SECRET_LEAD_PREFIX_SNAP';
+  const leadMsgs = [
+    { role: 'system', content: '规则【运行时手册·开始】' },
+    { role: 'user', kind: 'task', content: '【当前指令】\n用户任务：' + userTask },
+    {
+      role: 'user',
+      kind: 'snapshot',
+      content: '【上步期待】Tag=v5.5.0\n【页面快照】只执行最新【当前指令】\n{"elements":[{"text":"' + leadSecret + '"}]}'
+    }
+  ];
+  const leadPayload = shapeSandbox.chatCompletionsPayload('Kimi-K2.7-Code', leadMsgs, {}, undefined);
+  const leadShape = shapeSandbox.describeChatCompletionsRequestShape(
+    'https://api.example.com/v1/chat/completions',
+    leadPayload,
+    leadMsgs
+  );
+  const leadDump = JSON.stringify(leadShape);
+  ok(leadDump.indexOf(leadSecret) < 0, '上步期待前缀的快照仍因 kind 收成解释词');
+  ok(/<页面快照>/.test(leadShape.body.messages[2].content), '带上步期待的快照消息用解释词');
+  ok(shapeSandbox.extractUserPromptForArchive(leadMsgs) === userTask, 'kind=snapshot 不当成用户 prompt');
+  const strippedOrig = shapeSandbox.toApiChatMessages(leadMsgs);
+  const leakedShape = shapeSandbox.describeChatCompletionsRequestShape(
+    'https://api.example.com/v1/chat/completions',
+    leadPayload,
+    strippedOrig
+  );
+  ok(JSON.stringify(leakedShape).indexOf(leadSecret) >= 0, '第三参已剥离 kind 时快照按全文出现');
   const visionMsgs = [{
     role: 'user',
     content: [
@@ -1006,6 +1057,7 @@ if (shapeSandbox.describeChatCompletionsRequestShape) {
   ok(visionDump.indexOf('AAAASECRET') < 0, '视觉请求结构不含图像 dataURL');
   ok(visionShape.body.messages[0].content[0].type === 'image_url', '视觉结构保留 image_url 部件类型');
   ok(visionShape.body.messages[0].content[0].image_url.url === '<图像dataURL>', 'image_url.url 为解释词');
+  ok(visionShape.body.messages[0].content[1].text === '请识别这张图', '视觉文本部件保存完整提示词');
   ok(!('max_tokens' in visionShape.body), '未传 max_tokens 时结构中不出现该键');
   const mp = shapeSandbox.describeMultipartRequestShape('https://ocr.example.com/file_parse', {
     files: '<PDF或图像文件二进制>',
@@ -1487,6 +1539,11 @@ ok(!analyzeSandbox.analyzeRunResult(openMenuMiss).failed,
 ok(analyzeSandbox.analyzeRunResult(JSON.stringify({
   kind: 'query', ok: false, reason: 'notFound', options: []
 })).failed, 'selectOption 未命中且无 continueBatch 仍判 failed');
+ok(analyzeSandbox.analyzeRunResult(JSON.stringify({
+  kind: 'mutation', ok: true, via: 'already-selected', text: 'v5.5.0', actual: 'v5.5.0', verified: true
+})).verified && !analyzeSandbox.analyzeRunResult(JSON.stringify({
+  kind: 'mutation', ok: true, via: 'already-selected', text: 'v5.5.0', actual: 'v5.5.0', verified: true
+})).failed, 'selectOption 已显示目标值视为 verified mutation');
 
 const changeStart = bg.indexOf('function changeSummary');
 const changeEnd = bg.indexOf('\nfunction checkRepeat');
@@ -1504,7 +1561,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.5.0', '锁步版本为 5.5.0');
+ok(manifestVer === '5.6.0', '锁步版本为 5.6.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -1996,6 +2053,12 @@ if (outlineBox.formatOutlineLine) {
     idx: 9, tag: 'DIV', text: 'FTP下载', handoff: 'desktop'
   }, false, false);
   ok(/handoff=desktop/.test(ftpLine), 'outline 输出 handoff=desktop');
+  const secLine = outlineBox.formatOutlineLine({
+    idx: 12, tag: 'INPUT', label: '名称', sec: '发行版信息', value: 'v5.5.0'
+  }, false, false);
+  ok(/sec=发行版信息/.test(secLine) && /label=名称/.test(secLine), '同名控件 outline 带 sec=');
+  const noSec = outlineBox.formatOutlineLine({ idx: 1, tag: 'INPUT', label: '唯一' }, false, false);
+  ok(noSec.indexOf('sec=') < 0, '唯一标签不输出空 sec');
 }
 
 const resolveBox = {};
@@ -2588,6 +2651,170 @@ if (compactBox.compactVerifiedResult) {
   });
   const compact = compactBox.compactVerifiedResult(fat);
   ok(compact.indexOf('verified') >= 0 && compact.length < fat.length, 'verified 结果被截短');
+}
+
+const runCompactBox = { truncate: function (s, n) { return String(s).slice(0, n); } };
+try {
+  vm.runInNewContext(
+    extractFn(bg, 'compactOneHelperValue') + '\n' +
+      extractFn(bg, 'compactRunResult') +
+      '\nthis.compactRunResult = compactRunResult;',
+    runCompactBox
+  );
+  ok(typeof runCompactBox.compactRunResult === 'function', 'compactRunResult 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 compactRunResult 失败: ' + (e && e.message));
+}
+if (runCompactBox.compactRunResult) {
+  const listed = JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'listOptions',
+      value: {
+        ok: true, kind: 'query', opened: false, count: 2, extra: 'z'.repeat(400),
+        options: [{ t: 'v5.5.0', v: 'v5.5.0' }, { t: 'v5.4.2', v: 'v5.4.2' }]
+      }
+    }]
+  });
+  const listedOut = runCompactBox.compactRunResult(listed);
+  ok(listedOut.indexOf('v5.5.0') >= 0 && listedOut.indexOf('zzzz') < 0, 'listOptions 保留选项文本、去掉 extra');
+}
+
+const evidenceBox = {};
+try {
+  vm.runInNewContext(
+    extractFn(bg, 'normalizeSee') + '\n' +
+      extractFn(bg, 'normalizeEvalPrev') + '\n' +
+      extractFn(bg, 'evidenceNorm') + '\n' +
+      extractFn(bg, 'evidenceRank') + '\n' +
+      extractFn(bg, 'normalizeChecks') + '\n' +
+      extractFn(bg, 'lastEvidenceFromMessages') + '\n' +
+      extractFn(bg, 'formatCheckVerdict') + '\n' +
+      extractFn(bg, 'formatPrevExpectLead') + '\n' +
+      extractFn(bg, 'fieldPreferScore') + '\n' +
+      extractFn(bg, 'rankFieldMatch') + '\n' +
+      extractFn(bg, 'pickCheckRow') + '\n' +
+      extractFn(bg, 'readCheckActual') + '\n' +
+      extractFn(bg, 'checkedWantTrue') + '\n' +
+      extractFn(bg, 'evalOneSnapshotCheck') + '\n' +
+      extractFn(bg, 'evaluateSnapshotChecks') + '\n' +
+      extractFn(bg, 'decideDoneByChecks') +
+      '\nthis.normalizeSee = normalizeSee;\nthis.normalizeChecks = normalizeChecks;\n' +
+      'this.lastEvidenceFromMessages = lastEvidenceFromMessages;\n' +
+      'this.formatPrevExpectLead = formatPrevExpectLead;\n' +
+      'this.evaluateSnapshotChecks = evaluateSnapshotChecks;\n' +
+      'this.decideDoneByChecks = decideDoneByChecks;',
+    evidenceBox
+  );
+  ok(typeof evidenceBox.lastEvidenceFromMessages === 'function', 'lastEvidenceFromMessages 可在测试中加载');
+} catch (e) {
+  ok(false, '加载证据链函数失败: ' + (e && e.message));
+}
+if (evidenceBox.lastEvidenceFromMessages) {
+  const ev = evidenceBox.lastEvidenceFromMessages([
+    { role: 'assistant', content: JSON.stringify({ action: 'execute', see: ['idx5 Tag空'], expect: 'idx5 Tag=v5.5.0', operations: [{ op: 'click', args: [5] }] }) },
+    { role: 'assistant', content: JSON.stringify({ action: 'done', summary: '已完成：点击' }) }
+  ]);
+  ok(ev && ev.expect.indexOf('v5.5.0') >= 0 && ev.see[0].indexOf('idx5') >= 0,
+    '上步期待跳过无 expect 的 done，取最近一次 execute');
+  const lead = evidenceBox.formatPrevExpectLead(ev);
+  ok(lead.indexOf('【上步期待】') >= 0 && lead.indexOf('evalPrev') >= 0, '快照前缀含上步期待与先判要求');
+  ok(evidenceBox.normalizeSee(['a'.repeat(120), 'b', 'c', 'd', 'e']).length === 4, 'see 最多 4 条');
+  ok(evidenceBox.normalizeSee(['a'.repeat(120)])[0].length === 80, 'see 每条不超过 80 字');
+}
+
+if (evidenceBox.normalizeChecks && evidenceBox.evaluateSnapshotChecks) {
+  const sh = evidenceBox.normalizeChecks([{ field: 'Tag名称', value: 'v5.5.0' }]);
+  ok(sh.length === 1 && sh[0].attr === 'value' && sh[0].op === 'eq' && sh[0].value === 'v5.5.0',
+    'checks 简写 {field,value} → attr=value op=eq');
+  const emp = evidenceBox.normalizeChecks([{ field: 'Tag名称' }]);
+  ok(emp[0] && emp[0].op === 'nonempty' && emp[0].attr === 'value', '只有 field 时默认 value nonempty');
+  const urlC = evidenceBox.normalizeChecks([{ attr: 'url', op: 'contains', value: '/releases' }]);
+  ok(urlC[0] && urlC[0].attr === 'url' && urlC[0].op === 'contains', 'url contains 可无 field');
+  const tooMany = evidenceBox.normalizeChecks([1, 2, 3, 4, 5, 6, 7].map(function (n) {
+    return { field: 'f' + n };
+  }));
+  ok(tooMany.length === 6, 'checks 最多 6 条');
+  ok(evidenceBox.normalizeChecks([{}]).length === 0, '空对象不当成 url checks');
+
+  const snap = {
+    url: 'https://gitcode.com/hpcscc/WebpageAgent/releases',
+    elements: [
+      { idx: 3, tag: 'INPUT', label: '名称', sec: '基本信息', value: '旧名', placeholder: '' },
+      { idx: 8, tag: 'INPUT', label: '名称', sec: '发行版信息', value: '', placeholder: '请输入名称' },
+      { idx: 12, tag: 'INPUT', label: 'Tag', placeholder: '请选择 Tag', value: 'v5.5.0', widget: 'combobox' },
+      { idx: 20, tag: 'BUTTON', text: '发布' }
+    ]
+  };
+  const tagMet = evidenceBox.evaluateSnapshotChecks([{ field: 'Tag名称', op: 'nonempty' }], snap);
+  ok(tagMet.allMet && tagMet.rows[0].actual === 'v5.5.0', 'Tag名称 对上 placeholder「请选择 Tag」且 nonempty met');
+  const secUnmet = evidenceBox.evaluateSnapshotChecks(
+    [{ field: '名称', sec: '发行版信息', op: 'nonempty' }],
+    snap
+  );
+  ok(secUnmet.allUnmet && secUnmet.rows[0].actual === '', 'sec 消歧后核对应区块的空名称');
+  const secEq = evidenceBox.evaluateSnapshotChecks(
+    [{ field: '名称', sec: '基本信息', value: '旧名' }],
+    snap
+  );
+  ok(secEq.allMet, 'sec+简写 value 核对应区块');
+  const amb = evidenceBox.evaluateSnapshotChecks([{ field: '名称', op: 'nonempty' }], snap);
+  ok(amb.unknown === 1 && !amb.allMet && !amb.allUnmet, '同名无 sec 记 unknown，不误判');
+  const urlMet = evidenceBox.evaluateSnapshotChecks(
+    [{ attr: 'url', op: 'contains', value: '/releases' }],
+    snap
+  );
+  ok(urlMet.allMet, 'url contains 按快照 url 核对');
+  const existBtn = evidenceBox.evaluateSnapshotChecks(
+    [{ field: '发布', attr: 'text', op: 'exists' }],
+    snap
+  );
+  ok(existBtn.allMet, '按钮短文本 exists');
+  const evChecks = evidenceBox.lastEvidenceFromMessages([
+    { role: 'assistant', content: JSON.stringify({ action: 'execute', checks: [{ field: 'Tag名称' }] }) },
+    { role: 'assistant', content: JSON.stringify({ action: 'done', summary: '已完成' }) }
+  ]);
+  ok(evChecks && evChecks.checks && evChecks.checks[0].field === 'Tag名称',
+    '上步证据可只含 checks，跳过无证据的 done');
+  const vLead = evidenceBox.formatPrevExpectLead(evChecks, tagMet);
+  ok(vLead.indexOf('【上步期待·引擎核对】') >= 0 && vLead.indexOf('全部满足') >= 0,
+    '快照前缀含引擎核对结果');
+
+  const gMet = evidenceBox.decideDoneByChecks(tagMet, false, true);
+  ok(gMet.allow && !gMet.block && gMet.reason === 'checks-met', '全部 met 时即使 helper 失败也允许 done');
+  const gUnmet = evidenceBox.decideDoneByChecks(secUnmet, true, false);
+  ok(gUnmet.block && gUnmet.reason === 'checks-unmet', '全部 unmet 时即使 helper 成功也禁止 done');
+  const gLegacy = evidenceBox.decideDoneByChecks({ hasChecks: false }, false, false);
+  ok(gLegacy.block && gLegacy.reason === 'last-tool-failed', '无 checks 时仍按 helper 成败拦截');
+  const gUnk = evidenceBox.decideDoneByChecks(amb, true, false);
+  ok(gUnk.allow && gUnk.reason === 'checks-unknown', '仅 unknown 时回退 helper 门闩');
+}
+
+const secApplyBox = {};
+try {
+  vm.runInNewContext(
+    'function normText(s){return String(s||"").replace(/\\s+/g,"").toLowerCase();}\n' +
+      'function stripStarLabel(s){return String(s||"").replace(/[\\u002a\\uff0a]/g,"").replace(/^\\s+|\\s+$/g,"");}\n' +
+      'function nearestSectionTitle(el){return (el && el._sec) || "";}\n' +
+      extractFn(bridge, 'fieldStableName') + '\n' +
+      extractFn(bridge, 'applyDuplicateLabelSections') +
+      '\nthis.applyDuplicateLabelSections = applyDuplicateLabelSections;',
+    secApplyBox
+  );
+  ok(typeof secApplyBox.applyDuplicateLabelSections === 'function', 'applyDuplicateLabelSections 可在测试中加载');
+} catch (e) {
+  ok(false, '加载 applyDuplicateLabelSections 失败: ' + (e && e.message));
+}
+if (secApplyBox.applyDuplicateLabelSections) {
+  const els = [
+    { idx: 1, label: '名称', value: 'a' },
+    { idx: 2, label: '名称', value: '' },
+    { idx: 3, label: '唯一字段', value: 'x' }
+  ];
+  const idx = { 1: { _sec: '基本信息' }, 2: { _sec: '发行版信息' }, 3: { _sec: '其它' } };
+  secApplyBox.applyDuplicateLabelSections(els, idx);
+  ok(els[0].sec === '基本信息' && els[1].sec === '发行版信息' && !els[2].sec,
+    '仅给重复 label 补 sec，唯一标签不写');
 }
 
 const menuPreferBox = {};
