@@ -57,8 +57,50 @@
     contextClick: { kind: 'fire', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
     watchTraffic: { kind: 'read', runtime: 'page', worldDefault: 'main', worldEligible: ['main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 30000 },
     officeRead: { kind: 'read', runtime: 'page', worldDefault: 'main', worldEligible: ['main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 20000 },
-    officeFill: { kind: 'fire', runtime: 'page', worldDefault: 'main', worldEligible: ['main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 30000 }
+    officeFill: { kind: 'fire', runtime: 'page', worldDefault: 'main', worldEligible: ['main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 30000 },
+    get: { kind: 'read', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 30000 },
+    type: { kind: 'converge', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'value', risk: 'none', timeoutMs: 12000 },
+    check: { kind: 'converge', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'checked', risk: 'none', timeoutMs: 12000 },
+    wait: { kind: 'read', runtime: 'page', worldDefault: 'isolated', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 15000 },
+    print: { kind: 'read', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 15000 },
+    remember: { kind: 'read', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 5000 },
+    forget: { kind: 'read', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 5000 },
+    goto: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 20000 }
   };
+
+  var PUBLIC_TOOLS = [
+    'get', 'type', 'click', 'check', 'select', 'scroll', 'wait', 'upload',
+    'ocr', 'ocrFill', 'officeRead', 'officeFill', 'print', 'remember', 'forget', 'goto'
+  ];
+  var TOOL_ALIASES = {
+    setVal: 'type',
+    getText: 'get',
+    inspect: 'get',
+    findControls: 'get',
+    listOptions: 'get',
+    optionTexts: 'get',
+    findOption: 'get',
+    probe: 'get',
+    urlHints: 'get',
+    scriptHints: 'get',
+    setChecked: 'check',
+    waitFor: 'wait',
+    sleep: 'wait',
+    selectOption: 'select',
+    filterSelect: 'select',
+    clickByText: 'click',
+    clickOptionByText: 'click',
+    hover: 'click',
+    contextClick: 'click',
+    openFileMenu: 'click'
+  };
+
+  function resolvePublicTool(op) {
+    var n = String(op || '');
+    if (PUBLIC_TOOLS.indexOf(n) >= 0) return n;
+    if (TOOL_ALIASES[n]) return TOOL_ALIASES[n];
+    return n;
+  }
 
   var PAGE_BRIDGE_OPS = {};
   var HELPER_OP_NAMES = [];
@@ -251,7 +293,7 @@
   };
   var DIAG_CODES = {
     Error: 1, Timeout: 1, Quota: 1, Bridge: 1, Inject: 1, Offscreen: 1,
-    HTTP_429: 1, HTTP_AUTH: 1, HTTP_4xx: 1, HTTP_5xx: 1, Unhandled: 1, Cancel: 1
+    HTTP_429: 1, HTTP_AUTH: 1, HTTP_4xx: 1, HTTP_5xx: 1, Unhandled: 1, Cancel: 1, Info: 1
   };
   var DIAG_HOURS = { 1: 1, 6: 1, 24: 1 };
 
@@ -353,6 +395,10 @@
     if (OPS[op]) rec.op = op;
     var trail = normalizeDiagTrail(input.trail);
     if (trail.length) rec.trail = trail;
+    var reason = String(input.reason || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    if (reason) rec.r = reason;
+    var on = Number(input.optionsCount);
+    if (Number.isFinite(on) && on >= 0 && on <= 5000) rec.on = Math.round(on);
     return rec;
   }
 
@@ -372,6 +418,10 @@
     if (OPS[op]) rec.op = op;
     var trail = normalizeDiagTrail(row.trail);
     if (trail.length) rec.trail = trail;
+    var reason = String(row.r || row.reason || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    if (reason) rec.r = reason;
+    var on = Number(row.on != null ? row.on : row.optionsCount);
+    if (Number.isFinite(on) && on >= 0 && on <= 5000) rec.on = Math.round(on);
     return rec;
   }
 
@@ -524,6 +574,9 @@
     SNAPSHOT_L0_CAP_FULL: SNAPSHOT_L0_CAP_FULL,
     DEFAULT_FLAGS: DEFAULT_FLAGS,
     OPS: OPS,
+    PUBLIC_TOOLS: PUBLIC_TOOLS,
+    TOOL_ALIASES: TOOL_ALIASES,
+    resolvePublicTool: resolvePublicTool,
     PAGE_BRIDGE_OPS: PAGE_BRIDGE_OPS,
     HELPER_OP_NAMES: HELPER_OP_NAMES,
     helperOpSet: helperOpSet,

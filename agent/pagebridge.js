@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '5.6.0';
+  var BRIDGE_VERSION = '5.7.0';
   var SNAPSHOT_TIME_BUDGET_MS = 2800;
 
   function install() {
@@ -78,6 +78,42 @@
     }
     function officeApi() {
       try { return globalThis.__wpaOffice || null; } catch (e) { return null; }
+    }
+
+    function officeKindNow() {
+      try {
+        var api = officeApi();
+        if (!api || typeof api.snapshotDigest !== 'function') return 'none';
+        var d = api.snapshotDigest();
+        return (d && d.kind) || 'none';
+      } catch (e) { return 'none'; }
+    }
+
+    function officeSurfaceRefuse(sel, el) {
+      var kind = officeKindNow();
+      if (kind !== 'sheet' && kind !== 'doc') return null;
+      if (typeof sel === 'string' && /^[A-Za-z]+[0-9]+$/.test(String(sel).trim())) {
+        return {
+          ok: false, reason: 'use-office', needAddr: true, continueBatch: true,
+          hint: 'reason=use-office'
+        };
+      }
+      if (el) {
+        var tag = String(el.tagName || '').toUpperCase();
+        var hit = tag === 'CANVAS';
+        try {
+          hit = hit || !!(el.closest && el.closest(
+            '[class*="spreadsheet"], [class*="sheet-canvas"], .luckysheet, #alloy-spreadsheet, canvas'
+          ));
+        } catch (e2) {}
+        if (hit) {
+          return {
+            ok: false, reason: 'use-office', continueBatch: true,
+            hint: 'reason=use-office'
+          };
+        }
+      }
+      return null;
     }
 
     var snapIndex = [];
@@ -1743,10 +1779,14 @@
       }
       var target = findCaptureTarget(el);
       try { if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
-      if (magicCaptcha) {
+      // 点图换新必须在 OCR 之前。识别之后立刻填入，中间不再 click/快照。
+      var refreshFirst = magicCaptcha || looksCaptcha(target) || looksCaptcha(el);
+      if (refreshFirst) {
         await refreshCaptchaPixels(target);
-        var again = pickPageCaptchaImage();
-        if (again) target = findCaptureTarget(again);
+        if (magicCaptcha) {
+          var again = pickPageCaptchaImage();
+          if (again) target = findCaptureTarget(again);
+        }
       }
       await waitMs(60);
       var tag = (target.tagName || '').toUpperCase();
@@ -2264,11 +2304,17 @@
         if (!inp && trigger && String(trigger.tagName || '').toUpperCase() === 'INPUT') inp = trigger;
         if (inp && ('value' in inp)) inpVal = String(inp.value || '').replace(/\s+/g, ' ').trim();
       } catch (e2) {}
+      if (isPlaceholderSelectText(near)) near = '';
+      if (isPlaceholderSelectText(inpVal)) inpVal = '';
       var t = '';
       if (open) {
         t = near && near !== inpVal ? near : '';
+      } else if (near && near !== inpVal) {
+        t = near;
+      } else if (near && !inpVal) {
+        t = near;
       } else {
-        t = inpVal || near;
+        t = '';
       }
       if (isPlaceholderSelectText(t)) return '';
       return String(t || '').slice(0, 120);
@@ -2278,18 +2324,21 @@
       var selected = comboCommittedText(trigger);
       var want = String(raw || '').replace(/\s+/g, ' ').trim();
       if (!selected || !want) return false;
+      try { if (findPopupForTrigger(trigger)) return false; } catch (e) {}
       var a = normText(selected);
       var b = normText(want);
       if (!a || !b) return false;
       if (a === b) return true;
-      return b.length >= 2 && a.indexOf(b) >= 0;
+      var parts = a.split(/[/／,>]/);
+      return parts.length > 0 && parts[parts.length - 1] === b;
     }
 
     function alreadySelectedPayload(trigger, raw) {
       return {
         ok: true, kind: 'mutation', via: 'already-selected',
         text: raw, actual: comboCommittedText(trigger),
-        verified: true, opened: false, changed: false
+        verified: true, opened: false, changed: false,
+        fieldState: collectFieldState(trigger, { harvest: false })
       };
     }
 
@@ -2544,6 +2593,15 @@
       return '';
     }
 
+    function pageMetaTarget(sel) {
+      if (sel && typeof sel === 'object' && !Array.isArray(sel) && sel.page) {
+        return String(sel.page || '').trim().toLowerCase();
+      }
+      var s = String(sel == null ? '' : sel).trim().toLowerCase();
+      if (s === 'url' || s === 'title') return s;
+      return '';
+    }
+
     function notFoundError(sel) {
       var desc = describeTarget(sel);
       return new Error('元素未找到: ' + desc + fragileCssHint(desc));
@@ -2564,7 +2622,7 @@
       if (sel && typeof sel === 'object' && !Array.isArray(sel)) {
         if (sel.idx != null) return resolveTarget(sel.idx);
         if (typeof sel.selector === 'string' && sel.selector) return queryDeep(sel.selector);
-        if (typeof sel.text === 'string') return queryDeep(sel.selector || '');
+        if (typeof sel.target === 'string' || typeof sel.target === 'number') return resolveTarget(sel.target);
         return null;
       }
       return queryDeep(String(sel));
@@ -2604,6 +2662,7 @@
         + attr('label', entry && entry.label)
         + attr('sec', entry && entry.sec)
         + attr('text', entry && entry.text)
+        + attr('placeholder', entry && entry.placeholder)
         + attr('value', entry && entry.value)
         + attr('box', entry && entry.box)
         + attr('checked', entry && entry.checked === true)
@@ -2749,7 +2808,7 @@
         ok: false,
         continueBatch: true,
         reason: 'desktop-handoff',
-        hint: '目标是页级 FTP/SFTP/客户端下载入口（handoff=desktop），本助手无法用浏览器取字节。请对该文件卡片 contextClick 或 openFileMenu 后预览/下载。'
+        hint: 'handoff=desktop'
       };
     }
 
@@ -3327,6 +3386,36 @@
           );
         }
       }
+      var openPopupItems = [];
+      try { openPopupItems = collectOpenPopupOptions(40, true) || []; } catch (ePop) { openPopupItems = []; }
+      for (var pi = 0; pi < openPopupItems.length; pi++) {
+        var pop = openPopupItems[pi];
+        var pel = pop && pop.el;
+        if (!pel) continue;
+        var pIdx = 0;
+        for (var pek = 1; pek < snapIndex.length; pek++) {
+          if (snapIndex[pek] === pel) { pIdx = pek; break; }
+        }
+        if (!pIdx) {
+          idx += 1;
+          snapIndex[idx] = pel;
+          pIdx = idx;
+          try { pel.setAttribute('data-wpa-i', String(pIdx)); } catch (ePi) {}
+        }
+        pop.idx = pIdx;
+        if (nextPrev && pel) nextPrev.add(pel);
+        var alreadyPop = false;
+        for (var oi3 = 0; oi3 < elements.length; oi3++) {
+          if (elements[oi3] && elements[oi3].idx === pIdx) { alreadyPop = true; break; }
+        }
+        if (!alreadyPop) {
+          var leafMark = '';
+          try { leafMark = cascaderOptionIsBranch(pel) ? ' leaf=0' : ' leaf=1'; } catch (eLf) {}
+          outlineLines.push(
+            '\t[' + pIdx + ']<OPT text=' + String(pop.text || '').replace(/\s+/g, ' ').slice(0, 60) + leafMark + '>'
+          );
+        }
+      }
       prevSnapEls = nextPrev;
       var sc = collectScrollableCandidates(deadline);
       var seenScroll = typeof Set !== 'undefined' ? new Set() : null;
@@ -3360,6 +3449,7 @@
           return { kind: 'none' };
         })(),
         viewItems: viewItems,
+        openOptions: serializeOptions(openPopupItems, 40),
         title: document.title || '',
         url: location.href || '',
         heading: extractHeading(),
@@ -4185,7 +4275,7 @@
     }
 
     // 匹配等级：0 精确，1 前缀，2 包含，-1 不匹配（基于规范化文本）
-    // 同时允许 needle 比选项更长（模型常把「张文帅(邮箱)」整段传入，而选项只有姓名）
+    // 同时允许 needle 比选项更长（模型常把「张三(邮箱)」整段传入，而选项只有姓名）
     function rankMatch(t, needle) {
       t = normText(t);
       needle = normText(needle);
@@ -4697,10 +4787,24 @@
       var n = Math.max(1, Math.min(Number(max) || MAX_LIST_OPTIONS, MAX_LIST_OPTIONS));
       var out = [];
       for (var i = 0; i < list.length && out.length < n; i++) {
-        out.push({
-          t: String(list[i].text || '').slice(0, 80),
-          v: String(list[i].value || '').slice(0, 80)
-        });
+        var item = list[i] || {};
+        var rec = {
+          t: String(item.t || item.text || '').slice(0, 80),
+          v: String(item.v || item.value || '').slice(0, 80)
+        };
+        if (item.leaf === true || item.leaf === false) rec.leaf = item.leaf;
+        else if (item.el) {
+          try { rec.leaf = !cascaderOptionIsBranch(item.el); } catch (eL) {}
+        }
+        var ix = item.idx;
+        if (!ix && item.el) {
+          try {
+            var raw = item.el.getAttribute && item.el.getAttribute('data-wpa-i');
+            if (raw) ix = parseInt(raw, 10) || 0;
+          } catch (eI) {}
+        }
+        if (ix) rec.idx = ix;
+        out.push(rec);
       }
       return out;
     }
@@ -4708,7 +4812,7 @@
     function catalogPayload(list, extra) {
       extra = extra || {};
       var options = serializeOptions(list, extra.max);
-      return {
+      var payload = {
         ok: extra.ok !== false,
         kind: extra.kind || 'query',
         reason: extra.reason || '',
@@ -4719,6 +4823,116 @@
         count: options.length,
         truncated: !!(extra.truncated || list.length > options.length),
         options: options
+      };
+      if (extra.el) {
+        try { payload.fieldState = collectFieldState(extra.el, { harvest: true }); } catch (eFs) {}
+      }
+      return payload;
+    }
+
+    function personCardsCatalog(el, want) {
+      var scope = personPickerScope(el);
+      var list = findSearchList(scope) || findSearchList(document);
+      if (!list) return [];
+      var cards = [];
+      try { cards = Array.from(list.querySelectorAll('li, [class*="search-item"], [class*="user-item"], [class*="list-item"]')); }
+      catch (e) { cards = []; }
+      if (!cards.length) {
+        try { cards = Array.from(list.children || []); } catch (e2) { cards = []; }
+      }
+      var out = [];
+      var needle = normText(want);
+      for (var i = 0; i < cards.length && out.length < 20; i++) {
+        var card = cards[i];
+        if (!card || !isVisible(card)) continue;
+        var t = '';
+        try { t = String(card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e3) { t = ''; }
+        if (!t) continue;
+        var root = personCardRoot(card);
+        var idx = 0;
+        try {
+          var raw = root.getAttribute && root.getAttribute('data-wpa-i');
+          if (raw) idx = parseInt(raw, 10) || 0;
+        } catch (e4) {}
+        var rec = { t: t.slice(0, 80), v: '', leaf: true };
+        if (idx) rec.idx = idx;
+        if (needle && (normText(t).indexOf(needle) >= 0 || needle.indexOf(normText(t).slice(0, needle.length)) >= 0)) rec.match = true;
+        out.push(rec);
+      }
+      return out;
+    }
+
+    function collectFieldState(el, opts) {
+      opts = opts || {};
+      var casc = null;
+      var combo = null;
+      try { casc = cascaderHostOf(el); } catch (eC) {}
+      try { combo = comboboxHostOf(el); } catch (eB) {}
+      var host = casc || combo || el;
+      var trigger = el;
+      try { trigger = cascaderTriggerOf(host, el) || comboboxTriggerOf(host, el) || el; } catch (e2) {}
+      var open = false;
+      try { open = !!(findPopupForTrigger(trigger) || isTriggerOpen(trigger)); } catch (e3) {}
+      var filter = '';
+      try {
+        var si = findSearchInput(trigger);
+        if (!si && el && String(el.tagName || '').toUpperCase() === 'INPUT') si = el;
+        if (si && ('value' in si)) filter = String(si.value || '').replace(/\s+/g, ' ').trim();
+      } catch (e4) {}
+      var committed = '';
+      try {
+        if (casc) committed = cascaderCommittedText(host);
+        else if (combo) committed = comboCommittedText(trigger);
+        else {
+          committed = filter;
+          filter = '';
+        }
+      } catch (e5) {}
+      var placeholder = '';
+      try {
+        placeholder = String((el && el.getAttribute && (el.getAttribute('placeholder') || el.getAttribute('aria-label'))) || '').slice(0, 80);
+      } catch (e6) {}
+      var error = '';
+      try {
+        var item = formItemOf(el);
+        var errEl = item && item.querySelector && item.querySelector('.ivu-form-item-error-tip, .el-form-item__error, .ant-form-item-explain-error');
+        if (errEl) error = String(errEl.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+      } catch (e7) {}
+      var optionsTop = [];
+      var truncated = false;
+      var limit = Math.max(1, Math.min(Number(opts.limit) || 40, 200));
+      var widgetish = !!(casc || combo);
+      if (open || opts.harvest) {
+        if (widgetish) {
+          try {
+            var harvested = optionsForTrigger(trigger, limit);
+            if (!harvested.length) harvested = collectOpenPopupOptions(limit);
+            optionsTop = serializeOptions(harvested, limit);
+            truncated = harvested.length >= limit;
+            for (var oi = 0; oi < optionsTop.length; oi++) {
+              var src = harvested[oi];
+              if (src && src.el) optionsTop[oi].leaf = !cascaderOptionIsBranch(src.el);
+              try {
+                var ix = src.el && src.el.getAttribute && src.el.getAttribute('data-wpa-i');
+                if (ix) optionsTop[oi].idx = parseInt(ix, 10) || undefined;
+              } catch (e8) {}
+            }
+          } catch (e9) {}
+        }
+        var cards = personCardsCatalog(el, filter || committed);
+        if (cards.length && !optionsTop.length) {
+          optionsTop = cards;
+        }
+      }
+      return {
+        committed: committed,
+        filter: filter,
+        open: !!open,
+        placeholder: placeholder,
+        error: error,
+        optionsTop: optionsTop,
+        optionsCount: optionsTop.length,
+        truncated: truncated
       };
     }
 
@@ -4939,13 +5153,52 @@
       return chooseMatch(list, raw);
     }
 
+    function cascaderCommittedText(host) {
+      if (!host) return '';
+      var trigger = cascaderTriggerOf(host);
+      var open = false;
+      try { open = !!findPopupForTrigger(trigger); } catch (e0) {}
+      var filter = '';
+      try {
+        var si = findSearchInput(trigger);
+        if (si && ('value' in si)) filter = String(si.value || '').replace(/\s+/g, ' ').trim();
+      } catch (e1) {}
+      var parts = [];
+      try {
+        var nodes = host.querySelectorAll(
+          '.el-tag, .ivu-tag, .ant-select-selection-item, .ivu-select-selected-value, ' +
+          '.ivu-cascader-label, .el-cascader__label, .ant-cascader-picker-label'
+        );
+        var seen = {};
+        for (var i = 0; i < nodes.length && parts.length < 8; i++) {
+          var t = String(nodes[i].innerText || nodes[i].textContent || '').replace(/\s+/g, ' ').trim();
+          if (!t || t === '请选择' || t === filter || seen[t]) continue;
+          seen[t] = 1;
+          parts.push(t.slice(0, 40));
+        }
+      } catch (e2) {}
+      var tags = parts.join(',');
+      if (open) return tags;
+      return tags;
+    }
+
     function cascaderSelectionText(host) {
-      return widgetSelectedTextNear(host);
+      return cascaderCommittedText(host);
     }
 
     function cascaderSelectionMatches(host, raw) {
-      var selected = cascaderSelectionText(host);
-      return !!selected && rankMatch(selected, raw) >= 0;
+      var selected = cascaderCommittedText(host);
+      var want = String(raw || '').replace(/\s+/g, ' ').trim();
+      if (!selected || !want) return false;
+      try {
+        if (findPopupForTrigger(cascaderTriggerOf(host))) return false;
+      } catch (e) {}
+      var a = normText(selected);
+      var b = normText(want);
+      if (!a || !b) return false;
+      if (a === b) return true;
+      var parts = a.split(/[/／,>]/);
+      return parts.length > 0 && parts[parts.length - 1] === b;
     }
 
     // 级联选择的完整闭环：搜索框只是过滤器，不能当作最终表单值；
@@ -4961,7 +5214,8 @@
         return {
           ok: true, kind: 'mutation', via: 'cascader', text: target,
           selected: cascaderSelectionText(host), changed: false, verified: true,
-          note: '已是目标级联选项，未重复点击'
+          note: '已是目标级联选项，未重复点击',
+          fieldState: collectFieldState(host, { harvest: false })
         };
       }
 
@@ -5008,7 +5262,7 @@
         return catalogPayload(harvested, {
           ok: false, reason: 'ambiguous', opened: opened,
           searchAvailable: searchAvailable, truncated: harvested.length >= MAX_LIST_OPTIONS,
-          query: usedQuery, via: 'cascader'
+          query: usedQuery, via: 'cascader', el: host
         });
       }
       if (!found || !found.hit || !found.hit.winner) {
@@ -5016,11 +5270,23 @@
           ok: false,
           reason: harvested.length ? 'notFound' : (opened ? 'emptyList' : 'notOpened'),
           opened: opened, searchAvailable: searchAvailable,
-          truncated: harvested.length >= MAX_LIST_OPTIONS, query: usedQuery, via: 'cascader'
+          truncated: harvested.length >= MAX_LIST_OPTIONS, query: usedQuery, via: 'cascader', el: host
         });
       }
 
       var winner = found.hit.winner;
+      var isSuggestion = false;
+      try {
+        isSuggestion = !!(winner.el && winner.el.matches && winner.el.matches('.el-cascader__suggestion-item'));
+      } catch (eSug) {}
+      if (!isSuggestion && cascaderOptionIsBranch(winner.el)) {
+        var leaves = harvested.filter(function (item) { return !cascaderOptionIsBranch(item.el); });
+        return catalogPayload(leaves.length ? leaves : harvested, {
+          ok: false, reason: 'not-leaf', opened: opened,
+          searchAvailable: searchAvailable, truncated: harvested.length >= MAX_LIST_OPTIONS,
+          query: usedQuery, via: 'cascader', el: host
+        });
+      }
       withSel(winner);
       try { winner.el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
       dispatchClick(cascaderClickTarget(winner.el));
@@ -5038,7 +5304,8 @@
       return {
         ok: true, kind: 'mutation', via: 'cascader', text: winner.text,
         value: winner.value, filter: usedQuery, selected: selected,
-        selector: winner.selector, changed: verified, verified: verified
+        selector: winner.selector, changed: verified, verified: verified,
+        fieldState: collectFieldState(host, { harvest: true })
       };
     }
 
@@ -5262,57 +5529,19 @@
         waited += 80;
         list = findSearchList(scope) || findSearchList(document);
       }
-      if (!list) return null;
-      var cards = [];
-      try { cards = Array.from(list.querySelectorAll('li, [class*="search-item"], [class*="user-item"], [class*="list-item"]')); }
-      catch (e) { cards = []; }
-      if (!cards.length) {
-        try { cards = Array.from(list.children || []); } catch (e2) { cards = []; }
-      }
-      var needle = normText(want);
-      var match = null;
-      for (var i = 0; i < cards.length; i++) {
-        var card = cards[i];
-        if (!card || !isVisible(card)) continue;
-        var t = '';
-        try { t = String(card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e3) { t = ''; }
-        if (!t) continue;
-        if (normText(t).indexOf(needle) >= 0 || needle.indexOf(normText(t).slice(0, needle.length)) >= 0) {
-          match = personCardRoot(card);
-          break;
-        }
-      }
-      if (!match) {
-        return {
-          ok: false,
-          reason: 'person-card-missing',
-          continueBatch: true,
-          hint: '已填入「' + want.slice(0, 40) + '」，但未找到匹配的搜索卡片。请点卡片根节点，不要点禁用的「选择」。',
-          expected: want
-        };
-      }
-      try { if (typeof match.scrollIntoView === 'function') match.scrollIntoView({ block: 'nearest' }); } catch (e4) {}
-      dispatchClick(match);
-      var until = Date.now() + 1200;
-      var verified = false;
-      while (Date.now() < until) {
-        await sleepMs(80);
-        var still = findSearchList(scope);
-        var blob = '';
-        try { blob = String((scope && scope.innerText) || ''); } catch (e5) {}
-        if (!still || !isVisible(still) || /已选择/.test(blob) || blob.indexOf(want) >= 0) {
-          verified = true;
-          break;
-        }
-      }
+      var catalog = personCardsCatalog(el, want);
+      if (!list && !catalog.length && !expectList) return null;
       return {
         ok: true,
         kind: 'mutation',
-        via: 'person-picker',
+        via: 'type',
+        reason: 'typed-not-committed',
+        continueBatch: true,
         expected: want,
         actual: want,
-        verified: verified,
-        hint: verified ? '' : '已点击匹配卡片。若未选中，请再点该卡片根节点，不要点禁用的「选择」。'
+        verified: false,
+        fieldState: collectFieldState(el, { harvest: true }),
+        options: catalog
       };
     }
 
@@ -5556,17 +5785,12 @@
         else if (r === best) winners.push(list[j]);
       }
       if (best < 0) {
-        var sample = [];
-        for (var s = 0; s < list.length && sample.length < 15; s++) sample.push(list[s].text);
-        throw new Error('原生下拉中未找到“' + raw + '”。部分候选：' + sample.join(' | ') +
-          (list.length > 15 ? ' …(共' + list.length + '项)' : ''));
+        return catalogPayload(list, { ok: false, reason: 'notFound', opened: true, via: 'native', el: sel });
       }
       var distinct = {};
       for (var d = 0; d < winners.length; d++) distinct[normText(winners[d].text)] = true;
       if (Object.keys(distinct).length > 1) {
-        var texts = [];
-        for (var k = 0; k < winners.length && texts.length < 12; k++) texts.push(winners[k].text);
-        throw new Error('“' + raw + '”匹配到多个不同选项：' + texts.join(' | ') + '。请用更完整的名称重试。');
+        return catalogPayload(winners, { ok: false, reason: 'ambiguous', opened: true, via: 'native', el: sel });
       }
       var opt = winners[0].el;
       var win = sel.ownerDocument && sel.ownerDocument.defaultView || window;
@@ -5593,33 +5817,42 @@
           q: function (sel) { return resolveTarget(sel); },
           qa: function (sel) { return queryAllDeep(sel); },
           setVal: async function (sel, val) {
-            var el = page.q(sel); if (!el) throw notFoundError(sel);
+            var el = page.q(sel);
+            var officeHit = officeSurfaceRefuse(sel, el);
+            if (officeHit) return officeHit;
+            if (!el) throw notFoundError(sel);
             if (el.disabled) throw new Error('元素已禁用，不能填写: ' + sel);
-            // 级联只读展示框/筛选框都不是最终表单值。模型若仍对它们 setVal，
-            // 直接走完整选择闭环，避免“只读不能填”或“筛了但没选中”。
             if (cascaderHostOf(el)) {
               var cascVal = String(val == null ? '' : val);
-              if (!cascVal.trim()) {
-                var host = cascaderHostOf(el);
-                var trigger = cascaderTriggerOf(host, el);
-                await ensureOpenDropdown(trigger);
-                var si = findSearchInput(trigger);
-                if (!si) throw new Error('级联筛选框未找到，无法清空');
-                typeInto(si, '');
-                return { ok: true, kind: 'mutation', via: 'cascader-filter-clear', query: '', verified: false };
-              }
-              return await selectCascaderOption(el, cascVal, { filter: cascVal });
+              var host = cascaderHostOf(el);
+              var trigger = cascaderTriggerOf(host, el);
+              await ensureOpenDropdown(trigger);
+              var si = findSearchInput(trigger);
+              if (!si && String(el.tagName || '').toUpperCase() === 'INPUT') si = el;
+              if (!si) throw new Error('级联筛选框未找到');
+              typeInto(si, cascVal);
+              await sleepMs(220);
+              var cfs = collectFieldState(el, { harvest: true });
+              return {
+                ok: true, kind: 'mutation', via: 'type', reason: 'typed-not-committed',
+                expected: cascVal, actual: cfs.filter || cascVal, verified: false, fieldState: cfs
+              };
             }
             var comboHost = comboboxHostOf(el);
             if (comboHost) {
               var comboVal = String(val == null ? '' : val);
-              if (!comboVal.trim()) {
-                var cTrig = comboboxTriggerOf(comboHost, el);
-                var cSi = findSearchInput(cTrig) || (el.tagName === 'INPUT' ? el : null);
-                if (cSi) typeInto(cSi, '');
-                return { ok: true, kind: 'mutation', via: 'combobox-clear', verified: true };
-              }
-              return await page.selectOption(sel, comboVal);
+              var cTrig = comboboxTriggerOf(comboHost, el);
+              await ensureOpenDropdown(cTrig);
+              var cSi = findSearchInput(cTrig) || (el.tagName === 'INPUT' ? el : null);
+              if (!cSi) throw new Error('下拉输入框未找到');
+              typeInto(cSi, comboVal);
+              await sleepMs(220);
+              var xfs = collectFieldState(el, { harvest: true });
+              return {
+                ok: true, kind: 'mutation', via: 'type', reason: xfs.committed ? undefined : 'typed-not-committed',
+                expected: comboVal, actual: xfs.filter || comboVal,
+                verified: false, fieldState: xfs
+              };
             }
             var tagHost = tagHostOf(el);
             if (tagHost) return await fillTagWidget(tagHost, val);
@@ -5696,15 +5929,33 @@
             throw new Error('不支持对该元素赋值: ' + sel);
           },
           click: async function (sel) {
-            var el = page.q(sel); if (!el) throw notFoundError(sel);
+            var clickOpts = arguments.length > 1 ? arguments[1] : null;
+            if (sel && typeof sel === 'object' && !Array.isArray(sel) && typeof sel.text === 'string' && !sel.idx && !sel.selector) {
+              return await page.clickByText(sel.text, Object.assign({}, sel, clickOpts || {}));
+            }
+            if (typeof sel === 'string' && clickOpts && clickOpts.within && !/[#.\[>]/.test(sel) && !/^\d+$/.test(sel.trim())) {
+              return await page.clickByText(sel, clickOpts);
+            }
+            var el = page.q(sel);
+            var officeHit = officeSurfaceRefuse(sel, el);
+            if (officeHit) return officeHit;
+            if (!el) throw notFoundError(sel);
             if (isPagerHost(el)) {
               throw new Error('请点分页条上的页码或下一页/上一页按钮，不要点整条分页容器');
             }
+            if (clickOpts && clickOpts.button === 'right') {
+              return await page.contextClick(sel);
+            }
             if (cascaderOptionOf(el)) {
-              throw new Error(
-                '级联菜单选项禁止直接 page.click（点击分支/旧 li 选择器无法可靠确认层级）。' +
-                '请使用 page.selectOption(级联触发器选择器, 完整目标选项文本[, {filter:"简短过滤词"}])。'
-              );
+              try { el.scrollIntoView({ block: 'nearest' }); } catch (eOpt) {}
+              dispatchClick(cascaderClickTarget(el));
+              var optUs;
+              try { optUs = uniqueSelector(el); } catch (eOu) { optUs = null; }
+              return {
+                ok: true, kind: 'action', via: 'cascader-option', verified: null,
+                selector: optUs && optUs.selector ? optUs.selector : '',
+                fieldState: collectFieldState(el, { harvest: true })
+              };
             }
             var cascadeClickHost = cascaderHostOf(el);
             if (cascadeClickHost) {
@@ -5718,7 +5969,8 @@
                 opened: !!opened,
                 verified: null,
                 selector: cus && cus.selector ? cus.selector : '',
-                retargeted: false
+                retargeted: false,
+                fieldState: collectFieldState(el, { harvest: true })
               };
             }
             if (isDisabledTree(el) || el.disabled || (el.getAttribute && el.getAttribute('aria-disabled') === 'true')) {
@@ -5726,12 +5978,12 @@
                 ok: false,
                 reason: 'disabled',
                 continueBatch: true,
-                hint: '目标已禁用。人员搜索请点匹配姓名的卡片根节点，不要点禁用的「选择」按钮。'
+                hint: '目标已禁用。'
               };
             }
             var target = retargetFileSelectClick(el);
-            var clickOpts = arguments.length > 1 ? arguments[1] : null;
-            if (clickOpts && typeof clickOpts === 'object' && !Array.isArray(clickOpts) && clickOpts.blockHandoff) {
+            var blockOpts = clickOpts;
+            if (blockOpts && typeof blockOpts === 'object' && !Array.isArray(blockOpts) && blockOpts.blockHandoff) {
               var clickRefused = desktopHandoffRefuse(target) || desktopHandoffRefuse(el);
               if (clickRefused) return clickRefused;
             }
@@ -5748,23 +6000,17 @@
               retargeted: target !== el
             };
           },
-          select: function (sel, valOrLabel) {
+          select: async function (sel, valOrLabel, opts) {
             var el = page.q(sel); if (!el) throw notFoundError(sel);
             if (el.disabled) throw new Error('元素已禁用，不能选择: ' + sel);
-            if (cascaderHostOf(el)) {
-              throw new Error(
-                '级联选择器不能使用 page.select 直接写值。请使用 page.selectOption(级联触发器或宿主, 末级选项文本[, {filter:"简短过滤词"}])。'
-              );
+            if (cascaderHostOf(el) || comboboxHostOf(el)) {
+              return await page.selectOption(sel, valOrLabel, opts);
             }
             var w = resolveWidget(el);
             if (w.native) return selectNativeOption(w.native, String(valOrLabel));
             if (w.decorated) return selectNativeOption(w.decorated, String(valOrLabel));
             if (el.tagName === 'SELECT') return selectNativeOption(el, String(valOrLabel));
-            var ewin = el.ownerDocument && el.ownerDocument.defaultView || window;
-            Object.getOwnPropertyDescriptor(ewin.HTMLInputElement.prototype, 'value').set.call(el, String(valOrLabel));
-            el.dispatchEvent(new ewin.Event('input', { bubbles: true, composed: true }));
-            el.dispatchEvent(new ewin.Event('change', { bubbles: true, composed: true }));
-            return { ok: true, kind: 'mutation', expected: String(valOrLabel), actual: String(el.value), verified: String(el.value) === String(valOrLabel) };
+            return await page.selectOption(sel, valOrLabel, opts);
           },
           upload: async function (sel, fileKey) {
             throw new Error('为保护附件内容，上传必须使用 action=execute 的结构化 upload 操作');
@@ -5859,14 +6105,13 @@
                   ok: false,
                   reason: 'disabled',
                   continueBatch: true,
-                  hint: '「' + raw + '」已禁用。人员搜索请点匹配姓名的卡片根节点，不要点禁用的「选择」。'
+                  hint: '「' + raw + '」已禁用。'
                 };
               }
               if (within && scope.missing) {
                 throw new Error('clickByText: within 容器未找到: ' + within +
                   '，且页面上也未找到「' + raw + '」。可见短文本示例：' +
-                  (sample.length ? sample.join(' / ') : '(无)') +
-                  '。请改用当前快照中的选择器，不要沿用跳转前的 nth-of-type。');
+                  (sample.length ? sample.join(' / ') : '(无)'));
               }
               throw new Error('clickByText: 未找到「' + raw + '」。' +
                 (within ? 'within 内' : '页面上') +
@@ -5876,16 +6121,19 @@
               var extra = (within && (scope.missing || pageFallback))
                 ? 'within 容器未找到: ' + within + '。'
                 : '';
-              throw new Error('clickByText: ' + extra + '「' + raw + '」匹配到多处：' +
-                formatAmbiguousCandidates(picked.ambiguousEls).join(' | ') +
-                '。请用当前快照中该条目的 li 选择器、或完整条目标题文案作 within；禁止编造快照里没有的 class。');
+              return {
+                ok: false,
+                reason: 'ambiguous',
+                continueBatch: true,
+                hint: extra + '「' + raw + '」匹配到多处。',
+                options: (picked.ambiguousEls || []).slice(0, 12).map(function (item) {
+                  var t = '';
+                  try { t = String((item && item.el && (item.el.innerText || item.el.textContent)) || item.text || '').replace(/\s+/g, ' ').trim().slice(0, 80); } catch (eA) {}
+                  return { t: t };
+                })
+              };
             }
             var el = picked.winner.el;
-            if (cascaderOptionOf(el)) {
-              throw new Error(
-                '级联菜单选项禁止直接 clickByText。请使用 page.selectOption(级联触发器选择器, 完整目标选项文本[, {filter:"简短过滤词"}])。'
-              );
-            }
             el = retargetFileSelectClick(el);
             if (opts.blockHandoff) {
               var textRefused = desktopHandoffRefuse(el);
@@ -6135,27 +6383,28 @@
               var r = chooseMatch(list, raw);
               if (r && r.winner) {
                 withSel(r.winner);
-                if (cascaderOptionOf(r.winner.el)) {
-                  throw new Error(
-                    '级联菜单选项禁止直接 clickOptionByText。请使用 page.selectOption(级联触发器选择器, 完整目标选项文本[, {filter:"简短过滤词"}])。'
-                  );
-                }
                 if (o.blockHandoff) {
                   var optRefused = desktopHandoffRefuse(r.winner.el);
                   if (optRefused) return optRefused;
                 }
                 try { r.winner.el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
-                dispatchClick(r.winner.el);
-                return { ok: true, kind: 'action', text: r.winner.text, value: r.winner.value, selector: r.winner.selector, verified: null };
+                dispatchClick(cascaderOptionOf(r.winner.el) ? cascaderClickTarget(r.winner.el) : r.winner.el);
+                return {
+                  ok: true, kind: 'action', text: r.winner.text, value: r.winner.value,
+                  selector: r.winner.selector, verified: null,
+                  fieldState: collectFieldState(r.winner.el, { harvest: true })
+                };
               }
               if (r && r.ambiguous) {
-                throw new Error('“' + raw + '”匹配到多个不同选项：' + r.ambiguous.join(' | ') + '。请用更完整的名称重试。');
+                return catalogPayload(list, { ok: false, reason: 'ambiguous', query: raw, opened: true });
               }
               if (Date.now() >= deadline) {
-                var sample = [];
-                for (var i = 0; i < list.length && sample.length < 15; i++) sample.push(list[i].text);
-                throw new Error('未找到匹配“' + text + '”的可见下拉选项（可能未展开、异步未渲染完，或文本不完全匹配）。' +
-                  (sample.length ? '当前可见部分候选：' + sample.join(' | ') : '当前无任何可见选项。'));
+                return catalogPayload(list, {
+                  ok: false,
+                  reason: list.length ? 'notFound' : 'notOpened',
+                  query: raw,
+                  opened: !!list.length
+                });
               }
               if (list.length && scrolled < 6 && scrollOptionArea(list)) scrolled++;
               await page.sleep(200);
@@ -6260,12 +6509,12 @@
                 try { triggerValue = String(('value' in trigger ? trigger.value : '') || trigger.innerText || trigger.textContent || ''); } catch (e) {}
                 var triggerMatched = rankMatch(triggerValue, raw) >= 0 || rankMatch(triggerValue, winner.text) >= 0;
                 var optionClosed = !winner.el.isConnected || !isVisible(winner.el);
-                verified = !!(marked || triggerMatched || optionClosed);
+                verified = !!(marked || triggerMatched);
                 if (verified) break;
                 await page.sleep(100);
               }
               return { ok: true, kind: 'mutation', via: 'custom', text: winner.text, value: winner.value,
-                selector: winner.selector, verified: verified, searchUsed: !!usedQuery };
+                selector: winner.selector, verified: verified, opened: !optionClosed, searchUsed: !!usedQuery };
             }
 
             var matched = matchHarvest(harvested);
@@ -6389,23 +6638,23 @@
               if (r && r.winner) {
                 el = r.winner.el;
               } else if (r && r.ambiguous) {
-                throw new Error('“' + raw + '”匹配到多个不同复选框：' + r.ambiguous.join(' | ') + '。请用更完整的名称重试。');
+                throw new Error('“' + raw + '”匹配到多个不同复选框：' + r.ambiguous.join(' | '));
               } else {
                 var sample = [];
                 for (var si = 0; si < cands.length && sample.length < 15; si++) sample.push(cands[si].text);
                 throw new Error('未找到文本为“' + raw + '”的复选框。' +
-                  (sample.length ? '当前可见候选：' + sample.join(' | ') : '页面上没有可见的复选框。') +
-                  '若目标在级联/下拉菜单里，请用 page.selectOption(触发器, 选项文本[, {filter:"短词"}])。');
+                  (sample.length ? '当前可见候选：' + sample.join(' | ') : '页面上没有可见的复选框。'));
               }
             } else {
               el = page.q(target);
               if (!el) throw notFoundError(target);
               if (isCascaderChoice(el)) {
-                throw new Error(
-                  '下拉/级联选项不能用 setChecked（菜单里的方框只是级联多选样式）。' +
-                  '请用 page.selectOption(级联触发器或宿主, 选项文本[, {filter:"2～3字"}])。' +
-                  '需要多个值时对每个值各调用一次，或传入文本数组。'
-                );
+                return {
+                  ok: false,
+                  reason: 'not-checkbox',
+                  continueBatch: true,
+                  hint: '目标是级联/下拉项，reason=not-checkbox。'
+                };
               }
               if (!boxKindOf(el)) throw new Error('目标不是复选/单选框: ' + describeTarget(target));
             }
@@ -6522,7 +6771,7 @@
                 menuLikely: false,
                 reason: 'noMoreButton',
                 continueBatch: true,
-                hint: '该卡片内或右上角附近没有「…/更多」控件（可能仍未入 DOM 或仅 CSS :hover 可见）。可改 contextClick 或请用户先把鼠标停在文件上。这不是失败。'
+                hint: '该卡片内或右上角附近没有「…/更多」控件。'
               };
             }
             try { more.scrollIntoView({ block: 'nearest' }); } catch (e) {}
@@ -6596,6 +6845,98 @@
             }
             return await api.fill(a, b);
           },
+          get: async function (sel, opts) {
+            opts = opts && typeof opts === 'object' ? opts : {};
+            var meta = pageMetaTarget(sel);
+            if (meta === 'url' || meta === 'title') {
+              return {
+                ok: true,
+                kind: 'query',
+                tool: 'get',
+                url: location.href || '',
+                title: document.title || '',
+                text: meta === 'title' ? (document.title || '') : (location.href || '')
+              };
+            }
+            var el = page.q(sel);
+            if (!el) throw notFoundError(sel);
+            if (opts.open) {
+              try {
+                var host = cascaderHostOf(el) || comboboxHostOf(el) || el;
+                var trigger = cascaderTriggerOf(host, el) || comboboxTriggerOf(host, el) || el;
+                await ensureOpenDropdown(trigger);
+                await sleepMs(160);
+              } catch (eOpen) {}
+            }
+            var fs = collectFieldState(el, { harvest: true, limit: opts.limit });
+            var text = '';
+            try { text = readableTextOf(el); } catch (eT) { text = ''; }
+            return {
+              ok: true,
+              kind: 'query',
+              tool: 'get',
+              text: String(text || '').slice(0, 400),
+              fieldState: fs,
+              options: fs.optionsTop,
+              optionsCount: fs.optionsCount
+            };
+          },
+          type: async function (sel, val) {
+            return await page.setVal(sel, val);
+          },
+          check: async function (target, want) {
+            return await page.setChecked(target, want);
+          },
+          wait: async function (sel, opts) {
+            var r = await page.waitFor(sel, opts);
+            if (r && typeof r === 'object') {
+              r.reason = r.reason || (r.timedOut ? 'timeout' : '');
+              r.continueBatch = true;
+              return r;
+            }
+            return { ok: true, kind: 'query', via: 'wait', found: !!r };
+          },
+          print: function (query, opts) {
+            opts = opts && typeof opts === 'object' ? opts : {};
+            var needle = String(query == null ? '' : query).trim();
+            if (!needle) return { ok: false, kind: 'query', reason: 'missing-query', catalog: [], text: '' };
+            var cap = Math.max(1, Math.min(Number(opts.limit) || 20, 50));
+            var found = this.findControls(needle, cap);
+            var lines = [];
+            for (var i = 0; i < found.length; i++) {
+              var hit = found[i] || {};
+              var el = null;
+              try { el = hit.selector ? this.q(hit.selector) : null; } catch (eQ) { el = null; }
+              var idx = 0;
+              if (el) {
+                for (var si = 1; si < snapIndex.length; si++) {
+                  if (snapIndex[si] === el) { idx = si; break; }
+                }
+              }
+              var entry = {
+                idx: idx || '-',
+                tag: hit.tag || '',
+                label: hit.label || '',
+                text: hit.text || '',
+                placeholder: hit.placeholder || '',
+                name: hit.name || ''
+              };
+              try { if (el) entry.sec = nearestSectionTitle(el, hit.label); } catch (eSec) {}
+              var inOverlay = false;
+              try { inOverlay = !!(el && isOverlayEl(el)); } catch (eOv) {}
+              lines.push(formatOutlineLine(entry, false, inOverlay));
+            }
+            return {
+              ok: true,
+              kind: 'query',
+              tool: 'print',
+              query: needle,
+              count: lines.length,
+              catalog: lines,
+              text: lines.length ? (lines.join('\n') + '\n（idx 仅本轮有效）') : '',
+              idxRoundOnly: true
+            };
+          },
           getFile: function () { throw new Error('附件内容不可在页面 MAIN world 中读取'); },
           getFileName: function () { throw new Error('附件内容不可在页面 MAIN world 中读取'); }
         };
@@ -6612,7 +6953,8 @@
         listOptions: 1, filterSelect: 1,
         setChecked: 1, sleep: 1, waitFor: 1, probe: 1, scroll: 1,
         urlHints: 1, scriptHints: 1, hover: 1, openFileMenu: 1, contextClick: 1, watchTraffic: 1,
-        officeRead: 1, officeFill: 1
+        officeRead: 1, officeFill: 1,
+        get: 1, type: 1, check: 1, wait: 1, print: 1
       };
       var page = createPageApi();
       var list = Array.isArray(operations) ? operations : [];
@@ -6627,6 +6969,12 @@
           }
           var args = Array.isArray(item.args) ? item.args : [];
           var value = await page[op].apply(page, args);
+          if (value && typeof value === 'object' && !value.fieldState && op !== 'print' && !pageMetaTarget(args[0])) {
+            try {
+              var fsEl = page.q(args[0]);
+              if (fsEl) value.fieldState = collectFieldState(fsEl, { harvest: true });
+            } catch (eFs) {}
+          }
           results.push({ op: op, value: value });
           // selectOption 未命中会返回 {ok:false,kind:'query'} 而不是抛错；
           // 同一批后续 click（例如「下一步」）不应在选值失败后继续执行。

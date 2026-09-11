@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const path = require('path');
 const fs = require('fs');
 const C = require('./contracts.js');
+const P = require('./toolProtocol.js');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -115,6 +116,14 @@ describe('WPA contracts kernel', () => {
     assert.equal(C.classifyDiagCode({ cancelled: true, message: '已停止' }), 'Cancel');
     assert.equal(C.classifyDiagCode({ message: 'x' }, 'Cancel'), 'Cancel');
     assert.ok(C.DIAG_CODES.Cancel);
+    assert.ok(C.DIAG_CODES.Info);
+    const infoRec = C.makeDiagRecord({
+      probe: 'bridge', err: { message: 'typed-not-committed' }, code: 'Info',
+      op: 'type', reason: 'typed-not-committed', optionsCount: 12
+    });
+    assert.equal(infoRec.c, 'Info');
+    assert.equal(infoRec.r, 'typed-not-committed');
+    assert.equal(infoRec.on, 12);
 
     const now = Date.now();
     let store = { schemaVersion: 1, rows: [] };
@@ -170,5 +179,87 @@ describe('WPA contracts kernel', () => {
     assert.equal(emptyPack.rows.length, 0);
     assert.equal(emptyPack.trail.length, 1);
     assert.equal(emptyPack.trail[0].p, 'settings');
+  });
+
+  it('公开工具 16 个，旧 helper 可映射', () => {
+    assert.equal(C.PUBLIC_TOOLS.length, 16);
+    assert.deepEqual(C.PUBLIC_TOOLS, [
+      'get', 'type', 'click', 'check', 'select', 'scroll', 'wait', 'upload',
+      'ocr', 'ocrFill', 'officeRead', 'officeFill', 'print', 'remember', 'forget', 'goto'
+    ]);
+    assert.equal(C.resolvePublicTool('setVal'), 'type');
+    assert.equal(C.resolvePublicTool('selectOption'), 'select');
+    assert.equal(C.resolvePublicTool('clickByText'), 'click');
+    assert.equal(C.resolvePublicTool('get'), 'get');
+  });
+});
+
+describe('toolProtocol hybrid', () => {
+  it('OpenAI tools 为 16 个 function', () => {
+    const tools = P.toOpenAiTools();
+    assert.equal(tools.length, 16);
+    assert.deepEqual(tools.map((t) => t.function.name), C.PUBLIC_TOOLS);
+  });
+
+  it('解析 tool_calls、calls JSON 与旧 operations', () => {
+    const fromTools = P.parseAssistantMessage({
+      tool_calls: [
+        { function: { name: 'type', arguments: '{"target":7,"value":"张三"}' } },
+        { function: { name: 'click', arguments: '{"target":69}' } }
+      ]
+    });
+    assert.equal(fromTools.action, 'execute');
+    assert.equal(fromTools.source, 'tools');
+    assert.equal(fromTools.calls.length, 2);
+    assert.equal(fromTools.calls[0].op, 'type');
+
+    const fromCalls = P.parseAssistantMessage('{"action":"execute","calls":[{"tool":"select","args":{"target":12,"value":"计算机应用"}}]}');
+    assert.equal(fromCalls.action, 'execute');
+    assert.equal(fromCalls.calls[0].op, 'select');
+
+    const fromOld = P.parseAssistantMessage('{"action":"execute","operations":[{"op":"setVal","args":[5,"x"]}]}');
+    assert.equal(fromOld.calls[0].op, 'setVal');
+    const legacy = P.toLegacyOperations(fromOld);
+    assert.equal(legacy[0].op, 'setVal');
+  });
+
+  it('get+remember 同批可解析；同条 trailing done 暂不收工', () => {
+    const linked = P.parseAssistantMessage({
+      tool_calls: [
+        { function: { name: 'get', arguments: '{"target":"url"}' } },
+        { function: { name: 'remember', arguments: '{"name":"智能体首页"}' } }
+      ],
+      content: 'done.'
+    });
+    assert.equal(linked.action, 'execute');
+    assert.equal(linked.calls[0].op, 'get');
+    assert.equal(linked.calls[0].args[0], 'url');
+    assert.equal(linked.calls[1].op, 'remember');
+    assert.equal(linked.calls[1].args[0].name, '智能体首页');
+    // finishAfterExecute 暂不接线：同条 trailing done 不收工。
+    // assert.equal(linked.finishAfterExecute, true);
+    assert.equal(linked.finishAfterExecute, undefined);
+
+    const jsonDone = P.parseAssistantMessage(
+      '{"action":"execute","calls":[{"tool":"print","args":{"query":"登录"}}]}\n\ndone.'
+    );
+    assert.equal(jsonDone.action, 'execute');
+    // assert.equal(jsonDone.finishAfterExecute, true);
+    assert.equal(jsonDone.finishAfterExecute, undefined);
+  });
+
+  it('页面完成词与无工具的 done. 不能当 action', () => {
+    const prose = P.parseAssistantMessage('已登录并进入「某某项目名称」空间，当前停留在其文件管理页面。');
+    assert.equal(prose.action, '');
+    assert.equal(P.looksLikeFinishDoneToken('已记录当前页面为智能体首页'), false);
+    assert.equal(P.looksLikeFinishDoneToken('已登录并进入空间'), false);
+    assert.equal(P.looksLikeFinishDoneToken('当前 URL 是 https://example.com\n\ndone.'), true);
+    const bare = P.parseAssistantMessage('当前页面 URL 已记录。\n\ndone.');
+    assert.equal(bare.action, '');
+  });
+
+  it('tools 不支持错误可识别', () => {
+    assert.equal(P.toolsUnsupportedError({ message: 'HTTP 400 unknown field tools' }), true);
+    assert.equal(P.toolsUnsupportedError({ message: 'HTTP 500 boom' }), false);
   });
 });

@@ -723,6 +723,42 @@
       color: #8a6d1a;
       border: 1px solid #f3e3b0;
     }
+    .print-catalog {
+      align-self: stretch;
+      max-width: 96%;
+      background: #f4f7fb;
+      color: #243044;
+      border: 1px solid #d5deea;
+      padding: 8px 10px;
+    }
+    .print-catalog-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .print-catalog-title { font-weight: 600; font-size: 12px; }
+    .print-catalog-copy {
+      flex: 0 0 auto;
+      font-size: 11px;
+      padding: 2px 8px;
+      border: 1px solid #c5d0de;
+      border-radius: 6px;
+      background: #fff;
+      color: #334155;
+      cursor: pointer;
+    }
+    .print-catalog-body {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      max-height: 220px;
+      overflow: auto;
+    }
     .bubble.error {
       align-self: flex-start;
       background: #ffecec;
@@ -1346,6 +1382,30 @@
       display: flex;
       flex-direction: column;
       gap: 4px;
+    }
+    .modal label.archive-chunk-row {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 8px;
+      font-size: 12px;
+      color: #5a6072;
+      line-height: 1.4;
+    }
+    .archive-char-count,
+    .archive-char-tail {
+      font-size: 12px;
+      color: #5a6072;
+      line-height: 1.4;
+    }
+    .archive-chunk-input {
+      width: 7.5em;
+      font-family: inherit;
+      font-size: 13px;
+      padding: 4px 8px;
+      border: 1px solid #d8dbe7;
+      border-radius: 6px;
     }
     .archive-action:hover {
       background: #f6f7fb;
@@ -1981,7 +2041,7 @@
     const archiveSaveDialog = mk('div', 'modal');
     archiveSaveDialog.appendChild(mk('h3', null, { textContent: '保存对话' }));
     archiveSaveDialog.appendChild(mk('div', 'archive-lead', {
-      textContent: '可先用大模型按指令脱敏，满意后再保存本文档。脱敏可多次迭代。'
+      textContent: '可先用大模型按指令脱敏，满意后再保存本文档。脱敏可多次迭代。超过每段字数或调用失败才分段。'
     }));
     const archiveRedactLabel = mk('label');
     archiveRedactLabel.appendChild(panelDoc.createTextNode('传送给大模型的用户脱敏指令'));
@@ -2000,6 +2060,20 @@
     });
     archiveDocLabel.appendChild(archiveDocInput);
     archiveSaveDialog.appendChild(archiveDocLabel);
+    const archiveChunkRow = mk('label', 'archive-chunk-row');
+    const archiveCharCount = mk('span', 'archive-char-count', { textContent: '文本共 0 字，将按每段' });
+    const archiveChunkInput = mk('input', 'archive-chunk-input');
+    archiveChunkInput.type = 'number';
+    archiveChunkInput.min = '2000';
+    archiveChunkInput.max = '5000000';
+    archiveChunkInput.step = '1000';
+    archiveChunkInput.value = '1000000';
+    archiveChunkInput.title = '默认 100 万字。超过才分段，调用失败时也会自动按段落再分。';
+    const archiveCharTail = mk('span', 'archive-char-tail', { textContent: '进行分隔' });
+    archiveChunkRow.appendChild(archiveCharCount);
+    archiveChunkRow.appendChild(archiveChunkInput);
+    archiveChunkRow.appendChild(archiveCharTail);
+    archiveSaveDialog.appendChild(archiveChunkRow);
     const archiveModelRow = mk('label', 'archive-model-row');
     archiveModelRow.appendChild(panelDoc.createTextNode('文本模型'));
     const archiveModelSelect = mk('select', 'tag-select');
@@ -2102,6 +2176,7 @@
       archiveModal, archiveCancel, archiveClearKeepFiles, archiveClearAll, archiveSaveFull, archiveSaveUser,
       archiveStatus,
       archiveSaveModal, archiveRedactInput, archiveDocInput, archiveModelSelect,
+      archiveCharCount, archiveChunkInput,
       archiveSaveStatus, archiveSaveBack, archiveRedactBtn, archiveSaveDocBtn,
       connStatus, attachArea, chips, fileInput, attachBtn,
       messages, userInput, sendBtn, inputResizeHandle,
@@ -2237,8 +2312,25 @@
     return div;
   }
 
+  function renderPrintBubble(catalog) {
+    const text = String(catalog == null ? '' : catalog);
+    const wrap = mk('div', 'bubble print-catalog');
+    const head = mk('div', 'print-catalog-head');
+    head.appendChild(mk('span', 'print-catalog-title', { textContent: '页面目录' }));
+    const copyBtn = mk('button', 'print-catalog-copy', { type: 'button', textContent: '复制' });
+    copyBtn.addEventListener('click', function () {
+      copyTextToClipboard(text, copyBtn);
+    });
+    head.appendChild(copyBtn);
+    wrap.appendChild(head);
+    wrap.appendChild(mk('pre', 'print-catalog-body', { textContent: text || '(空目录)' }));
+    els.messages.appendChild(wrap);
+    return wrap;
+  }
+
   function renderRoleBubble(role, text) {
     if (role === 'user') return renderUserBubble(text);
+    if (role === 'print') return renderPrintBubble(text);
     const div = mk('div', 'bubble ' + role, { textContent: String(text) });
     els.messages.appendChild(div);
     return div;
@@ -3202,12 +3294,17 @@
     archiveBusy = !!busy;
     const btns = [
       els.archiveClearKeepFiles, els.archiveClearAll, els.archiveSaveFull, els.archiveSaveUser,
-      els.archiveRedactBtn, els.archiveSaveDocBtn
+      els.archiveSaveDocBtn, els.archiveSaveBack
     ];
     btns.forEach((b) => { if (b) b.disabled = archiveBusy; });
     if (els.archiveRedactInput) els.archiveRedactInput.disabled = archiveBusy;
     if (els.archiveDocInput) els.archiveDocInput.disabled = archiveBusy;
     if (els.archiveModelSelect) els.archiveModelSelect.disabled = archiveBusy;
+    if (els.archiveChunkInput) els.archiveChunkInput.disabled = archiveBusy;
+    if (els.archiveRedactBtn) {
+      els.archiveRedactBtn.disabled = false;
+      els.archiveRedactBtn.textContent = archiveBusy ? '停止脱敏' : '采用大模型脱敏本文档';
+    }
   }
 
   function defaultArchiveRedactHint() {
@@ -3218,7 +3315,7 @@
     return DEFAULT_ARCHIVE_REDACT_HINT;
   }
 
-  function requestArchiveRedact(markdown, hint, tag) {
+  function requestArchiveRedact(markdown, hint, tag, maxChars) {
     return new Promise((resolve, reject) => {
       if (archiveRedactWait) {
         reject(new Error('已有脱敏任务进行中'));
@@ -3231,7 +3328,8 @@
           markdown: markdown,
           hint: hint,
           provider: tag && tag.provider || '',
-          model: tag && tag.model || ''
+          model: tag && tag.model || '',
+          maxChars: maxChars
         });
       } catch (e) {
         archiveRedactWait = null;
@@ -3292,6 +3390,10 @@
     archiveSaveMeta = { userOnly: !!userOnly, filename: filename };
     if (els.archiveRedactInput) els.archiveRedactInput.value = defaultArchiveRedactHint();
     if (els.archiveDocInput) els.archiveDocInput.value = buildArchiveMarkdown(items, !!userOnly);
+    if (els.archiveChunkInput && !String(els.archiveChunkInput.value || '').trim()) {
+      els.archiveChunkInput.value = '1000000';
+    }
+    refreshArchiveDocChars();
     if (els.archiveModelSelect && currentConfig) {
       const selected = parseTagValue(els.textTagSelect && els.textTagSelect.value) || currentConfig.selectedTextTag;
       buildTagOptions(els.archiveModelSelect, currentConfig.textProviders, selected);
@@ -3301,8 +3403,45 @@
     els.archiveSaveModal.classList.remove('hidden');
   }
 
+  function archiveDocCharCount() {
+    return String(els.archiveDocInput && els.archiveDocInput.value || '').length;
+  }
+
+  function refreshArchiveDocChars() {
+    if (els.archiveCharCount) {
+      els.archiveCharCount.textContent = '文本共 ' + archiveDocCharCount() + ' 字，将按每段';
+    }
+  }
+
+  function readArchiveChunkChars() {
+    const n = Number(els.archiveChunkInput && els.archiveChunkInput.value);
+    if (!Number.isFinite(n)) return 1000000;
+    if (n < 2000) return 2000;
+    if (n > 5000000) return 5000000;
+    return Math.round(n);
+  }
+
+  function isArchiveRedactStopError(err) {
+    const s = String(err && err.message || err || '');
+    return !!(err && err.stopped) || s === '已停止脱敏' || s === '已取消脱敏';
+  }
+
+  function stopArchiveRedact() {
+    try { port.postMessage({ cmd: 'cancelArchiveRedact' }); } catch (e) {}
+    if (archiveRedactWait) {
+      const w = archiveRedactWait;
+      archiveRedactWait = null;
+      const err = new Error('已停止脱敏');
+      err.stopped = true;
+      try { w.reject(err); } catch (e2) {}
+    }
+  }
+
   async function redactArchiveDocument() {
-    if (archiveBusy) return;
+    if (archiveBusy) {
+      stopArchiveRedact();
+      return;
+    }
     const hint = String(els.archiveRedactInput && els.archiveRedactInput.value || '').trim();
     if (!hint) {
       setArchiveStatus('脱敏指令为空，未调用大模型。可直接保存本文档，或填写指令后再脱敏。', true);
@@ -3314,16 +3453,23 @@
     }
     const markdown = String(els.archiveDocInput && els.archiveDocInput.value || '');
     const tag = parseTagValue(els.archiveModelSelect && els.archiveModelSelect.value);
+    const maxChars = readArchiveChunkChars();
+    if (els.archiveChunkInput) els.archiveChunkInput.value = String(maxChars);
     setArchiveBusy(true);
-    setArchiveStatus('正在按提示词调用文本模型脱敏…');
+    setArchiveStatus('文本共 ' + markdown.length + ' 字，将按每段 ' + maxChars + ' 字分隔。正在调用文本模型脱敏…');
     try {
-      const out = await requestArchiveRedact(markdown, hint, tag);
+      const out = await requestArchiveRedact(markdown, hint, tag, maxChars);
       if (els.archiveDocInput) els.archiveDocInput.value = out;
+      refreshArchiveDocChars();
       setArchiveBusy(false);
       setArchiveStatus('脱敏完成，可继续改指令再脱敏，或保存本文档。');
     } catch (e) {
       setArchiveBusy(false);
-      setArchiveStatus('脱敏失败：' + String(e && e.message || e), true);
+      if (isArchiveRedactStopError(e)) {
+        setArchiveStatus('已停止脱敏，文档保持不变。');
+      } else {
+        setArchiveStatus('脱敏失败：' + String(e && e.message || e), true);
+      }
     }
   }
 
@@ -3349,12 +3495,7 @@
 
   function backToArchiveModal() {
     if (archiveBusy) {
-      try { port.postMessage({ cmd: 'cancelArchiveRedact' }); } catch (e) {}
-      if (archiveRedactWait) {
-        const w = archiveRedactWait;
-        archiveRedactWait = null;
-        try { w.reject(new Error('已取消脱敏')); } catch (e) {}
-      }
+      stopArchiveRedact();
       setArchiveBusy(false);
     }
     setArchiveStatus('');
@@ -3364,12 +3505,7 @@
 
   function hideArchiveModal() {
     if (archiveBusy) {
-      try { port.postMessage({ cmd: 'cancelArchiveRedact' }); } catch (e) {}
-      if (archiveRedactWait) {
-        const w = archiveRedactWait;
-        archiveRedactWait = null;
-        try { w.reject(new Error('已取消脱敏')); } catch (e) {}
-      }
+      stopArchiveRedact();
       setArchiveBusy(false);
     }
     setArchiveStatus('');
@@ -4459,14 +4595,18 @@
         case 'testResult':
           break;
         case 'archiveRedactProgress':
-          setArchiveStatus(msg.text != null ? String(msg.text) : '');
+          if (archiveRedactWait) setArchiveStatus(msg.text != null ? String(msg.text) : '');
           break;
         case 'archiveRedact':
           if (archiveRedactWait) {
             const w = archiveRedactWait;
             archiveRedactWait = null;
             if (msg.ok) w.resolve(msg.markdown);
-            else w.reject(new Error(msg.error || '脱敏失败'));
+            else {
+              const err = new Error(msg.error || '脱敏失败');
+              if (msg.error === '已取消脱敏') err.stopped = true;
+              w.reject(err);
+            }
           }
           break;
         case 'archiveSaved':
@@ -4525,6 +4665,10 @@
         case 'tool':
           if (!running) setRunning(true);
           addBubble(msg.ok ? 'status' : 'error', msg.text != null ? String(msg.text) : '');
+          break;
+        case 'print':
+          if (!running) setRunning(true);
+          addBubble('print', msg.catalog != null ? String(msg.catalog) : '');
           break;
         case 'ask': handleAsk(msg); break;
         case 'done': handleDone(msg); break;
@@ -4782,6 +4926,7 @@
     els.archiveSaveUser.addEventListener('click', () => { saveConversation(true); });
     if (els.archiveSaveBack) els.archiveSaveBack.addEventListener('click', () => backToArchiveModal());
     if (els.archiveRedactBtn) els.archiveRedactBtn.addEventListener('click', () => { redactArchiveDocument(); });
+    if (els.archiveDocInput) els.archiveDocInput.addEventListener('input', () => { refreshArchiveDocChars(); });
     if (els.archiveSaveDocBtn) els.archiveSaveDocBtn.addEventListener('click', () => { saveArchiveDocument(); });
     els.archiveModal.addEventListener('click', (e) => {
       if (e.target === els.archiveModal) hideArchiveModal();

@@ -882,7 +882,7 @@
       setStatus(msg.ok ? '已保存 ✓' : ('保存失败' + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
     } else if (type === 'configExport') {
       if (typeof msg.json === 'string') {
-        const name = msg.filename || (msg.masked === false ? 'assistant-config.SECRETS.json' : 'assistant-config.json');
+        const name = msg.filename || (msg.masked === false ? 'WebpageAgent.SECRETS.json' : 'WebpageAgent.json');
         downloadTextFile(msg.json, name, 'application/json');
       }
       if (pendingDownloads.config) {
@@ -905,7 +905,7 @@
     } else if (type === 'webSkillsExport') {
       if (msg.ok && typeof msg.json === 'string') {
         const n = msg.count != null ? msg.count : 1;
-        const name = msg.filename || (n === 1 ? 'web-skill.json' : 'web-skill-pack.json');
+        const name = msg.filename || (n === 1 ? 'WebpageAgent-web-skill.json' : 'WebpageAgent-web-skill-pack.json');
         downloadTextFile(msg.json, name, 'application/json');
         setSkillStatus('已导出 ' + n + ' 条 WEB-SKILL ✓', 'ok');
         setStatus('已导出 ' + n + ' 条 WEB-SKILL ✓', 'ok');
@@ -926,7 +926,7 @@
     } else if (type === 'diagExport') {
       if (diagExportTimer) { clearTimeout(diagExportTimer); diagExportTimer = null; }
       if (typeof msg.json === 'string') {
-        downloadTextFile(msg.json, msg.filename || 'wpa-diag.json', 'application/json');
+        downloadTextFile(msg.json, msg.filename || 'WebpageAgent-diag.json', 'application/json');
       }
       const errN = Number(msg.count) || 0;
       const trailN = Number(msg.trailCount) || 0;

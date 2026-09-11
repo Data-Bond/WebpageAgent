@@ -1068,6 +1068,9 @@
   async function officeFill(a, b) {
     var host = detectOfficeHost();
     var kind = detectOfficeKind(host);
+    if (kind !== 'sheet' && kind !== 'doc') {
+      return { ok: false, kind: 'mutation', reason: 'not-office', verified: false, ready: false };
+    }
     if (a && typeof a === 'object' && !Array.isArray(a) && b == null) {
       if (kind !== 'sheet') {
         return { ok: false, kind: 'mutation', ready: false, reason: 'not-sheet', verified: false };
