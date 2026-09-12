@@ -11,9 +11,20 @@
   var STORAGE_SCHEMA_VERSION = 1;
   var MAX_OPS_PER_BATCH = 20;
   var MAX_BATCH_JSON_CHARS = 200000;
-  var SNAPSHOT_TIME_BUDGET_MS = 2800;
-  var SNAPSHOT_L0_CAP = 300;
-  var SNAPSHOT_L0_CAP_FULL = 500;
+  var SNAPSHOT_TIME_BUDGET_MS = 8000;
+  var SNAPSHOT_L0_CAP = 600;
+  var SNAPSHOT_L0_CAP_FULL = 1000;
+  var SNAPSHOT_MAX_CHARS = 200000;
+  var SNAPSHOT_LAST_CHANCE_CHARS = 400000;
+  var SNAPSHOT_PANE_MAX = 4;
+  var SNAPSHOT_PANE_CHARS = 16000;
+  var SNAPSHOT_HIDDEN_ICON_MAX = 80;
+  var TEXT_ACTION_MAX = 200;
+  var TEXT_ACTION_MAX_LEN = 80;
+  var GET_TEXT_DEFAULT = 2000;
+  var GET_TEXT_HARD = 500000;
+  var GET_TEXT_DEDUP_MIN = 800;
+  var GET_TEXT_DEDUP_HEAD = 80;
 
   var DEFAULT_FLAGS = {
     convergeBackup: false,
@@ -53,6 +64,7 @@
     // vueMethods 读节点上的 __vue__/__vueParentComponent（页面 world 挂的 expando），隔离 world 看不到
     scriptHints: { kind: 'read', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
     hover: { kind: 'fire', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
+    dblclick: { kind: 'fire', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
     openFileMenu: { kind: 'fire', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
     contextClick: { kind: 'fire', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
     watchTraffic: { kind: 'read', runtime: 'page', worldDefault: 'main', worldEligible: ['main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 30000 },
@@ -91,6 +103,7 @@
     clickByText: 'click',
     clickOptionByText: 'click',
     hover: 'click',
+    dblclick: 'click',
     contextClick: 'click',
     openFileMenu: 'click'
   };
@@ -231,6 +244,129 @@
       }
     }
     return { ok: true };
+  }
+
+  function clampGetTextLimit(raw) {
+    var n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) n = GET_TEXT_DEFAULT;
+    return Math.max(1, Math.min(Math.round(n), GET_TEXT_HARD));
+  }
+
+  function clampGetTextOffset(raw) {
+    var n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) n = 0;
+    return Math.max(0, Math.round(n));
+  }
+
+  function sliceGetText(text, limit, offset) {
+    var t = String(text || '');
+    var textLimit = clampGetTextLimit(limit);
+    var textOffset = clampGetTextOffset(offset);
+    var sliced = t.slice(textOffset, textOffset + textLimit);
+    return {
+      text: sliced,
+      chars: t.length,
+      limit: textLimit,
+      offset: textOffset,
+      truncated: textOffset > 0 || textLimit < t.length
+    };
+  }
+
+  function hashTextBody(text) {
+    var s = String(text || '');
+    var h1 = 2166136261;
+    var h2 = 5381;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      h1 ^= c;
+      h1 = Math.imul(h1, 16777619);
+      h2 = Math.imul(h2, 33) ^ c;
+    }
+    return (h1 >>> 0).toString(16) + (h2 >>> 0).toString(16);
+  }
+
+  function makeTextDedupSeen() {
+    return { hashes: Object.create(null), bodies: [] };
+  }
+
+  function textDedupPointer(text, hash, extra) {
+    extra = extra || {};
+    var t = String(text || '');
+    var o = {
+      first: false,
+      same: hash,
+      chars: extra.chars != null ? extra.chars : t.length,
+      head: t.slice(0, GET_TEXT_DEDUP_HEAD),
+      tail: t.length > GET_TEXT_DEDUP_HEAD ? t.slice(-GET_TEXT_DEDUP_HEAD) : t
+    };
+    if (extra.name) o.name = extra.name;
+    return o;
+  }
+
+  function foldLongText(text, seen, extra) {
+    extra = extra || {};
+    var t = String(text || '');
+    if (t.length < GET_TEXT_DEDUP_MIN) return { first: true, text: t };
+    var bag = seen || makeTextDedupSeen();
+    var h = extra.same ? String(extra.same) : hashTextBody(t);
+    if (bag.hashes[h]) return textDedupPointer(t, h, extra);
+    var i;
+    for (i = 0; i < bag.bodies.length; i++) {
+      if (bag.bodies[i].text.indexOf(t) >= 0) {
+        return textDedupPointer(t, bag.bodies[i].hash, extra);
+      }
+    }
+    bag.hashes[h] = true;
+    bag.bodies.push({ hash: h, text: t });
+    return {
+      first: true,
+      text: t,
+      same: h,
+      chars: extra.chars != null ? extra.chars : t.length
+    };
+  }
+
+  function applyFoldToTextField(obj, seen) {
+    if (!obj || typeof obj.text !== 'string') return false;
+    var r = foldLongText(obj.text, seen, { chars: obj.chars, same: obj.same, name: obj.name });
+    if (r.first) return false;
+    delete obj.text;
+    obj.same = r.same;
+    if (obj.chars == null) obj.chars = r.chars;
+    obj.head = r.head;
+    obj.tail = r.tail;
+    if (r.name) obj.name = r.name;
+    return true;
+  }
+
+  function foldBatchResults(v, seen) {
+    if (!v || typeof v !== 'object') return false;
+    var changed = false;
+    var list = Array.isArray(v.results) ? v.results : [v];
+    var i;
+    for (i = 0; i < list.length; i++) {
+      var r = list[i];
+      if (!r || typeof r !== 'object') continue;
+      if (r.op === 'get' && applyFoldToTextField(r, seen)) changed = true;
+    }
+    return changed;
+  }
+
+  function foldDuplicateBodiesInText(content, seen) {
+    var s = String(content || '');
+    if (!s) return s;
+    var mark = '【执行结果】\n';
+    var ei = s.indexOf(mark);
+    if (ei < 0) return s;
+    var prefix = s.slice(0, ei + mark.length);
+    var jsonPart = s.slice(ei + mark.length);
+    try {
+      var v = JSON.parse(jsonPart);
+      if (!foldBatchResults(v, seen)) return s;
+      return prefix + JSON.stringify(v);
+    } catch (e) {
+      return s;
+    }
   }
 
   function classifyOpOutcome(op, value, report) {
@@ -572,6 +708,17 @@
     SNAPSHOT_TIME_BUDGET_MS: SNAPSHOT_TIME_BUDGET_MS,
     SNAPSHOT_L0_CAP: SNAPSHOT_L0_CAP,
     SNAPSHOT_L0_CAP_FULL: SNAPSHOT_L0_CAP_FULL,
+    SNAPSHOT_MAX_CHARS: SNAPSHOT_MAX_CHARS,
+    SNAPSHOT_LAST_CHANCE_CHARS: SNAPSHOT_LAST_CHANCE_CHARS,
+    SNAPSHOT_PANE_MAX: SNAPSHOT_PANE_MAX,
+    SNAPSHOT_PANE_CHARS: SNAPSHOT_PANE_CHARS,
+    SNAPSHOT_HIDDEN_ICON_MAX: SNAPSHOT_HIDDEN_ICON_MAX,
+    TEXT_ACTION_MAX: TEXT_ACTION_MAX,
+    TEXT_ACTION_MAX_LEN: TEXT_ACTION_MAX_LEN,
+    GET_TEXT_DEFAULT: GET_TEXT_DEFAULT,
+    GET_TEXT_HARD: GET_TEXT_HARD,
+    GET_TEXT_DEDUP_MIN: GET_TEXT_DEDUP_MIN,
+    GET_TEXT_DEDUP_HEAD: GET_TEXT_DEDUP_HEAD,
     DEFAULT_FLAGS: DEFAULT_FLAGS,
     OPS: OPS,
     PUBLIC_TOOLS: PUBLIC_TOOLS,
@@ -587,6 +734,14 @@
     resolveWorld: resolveWorld,
     validateOperations: validateOperations,
     preflightGeneration: preflightGeneration,
+    clampGetTextLimit: clampGetTextLimit,
+    clampGetTextOffset: clampGetTextOffset,
+    sliceGetText: sliceGetText,
+    hashTextBody: hashTextBody,
+    makeTextDedupSeen: makeTextDedupSeen,
+    foldLongText: foldLongText,
+    applyFoldToTextField: applyFoldToTextField,
+    foldDuplicateBodiesInText: foldDuplicateBodiesInText,
     classifyOpOutcome: classifyOpOutcome,
     shouldEngineRetry: shouldEngineRetry,
     panelStoreKeyAllowed: panelStoreKeyAllowed,

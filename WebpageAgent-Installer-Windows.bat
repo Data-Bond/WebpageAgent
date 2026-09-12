@@ -9,7 +9,7 @@ try {
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 if (-not $here) { $here = (Get-Location).Path }
 $ua = 'Mozilla/5.0 WebpageAgent-Installer'
-$api = 'https://gitcode.com/api/v5/repos/hpcscc/WebpageAgent/releases/latest'
+$api = 'https://gitcode.com/api/v5/repos/hpcscc/WebpageAgent/releases'
 $tmpPrefix = 'WebpageAgent-Installer-tmp-'
 
 function Read-LineOrTimeout {
@@ -264,39 +264,102 @@ function Find-BrowserExe {
 }
 
 Write-Host "Querying $api"
-$rel = Invoke-RestMethod -Uri $api -UserAgent $ua
-$assets = @($rel.assets)
-$zips = @($assets | Where-Object { $_.name -like '*.zip' -and $_.browser_download_url })
-$zips = @(
-  @($zips | Where-Object { $_.type -eq 'attach' }) +
-  @($zips | Where-Object { $_.type -ne 'attach' })
-)
-if ($zips.Count -eq 0) {
-  throw 'Latest release has no zip asset.'
-}
-
-$zipAsset = $zips[0]
-if ($zips.Count -gt 1) {
-  Write-Host ''
-  Write-Host ("Latest {0} has {1} zip files:" -f $rel.tag_name, $zips.Count)
-  for ($n = 0; $n -lt $zips.Count; $n++) {
-    $kind = if ($zips[$n].type) { $zips[$n].type } else { 'zip' }
-    Write-Host ("  [{0}] {1}  ({2})" -f ($n + 1), $zips[$n].name, $kind)
+function Convert-TagToSeqKey {
+  param([string]$Tag)
+  $s = [string]$Tag
+  $nums = New-Object System.Collections.Generic.List[int]
+  foreach ($p in [regex]::Matches($s, '\d+')) {
+    [void]$nums.Add([int]$p.Value)
   }
-  Write-Host ''
+  while ($nums.Count -lt 4) { [void]$nums.Add(0) }
+  return (($nums | ForEach-Object { $_.ToString('D9') }) -join '.')
+}
+function Get-ReleaseZips {
+  param($Rel)
+  $assets = @($Rel.assets)
+  $zips = @($assets | Where-Object { $_.name -like '*.zip' -and $_.browser_download_url })
+  return @(
+    @($zips | Where-Object { $_.type -eq 'attach' }) +
+    @($zips | Where-Object { $_.type -ne 'attach' })
+  )
+}
+function Read-IndexOrDefault {
+  param([int]$Max)
   Write-Host 'Enter a number. No input for 10 seconds -> [1]. Any key waits for Enter.'
   Write-Host -NoNewline 'Choice [1]: '
   $raw = Read-LineOrTimeout -Seconds 10
   if ($null -eq $raw) {
     Write-Host ' (timeout, using [1])'
-  } elseif ($raw -ne '') {
-    $picked = 0
-    if ([int]::TryParse($raw, [ref]$picked) -and $picked -ge 1 -and $picked -le $zips.Count) {
-      $zipAsset = $zips[$picked - 1]
-    } else {
-      throw ("Invalid choice: {0}" -f $raw)
+    return 1
+  }
+  if ($raw -eq '') { return 1 }
+  $picked = 0
+  if ([int]::TryParse($raw, [ref]$picked) -and $picked -ge 1 -and $picked -le $Max) {
+    return $picked
+  }
+  throw ("Invalid choice: {0}" -f $raw)
+}
+function Convert-ReleaseBatch {
+  param($Raw)
+  $batch = @($Raw)
+  if ($batch.Count -eq 1 -and $null -ne $batch[0]) {
+    $one = $batch[0]
+    if ($one -is [System.Array]) {
+      $batch = @($one)
+    } elseif ($one.PSObject -and ($one.PSObject.Properties.Name -contains 'data' -or $one.PSObject.Properties.Name -contains 'list')) {
+      $inner = $one.data
+      if (-not $inner) { $inner = $one.list }
+      if ($null -ne $inner) { $batch = @($inner) }
     }
   }
+  return @($batch | Where-Object { $_ })
+}
+$byTag = @{}
+function Add-ReleaseBatch {
+  param($Raw)
+  foreach ($r in (Convert-ReleaseBatch $Raw)) {
+    $t = [string]$r.tag_name
+    if ($t -and -not $byTag.ContainsKey($t)) { $byTag[$t] = $r }
+  }
+}
+Add-ReleaseBatch (Invoke-RestMethod -Uri ($api + '?per_page=100') -UserAgent $ua)
+for ($page = 1; $page -le 50; $page++) {
+  $batch = Convert-ReleaseBatch (Invoke-RestMethod -Uri ($api + '?page=' + $page + '&per_page=100') -UserAgent $ua)
+  if ($batch.Count -eq 0) { break }
+  Add-ReleaseBatch $batch
+  if ($batch.Count -lt 100) { break }
+}
+$rels = @($byTag.Values | Sort-Object { Convert-TagToSeqKey $_.tag_name } -Descending)
+if ($rels.Count -eq 0) {
+  throw 'Release list is empty.'
+}
+Write-Host ''
+Write-Host ("Found {0} release(s). Highest version is [1]." -f $rels.Count)
+for ($n = 0; $n -lt $rels.Count; $n++) {
+  $zipN = @(Get-ReleaseZips $rels[$n]).Count
+  $mark = if ($zipN -eq 0) { '  (no zip)' } else { '' }
+  Write-Host ("  [{0}] {1}{2}" -f ($n + 1), $rels[$n].tag_name, $mark)
+}
+Write-Host ''
+$relPick = Read-IndexOrDefault -Max $rels.Count
+$rel = $rels[$relPick - 1]
+Write-Host ("Selected release {0}" -f $rel.tag_name)
+$zips = @(Get-ReleaseZips $rel)
+if ($zips.Count -eq 0) {
+  throw ("Release {0} has no zip asset." -f $rel.tag_name)
+}
+
+$zipAsset = $zips[0]
+if ($zips.Count -gt 1) {
+  Write-Host ''
+  Write-Host ("Release {0} has {1} zip files:" -f $rel.tag_name, $zips.Count)
+  for ($n = 0; $n -lt $zips.Count; $n++) {
+    $kind = if ($zips[$n].type) { $zips[$n].type } else { 'zip' }
+    Write-Host ("  [{0}] {1}  ({2})" -f ($n + 1), $zips[$n].name, $kind)
+  }
+  Write-Host ''
+  $zipPick = Read-IndexOrDefault -Max $zips.Count
+  $zipAsset = $zips[$zipPick - 1]
 }
 
 Clear-InstallerTemps -BaseDir $here

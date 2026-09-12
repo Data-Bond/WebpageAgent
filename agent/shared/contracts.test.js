@@ -190,6 +190,10 @@ describe('WPA contracts kernel', () => {
     assert.equal(C.resolvePublicTool('setVal'), 'type');
     assert.equal(C.resolvePublicTool('selectOption'), 'select');
     assert.equal(C.resolvePublicTool('clickByText'), 'click');
+    assert.equal(C.resolvePublicTool('hover'), 'click');
+    assert.equal(C.resolvePublicTool('dblclick'), 'click');
+    assert.equal(C.resolvePublicTool('contextClick'), 'click');
+    assert.equal(C.resolvePublicTool('openFileMenu'), 'click');
     assert.equal(C.resolvePublicTool('get'), 'get');
   });
 });
@@ -199,6 +203,60 @@ describe('toolProtocol hybrid', () => {
     const tools = P.toOpenAiTools();
     assert.equal(tools.length, 16);
     assert.deepEqual(tools.map((t) => t.function.name), C.PUBLIC_TOOLS);
+  });
+
+  it('click.button 含 hover/dblclick，{text} 不丢 button；JSON hover 仍执行内部名', () => {
+    const tools = P.toOpenAiTools();
+    const click = tools.find((t) => t.function.name === 'click');
+    assert.deepEqual(click.function.parameters.properties.button.enum, ['left', 'right', 'hover', 'dblclick']);
+    assert.match(click.function.description, /button=hover 只把指针移到目标上/);
+    assert.match(click.function.description, /button=dblclick 为双击/);
+    assert.match(click.function.parameters.properties.button.description, /hover 只移指针/);
+    assert.match(click.function.parameters.properties.button.description, /dblclick 为双击/);
+    const fromHover = P.parseAssistantMessage({
+      tool_calls: [
+        { function: { name: 'click', arguments: '{"target":{"text":"AMD.txt"},"button":"hover"}' } }
+      ]
+    });
+    assert.equal(fromHover.calls[0].op, 'click');
+    assert.equal(fromHover.calls[0].args[1].button, 'hover');
+    const fromRight = P.parseAssistantMessage({
+      tool_calls: [
+        { function: { name: 'click', arguments: '{"target":"a.txt","button":"right"}' } }
+      ]
+    });
+    assert.equal(fromRight.calls[0].args[1].button, 'right');
+    const fromDbl = P.parseAssistantMessage({
+      tool_calls: [
+        { function: { name: 'click', arguments: '{"target":{"text":"a.txt"},"button":"dblclick"}' } }
+      ]
+    });
+    assert.equal(fromDbl.calls[0].op, 'click');
+    assert.equal(fromDbl.calls[0].args[1].button, 'dblclick');
+    const alias = P.parseAssistantMessage(
+      '{"action":"execute","calls":[{"tool":"hover","args":{"target":"a.txt"}}]}'
+    );
+    assert.equal(alias.calls[0].op, 'hover');
+    assert.equal(alias.calls[0].args[0], 'a.txt');
+    const aliasDbl = P.parseAssistantMessage(
+      '{"action":"execute","calls":[{"tool":"dblclick","args":{"target":"a.txt"}}]}'
+    );
+    assert.equal(aliasDbl.calls[0].op, 'dblclick');
+    assert.equal(aliasDbl.calls[0].args[0], 'a.txt');
+  });
+
+  it('get.limit 是字数、print.limit 是目录条数', () => {
+    const tools = P.toOpenAiTools();
+    const get = tools.find((t) => t.function.name === 'get');
+    const print = tools.find((t) => t.function.name === 'print');
+    assert.match(get.function.description, /正文字数/);
+    assert.match(get.function.description, /省略约 2000/);
+    assert.match(print.function.description, /目录条数/);
+    assert.equal(get.function.parameters.properties.limit.description, '正文字数上限');
+    assert.equal(get.function.parameters.properties.offset.description, '从第 N 字起，0 起算');
+    assert.match(get.function.description, /offset/);
+    assert.equal(print.function.parameters.properties.limit.description, '目录条数');
+    assert.match(get.function.parameters.properties.target.description, /不要编 CSS/);
   });
 
   it('解析 tool_calls、calls JSON 与旧 operations', () => {
@@ -262,4 +320,90 @@ describe('toolProtocol hybrid', () => {
     assert.equal(P.toolsUnsupportedError({ message: 'HTTP 400 unknown field tools' }), true);
     assert.equal(P.toolsUnsupportedError({ message: 'HTTP 500 boom' }), false);
   });
+
+  it('快照预算常量与 background/pagebridge 锁步', () => {
+    assert.equal(C.SNAPSHOT_TIME_BUDGET_MS, 8000);
+    assert.equal(C.SNAPSHOT_L0_CAP, 600);
+    assert.equal(C.SNAPSHOT_L0_CAP_FULL, 1000);
+    assert.equal(C.SNAPSHOT_MAX_CHARS, 200000);
+    assert.equal(C.SNAPSHOT_LAST_CHANCE_CHARS, 400000);
+    assert.equal(C.SNAPSHOT_PANE_MAX, 4);
+    assert.equal(C.SNAPSHOT_PANE_CHARS, 16000);
+    assert.equal(C.SNAPSHOT_HIDDEN_ICON_MAX, 80);
+    assert.equal(C.TEXT_ACTION_MAX, 200);
+    assert.equal(C.TEXT_ACTION_MAX_LEN, 80);
+    assert.equal(C.GET_TEXT_DEFAULT, 2000);
+    assert.equal(C.GET_TEXT_HARD, 500000);
+    assert.equal(C.GET_TEXT_DEDUP_MIN, 800);
+    const bg = fs.readFileSync(path.join(ROOT, 'background.js'), 'utf8');
+    const pb = fs.readFileSync(path.join(ROOT, 'pagebridge.js'), 'utf8');
+    assert.match(bg, /SNAPSHOT_MAX_CHARS = WPA_CONTRACTS\.SNAPSHOT_MAX_CHARS/);
+    assert.match(bg, /LAST_CHANCE_SNAPSHOT_MAX = WPA_CONTRACTS\.SNAPSHOT_LAST_CHANCE_CHARS/);
+    assert.match(bg, /GET_TEXT_DEFAULT \|\| 2000/);
+    assert.match(bg, /GET_TEXT_HARD \|\| 500000/);
+    assert.match(bg, /TASK_MEMORY_VALUE_MAX = WPA_CONTRACTS\.GET_TEXT_HARD/);
+    assert.match(extractFnLike(bg, 'stampSnapshot'), /snap\.idxMax/);
+    assert.doesNotMatch(extractFnLike(bg, 'stampSnapshot'), /snapshotCount/);
+    assert.match(pb, /SNAPSHOT_TIME_BUDGET_MS = 8000/);
+    assert.match(pb, /SNAPSHOT_L0_CAP = 600/);
+    assert.match(pb, /SNAPSHOT_L0_CAP_FULL = 1000/);
+    assert.match(pb, /SNAPSHOT_PANE_MAX = 4/);
+    assert.match(pb, /SNAPSHOT_PANE_CHARS = 16000/);
+    assert.match(pb, /SNAPSHOT_HIDDEN_ICON_MAX = 80/);
+    assert.match(pb, /TEXT_ACTION_MAX = 200/);
+    assert.match(pb, /TEXT_ACTION_MAX_LEN = 80/);
+    assert.match(pb, /GET_TEXT_DEFAULT = 2000/);
+    assert.match(pb, /GET_TEXT_HARD = 500000/);
+    assert.match(pb, /n = GET_TEXT_DEFAULT/);
+    assert.match(extractFnLike(pb, 'snapshot'), /idxMax: idx/);
+    assert.match(pb, /full \? SNAPSHOT_L0_CAP_FULL : SNAPSHOT_L0_CAP/);
+    assert.doesNotMatch(extractFnLike(pb, 'collectScrollableCandidates'), /queryAllDeep\(['"]\*['"]\)/);
+  });
+
+  it('get 默认仍 2000、硬顶 500k，protocol 有 offset', () => {
+    assert.equal(C.clampGetTextLimit(undefined), 2000);
+    assert.equal(C.clampGetTextLimit(0), 2000);
+    assert.equal(C.clampGetTextLimit(46000), 46000);
+    assert.equal(C.clampGetTextLimit(600000), 500000);
+    const def = C.sliceGetText('x'.repeat(5000));
+    assert.equal(def.limit, 2000);
+    assert.equal(def.text.length, 2000);
+    assert.equal(def.offset, 0);
+    assert.equal(def.truncated, true);
+    const body = 'abcdefghijklmnopqrstuvwxyz';
+    const tail = C.sliceGetText(body, 4, body.length - 4);
+    assert.equal(tail.text, 'wxyz');
+    assert.equal(tail.chars, 26);
+    assert.equal(tail.offset, 22);
+    assert.equal(tail.truncated, true);
+    const full = C.sliceGetText('ab', 2000, 0);
+    assert.equal(full.truncated, false);
+    const tools = P.toOpenAiTools();
+    const get = tools.find((t) => t.function.name === 'get');
+    assert.ok(get.function.parameters.properties.offset);
+    const parsed = P.parseAssistantMessage({
+      tool_calls: [
+        { function: { name: 'get', arguments: '{"target":31,"limit":20,"offset":45309}' } }
+      ]
+    });
+    assert.equal(parsed.calls[0].op, 'get');
+    assert.equal(parsed.calls[0].args[0], 31);
+    assert.equal(parsed.calls[0].args[1].limit, 20);
+    assert.equal(parsed.calls[0].args[1].offset, 45309);
+  });
 });
+
+function extractFnLike(src, name) {
+  const start = src.indexOf('function ' + name + '(');
+  if (start < 0) return '';
+  const brace = src.indexOf('{', start);
+  let depth = 0;
+  for (let i = brace; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') {
+      depth--;
+      if (depth === 0) return src.slice(start, i + 1);
+    }
+  }
+  return '';
+}

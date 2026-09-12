@@ -10,7 +10,7 @@ fi
 cd -- "$HERE"
 
 UA='Mozilla/5.0 WebpageAgent-Installer'
-API='https://gitcode.com/api/v5/repos/hpcscc/WebpageAgent/releases/latest'
+API='https://gitcode.com/api/v5/repos/hpcscc/WebpageAgent/releases'
 TMP_PREFIX='WebpageAgent-Installer-tmp-'
 STAGE=''
 
@@ -66,6 +66,32 @@ read_line_or_timeout() {
     return 0
   fi
   return 1
+}
+
+pick_number() {
+  local max="$1"
+  local raw=''
+  echo 'Enter a number. No input for 10 seconds -> [1]. Any key waits for Enter.' >&2
+  printf 'Choice [1]: ' >&2
+  if ! raw="$(read_line_or_timeout 10)"; then
+    echo ' (timeout, using [1])' >&2
+    echo 1
+    return 0
+  fi
+  echo >&2
+  raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
+  if [ -z "$raw" ]; then
+    echo 1
+    return 0
+  fi
+  case "$raw" in
+    *[!0-9]*) echo "Invalid choice: $raw" >&2; return 1 ;;
+  esac
+  if [ "$raw" -lt 1 ] || [ "$raw" -gt "$max" ]; then
+    echo "Invalid choice: $raw" >&2
+    return 1
+  fi
+  echo "$raw"
 }
 
 read_conflict_choice() {
@@ -185,46 +211,137 @@ open_browser() {
 }
 
 echo "Querying $API"
-REL_JSON="$(curl -fsSL -A "$UA" "$API")"
-PARSED="$(printf '%s' "$REL_JSON" | "$PY" -c '
-import json, sys
-rel = json.load(sys.stdin)
-assets = rel.get("assets") or []
-zips = [a for a in assets if str(a.get("name") or "").endswith(".zip") and a.get("browser_download_url")]
-zips = [a for a in zips if a.get("type") == "attach"] + [a for a in zips if a.get("type") != "attach"]
-if not zips:
-    sys.exit(2)
-print(rel.get("tag_name") or "")
-for a in zips:
-    kind = a.get("type") or "zip"
-    name = a.get("name") or ""
-    url = a.get("browser_download_url") or ""
-    print(kind + "\t" + name + "\t" + url)
-')"
+set +e
+PARSED="$("$PY" - "$API" "$UA" <<'PY'
+import json, re, sys, urllib.request
 
-TAG=''
-ZIP_ROWS=()
-_first=1
+api, ua = sys.argv[1], sys.argv[2]
+
+def as_list(raw):
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        inner = raw.get("data") or raw.get("list")
+        if isinstance(inner, list):
+            return inner
+        return [raw]
+    return []
+
+def fetch(url):
+    req = urllib.request.Request(url, headers={"User-Agent": ua})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+by_tag = {}
+for url in [api + "?per_page=100"] + [api + "?page=%d&per_page=100" % p for p in range(1, 51)]:
+    batch = as_list(fetch(url))
+    for rel in batch:
+        tag = str((rel or {}).get("tag_name") or "")
+        if tag and tag not in by_tag:
+            by_tag[tag] = rel
+    if "?page=" in url and len(batch) < 100:
+        break
+
+def seq(tag):
+    nums = [int(x) for x in re.findall(r"\d+", tag or "")]
+    while len(nums) < 4:
+        nums.append(0)
+    return tuple(nums)
+
+rels = list(by_tag.values())
+if not rels:
+    sys.exit(4)
+rels.sort(key=lambda r: seq((r or {}).get("tag_name") or ""), reverse=True)
+for rel in rels:
+    tag = (rel or {}).get("tag_name") or ""
+    assets = (rel or {}).get("assets") or []
+    zips = [a for a in assets if str(a.get("name") or "").endswith(".zip") and a.get("browser_download_url")]
+    zips = [a for a in zips if a.get("type") == "attach"] + [a for a in zips if a.get("type") != "attach"]
+    print("REL\t" + tag)
+    for a in zips:
+        kind = a.get("type") or "zip"
+        name = a.get("name") or ""
+        url = a.get("browser_download_url") or ""
+        print("ZIP\t" + kind + "\t" + name + "\t" + url)
+PY
+)"
+_st=$?
+set -e
+if [ "$_st" -eq 4 ]; then
+  echo 'Release list is empty.' >&2
+  exit 1
+fi
+if [ "$_st" -ne 0 ]; then
+  echo 'Failed to query or parse GitCode releases.' >&2
+  exit "$_st"
+fi
+
+REL_TAGS=()
+REL_ZIP_COUNTS=()
+ALL_ZIPS=()
 while IFS= read -r row || [ -n "$row" ]; do
-  if [ "$_first" -eq 1 ]; then
-    TAG="$row"
-    _first=0
-    continue
-  fi
   [ -n "$row" ] || continue
-  ZIP_ROWS+=("$row")
+  kind="${row%%	*}"
+  rest="${row#*	}"
+  if [ "$kind" = REL ]; then
+    REL_TAGS+=("$rest")
+    REL_ZIP_COUNTS+=(0)
+  elif [ "$kind" = ZIP ]; then
+    if [ "${#REL_TAGS[@]}" -eq 0 ]; then
+      echo 'Malformed release list.' >&2
+      exit 1
+    fi
+    idx=$((${#REL_TAGS[@]} - 1))
+    REL_ZIP_COUNTS[$idx]=$((REL_ZIP_COUNTS[idx] + 1))
+    ALL_ZIPS+=("$rest")
+  fi
 done < <(printf '%s\n' "$PARSED")
-unset _first
+
+if [ "${#REL_TAGS[@]}" -eq 0 ]; then
+  echo 'Release list is empty.' >&2
+  exit 1
+fi
+
+echo
+echo "Found ${#REL_TAGS[@]} release(s). Highest version is [1]."
+i=0
+for tag in "${REL_TAGS[@]}"; do
+  i=$((i + 1))
+  mark=''
+  if [ "${REL_ZIP_COUNTS[$((i - 1))]}" -eq 0 ]; then
+    mark='  (no zip)'
+  fi
+  echo "  [$i] ${tag}${mark}"
+done
+echo
+REL_CHOICE="$(pick_number "${#REL_TAGS[@]}")"
+REL_IDX=$((REL_CHOICE - 1))
+TAG="${REL_TAGS[$REL_IDX]}"
+echo "Selected release ${TAG}"
+
+ZIP_ROWS=()
+off=0
+i=0
+while [ "$i" -lt "$REL_IDX" ]; do
+  off=$((off + REL_ZIP_COUNTS[i]))
+  i=$((i + 1))
+done
+n="${REL_ZIP_COUNTS[$REL_IDX]}"
+i=0
+while [ "$i" -lt "$n" ]; do
+  ZIP_ROWS+=("${ALL_ZIPS[$((off + i))]}")
+  i=$((i + 1))
+done
 
 if [ "${#ZIP_ROWS[@]}" -eq 0 ]; then
-  echo 'Latest release has no zip asset.' >&2
+  echo "Release ${TAG} has no zip asset." >&2
   exit 1
 fi
 
 PICK=0
 if [ "${#ZIP_ROWS[@]}" -gt 1 ]; then
   echo
-  echo "Latest ${TAG} has ${#ZIP_ROWS[@]} zip files:"
+  echo "Release ${TAG} has ${#ZIP_ROWS[@]} zip files:"
   i=0
   for row in "${ZIP_ROWS[@]}"; do
     i=$((i + 1))
@@ -234,25 +351,7 @@ if [ "${#ZIP_ROWS[@]}" -gt 1 ]; then
     echo "  [$i] $name  ($kind)"
   done
   echo
-  echo 'Enter a number. No input for 10 seconds -> [1]. Any key waits for Enter.'
-  printf 'Choice [1]: '
-  raw=''
-  if ! raw="$(read_line_or_timeout 10)"; then
-    echo ' (timeout, using [1])'
-  else
-    echo
-    raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
-    if [ -n "$raw" ]; then
-      case "$raw" in
-        *[!0-9]*) echo "Invalid choice: $raw" >&2; exit 1 ;;
-      esac
-      if [ "$raw" -lt 1 ] || [ "$raw" -gt "${#ZIP_ROWS[@]}" ]; then
-        echo "Invalid choice: $raw" >&2
-        exit 1
-      fi
-      PICK=$((raw - 1))
-    fi
-  fi
+  PICK=$(($(pick_number "${#ZIP_ROWS[@]}") - 1))
 fi
 
 ROW="${ZIP_ROWS[$PICK]}"
