@@ -7,7 +7,7 @@
   'use strict';
 
   var TARGET = {
-    description: '本轮快照 idx、像选择器的 CSS，或纯文本/{text}（0/1/多条分别空目录、操作、目录）。不要编 CSS。',
+    description: '本轮快照 idx、像选择器的 CSS，或纯文本/{text}/name（0/1/多条分别空目录、操作、目录）。技能里的 CSS 只对照快照，不要当 handle。',
     oneOf: [
       { type: 'integer' },
       { type: 'string' },
@@ -24,7 +24,7 @@
   };
 
   var OPENAI_TOOLS = [
-    { type: 'function', function: { name: 'get', description: '读控件或子树：committed、filter、open、可见选项、错误提示。读页面地址/标题用 target 为 url 或 title。纯文本会得到目录或唯一节点。limit 为正文字数（省略约 2000），offset 从第 N 字起（0 起算）；limit+offset 是切片。truncated 则加大 limit 或改 offset。', parameters: { type: 'object', properties: { target: TARGET, limit: { type: 'integer', description: '正文字数上限' }, offset: { type: 'integer', description: '从第 N 字起，0 起算' }, open: { type: 'boolean' } }, required: ['target'] } } },
+    { type: 'function', function: { name: 'get', description: '读控件或子树：committed、filter、open、可见选项、错误提示。读页面地址/标题用 target 为 url 或 title。纯文本会得到目录或唯一节点。limit 为正文字数（省略约 10000），offset 从第 N 字起（0 起算）；limit+offset 是切片。truncated 则加大 limit 或改 offset。', parameters: { type: 'object', properties: { target: TARGET, limit: { type: 'integer', description: '正文字数上限' }, offset: { type: 'integer', description: '从第 N 字起，0 起算' }, open: { type: 'boolean' } }, required: ['target'] } } },
     { type: 'function', function: { name: 'type', description: '写入可编辑节点或过滤框。只打字，不自动点选项。', parameters: { type: 'object', properties: { target: TARGET, value: { type: 'string' } }, required: ['target', 'value'] } } },
     { type: 'function', function: { name: 'click', description: '默认左键。button=hover 只把指针移到目标上，不点击、不点菜单项。button=right 只发上下文菜单。button=dblclick 为双击。可见建议项、级联叶子、人员卡片根都可以点。', parameters: { type: 'object', properties: { target: TARGET, button: { type: 'string', enum: ['left', 'right', 'hover', 'dblclick'], description: '省略或 left 为左键；hover 只移指针、不点击；right 只发右键菜单；dblclick 为双击。' }, within: { type: 'string' } }, required: ['target'] } } },
     { type: 'function', function: { name: 'check', description: '幂等勾选或取消复选/单选。', parameters: { type: 'object', properties: { target: TARGET, value: { type: 'boolean' } }, required: ['target'] } } },
@@ -36,10 +36,11 @@
     { type: 'function', function: { name: 'ocrFill', description: '验证码：截图识别、填入、提交一步完成。', parameters: { type: 'object', properties: { image: { type: 'string' }, input: TARGET, submit: TARGET }, required: ['image', 'input'] } } },
     { type: 'function', function: { name: 'officeRead', description: '读在线表格/文档。表格用 A1 或 range。', parameters: { type: 'object', properties: { addr: { type: 'string' }, range: { type: 'string' } } } } },
     { type: 'function', function: { name: 'officeFill', description: '写在线表格格或向文档当前选区插字。表格必须带 A1。', parameters: { type: 'object', properties: { addr: { type: 'string' }, value: { type: 'string' }, cells: { type: 'object' } } } } },
-    { type: 'function', function: { name: 'print', description: '按关键词搜索控件，把本轮定位目录打进对话。idx 仅本轮有效。limit 为目录条数。不写入记忆。', parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', description: '目录条数' } }, required: ['query'] } } },
-    { type: 'function', function: { name: 'remember', description: '把一条命名事实写入记忆表，每轮快照头会带上。无 value 时取本轮前面已成功的 get/print。禁止只凭快照口头记录。', parameters: { type: 'object', properties: { name: { type: 'string' }, value: { type: 'string' } }, required: ['name'] } } },
+    { type: 'function', function: { name: 'print', description: '按关键词搜索控件，把本轮定位目录打进对话。idx 仅本轮有效。limit 为目录条数。不算字数，不写入记忆。', parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', description: '目录条数' } }, required: ['query'] } } },
+    { type: 'function', function: { name: 'memorize', description: '写入记忆表一条。无 value 时取本批已成功 get/print，否则上一拍 lastRead。{} 不是 value。快照 panes 不算。每轮快照只给记忆目录，取全文用 recall。', parameters: { type: 'object', properties: { name: { type: 'string' }, value: { type: 'string' } }, required: ['name'] } } },
+    { type: 'function', function: { name: 'recall', description: '按名取出记忆表全文或切片。limit/offset 与 get 相同。历史里已有同 same 且未 truncated 时模型可不调；引擎总会返回。', parameters: { type: 'object', properties: { name: { type: 'string' }, limit: { type: 'integer', description: '正文字数上限' }, offset: { type: 'integer', description: '从第 N 字起，0 起算' } }, required: ['name'] } } },
     { type: 'function', function: { name: 'forget', description: '删除记忆表中的一条或全部。不删聊天、不改技能变量。', parameters: { type: 'object', properties: { name: { type: 'string' }, all: { type: 'boolean' } } } } },
-    { type: 'function', function: { name: 'goto', description: '打开 http(s) 地址，或用记忆表里的 name。须由模型调用，remember 后不会自动跳转。', parameters: { type: 'object', properties: { url: { type: 'string' }, name: { type: 'string' } } } } }
+    { type: 'function', function: { name: 'goto', description: '打开 http(s) 地址，或用记忆表里的 name。须由模型调用，memorize 后不会自动跳转。', parameters: { type: 'object', properties: { url: { type: 'string' }, name: { type: 'string' } } } } }
   ];
 
   function toOpenAiTools() {
@@ -90,7 +91,8 @@
       return [obj.value];
     }
     if (name === 'print') return [obj.query != null ? obj.query : (obj.target != null ? obj.target : obj.text), { limit: obj.limit }];
-    if (name === 'remember') return [{ name: obj.name, value: obj.value }];
+    if (name === 'memorize' || name === 'remember') return [{ name: obj.name, value: obj.value }];
+    if (name === 'recall') return [{ name: obj.name, limit: obj.limit, offset: obj.offset }];
     if (name === 'forget') return [{ name: obj.name, all: obj.all }];
     if (name === 'goto') return [{ url: obj.url, name: obj.name }];
     return [target];
@@ -98,6 +100,7 @@
 
   function callFromNameArgs(name, rawArgs) {
     var op = String(name || '');
+    if (op === 'remember') op = 'memorize';
     if (C && typeof C.resolvePublicTool === 'function') {
       if (C.PUBLIC_TOOLS && C.PUBLIC_TOOLS.indexOf(op) < 0 && C.TOOL_ALIASES && C.TOOL_ALIASES[op]) {
         /* keep internal alias op for execution */

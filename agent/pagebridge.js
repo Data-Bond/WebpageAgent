@@ -4,15 +4,15 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '5.8.0';
+  var BRIDGE_VERSION = '5.9.0';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
-  var SNAPSHOT_L0_CAP = 600;
-  var SNAPSHOT_L0_CAP_FULL = 1000;
-  var SNAPSHOT_PANE_MAX = 4;
-  var SNAPSHOT_PANE_CHARS = 16000;
-  var SNAPSHOT_HIDDEN_ICON_MAX = 80;
+  var SNAPSHOT_L0_CAP = 1000;
+  var SNAPSHOT_L0_CAP_FULL = 1500;
+  var SNAPSHOT_PANE_MAX = 6;
+  var SNAPSHOT_PANE_CHARS = 100000;
+  var SNAPSHOT_HIDDEN_ICON_MAX = 160;
   var SNAPSHOT_FILE_NAME_MAX = 80;
-  var GET_TEXT_DEFAULT = 2000;
+  var GET_TEXT_DEFAULT = 10000;
   var GET_TEXT_HARD = 500000;
 
   function install() {
@@ -1212,7 +1212,7 @@
       return scored.slice(0, 20).map(function (s) { return s.entry; });
     }
 
-    var TEXT_ACTION_MAX = 200;
+    var TEXT_ACTION_MAX = 400;
     var TEXT_ACTION_DUP_MAX = 8;
     var TEXT_ACTION_MIN_LEN = 2;
     var TEXT_ACTION_MAX_LEN = 80;
@@ -1431,7 +1431,9 @@
         var tag = (el.tagName || '').toUpperCase();
         if (TEXT_SKIP_TAGS[tag]) continue;
         if (isInsideAssistant(el)) continue;
-        var text = ownText(el);
+        var text = '';
+        try { text = accessibleName(el); } catch (eAcc) { text = ''; }
+        if (!text) text = ownText(el);
         if (!text || text.length > CLICK_BY_TEXT_MAX_LEN) continue;
         var r = needle ? rankMatch(text, needle) : 0;
         if (r < 0) {
@@ -2178,6 +2180,237 @@
       return false;
     }
 
+    function axHidden(el) {
+      if (!el) return true;
+      try {
+        if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return true;
+      } catch (e0) {}
+      try { if (!isVisible(el)) return true; } catch (e1) {}
+      return false;
+    }
+
+    function quotedPseudo(el) {
+      if (!el) return '';
+      var win = el.ownerDocument && el.ownerDocument.defaultView || window;
+      if (!win || !win.getComputedStyle) return '';
+      function fromPseudo(which) {
+        var st = null;
+        try { st = win.getComputedStyle(el, which); } catch (e) { return ''; }
+        var c = st && st.content != null ? String(st.content) : '';
+        if (!c || c === 'none' || c === 'normal') return '';
+        var m = c.match(/^['"]([\s\S]{1,40})['"]$/);
+        return m ? String(m[1]).replace(/\s+/g, ' ').trim() : '';
+      }
+      var a = fromPseudo(':before');
+      if (a) return a;
+      return fromPseudo(':after');
+    }
+
+    function labelledByText(el) {
+      if (!el || !el.getAttribute) return '';
+      var ids = '';
+      try { ids = String(el.getAttribute('aria-labelledby') || ''); } catch (e0) { ids = ''; }
+      if (!ids) return '';
+      var root = el.getRootNode ? el.getRootNode() : document;
+      var parts = ids.split(/\s+/);
+      var texts = [];
+      for (var i = 0; i < parts.length; i++) {
+        if (!parts[i]) continue;
+        var by = null;
+        try { by = root.querySelector('#' + CSS.escape(parts[i])); } catch (e1) { by = null; }
+        if (!by || axHidden(by)) continue;
+        var t = '';
+        try { t = String(by.innerText || by.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e2) { t = ''; }
+        if (t) texts.push(t);
+      }
+      return texts.join(' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+    }
+
+    function nativeLabelText(el) {
+      if (!el) return '';
+      try {
+        if (el.labels && el.labels.length) {
+          var t0 = String(el.labels[0].innerText || el.labels[0].textContent || '').replace(/\s+/g, ' ').trim();
+          if (t0) return t0.slice(0, 80);
+        }
+      } catch (e0) {}
+      try {
+        var wrap = el.closest && el.closest('label');
+        if (wrap && wrap !== el) {
+          var wt = String(wrap.innerText || wrap.textContent || '').replace(/\s+/g, ' ').trim();
+          if (wt) return wt.slice(0, 80);
+        }
+      } catch (e1) {}
+      var id = el.id;
+      if (id) {
+        try {
+          var root = el.getRootNode ? el.getRootNode() : document;
+          var lbl = root.querySelector && root.querySelector('label[for="' + CSS.escape(id) + '"]');
+          if (lbl) {
+            var lt = String(lbl.innerText || lbl.textContent || '').replace(/\s+/g, ' ').trim();
+            if (lt) return lt.slice(0, 80);
+          }
+        } catch (e2) {}
+      }
+      return '';
+    }
+
+    function accessibleName(el) {
+      if (!el) return '';
+      var t = labelledByText(el);
+      if (t) return t;
+      try {
+        t = String(el.getAttribute && el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+        if (t) return t.slice(0, 80);
+      } catch (eAl) {}
+      t = nativeLabelText(el);
+      if (t) return t;
+      try {
+        t = String(el.getAttribute && el.getAttribute('alt') || '').replace(/\s+/g, ' ').trim();
+        if (t) return t.slice(0, 80);
+      } catch (eAlt) {}
+      try {
+        t = String(el.getAttribute && el.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+        if (t) return t.slice(0, 80);
+      } catch (eTi) {}
+      t = ownText(el);
+      if (t) return String(t).replace(/\s+/g, ' ').trim().slice(0, 80);
+      t = quotedPseudo(el);
+      if (t) return t.slice(0, 80);
+      try { t = rowLabelNear(el); } catch (eR) { t = ''; }
+      if (t) return String(t).replace(/\s+/g, ' ').trim().slice(0, 80);
+      return '';
+    }
+
+    function htmlAamRole(el) {
+      if (!el) return '';
+      var explicit = '';
+      try { explicit = String(el.getAttribute && el.getAttribute('role') || '').trim().toLowerCase(); } catch (e0) {}
+      var focusable = false;
+      try {
+        var ti = el.getAttribute && el.getAttribute('tabindex');
+        focusable = ti != null && ti !== '' && String(ti) !== '-1';
+      } catch (eF) {}
+      if (explicit === 'presentation' || explicit === 'none') {
+        return focusable ? explicit : '';
+      }
+      if (explicit) return explicit;
+      var tag = String(el.tagName || '').toUpperCase();
+      var type = '';
+      try { type = String(el.type || (el.getAttribute && el.getAttribute('type')) || '').toLowerCase(); } catch (eT) {}
+      if (tag === 'A' && el.href) return 'link';
+      if (tag === 'A') return 'generic';
+      if (tag === 'BUTTON') return 'button';
+      if (tag === 'SUMMARY') return 'button';
+      if (tag === 'TEXTAREA') return 'textbox';
+      if (tag === 'SELECT') return 'combobox';
+      if (tag === 'IMG') return 'img';
+      if (tag === 'NAV') return 'navigation';
+      if (tag === 'MAIN') return 'main';
+      if (tag === 'HEADER') return 'banner';
+      if (tag === 'FOOTER') return 'contentinfo';
+      if (tag === 'ASIDE') return 'complementary';
+      if (tag === 'FORM') return 'form';
+      if (tag === 'TABLE') return 'table';
+      if (tag === 'TD') return 'cell';
+      if (tag === 'TH') return 'columnheader';
+      if (tag === 'UL' || tag === 'OL' || tag === 'MENU') return 'list';
+      if (tag === 'LI') return 'listitem';
+      if (tag === 'DIALOG') return 'dialog';
+      if (tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'H4' || tag === 'H5' || tag === 'H6') return 'heading';
+      if (tag === 'INPUT') {
+        if (type === 'button' || type === 'submit' || type === 'reset' || type === 'image') return 'button';
+        if (type === 'checkbox') return 'checkbox';
+        if (type === 'radio') return 'radio';
+        if (type === 'range') return 'slider';
+        if (type === 'number') return 'spinbutton';
+        if (type === 'search') return 'searchbox';
+        if (type === 'hidden') return '';
+        return 'textbox';
+      }
+      return '';
+    }
+
+    function axStates(el) {
+      var st = {};
+      if (!el) return st;
+      function aria(name) {
+        try { return el.getAttribute && el.getAttribute(name); } catch (e) { return null; }
+      }
+      var expanded = aria('aria-expanded');
+      if (expanded === 'true' || expanded === 'false') st.expanded = expanded === 'true';
+      var selected = aria('aria-selected');
+      if (selected === 'true' || selected === 'false') st.selected = selected === 'true';
+      var pressed = aria('aria-pressed');
+      if (pressed === 'true' || pressed === 'false' || pressed === 'mixed') st.pressed = pressed;
+      var busy = aria('aria-busy');
+      if (busy === 'true') st.busy = true;
+      var current = aria('aria-current');
+      if (current && current !== 'false') st.current = current;
+      var disabled = false;
+      try { disabled = !!(el.disabled || aria('aria-disabled') === 'true'); } catch (eD) {}
+      if (disabled) st.disabled = true;
+      try { if (el.readOnly || aria('aria-readonly') === 'true') st.readonly = true; } catch (eR) {}
+      var checked = aria('aria-checked');
+      if (checked === 'true' || checked === 'false' || checked === 'mixed') st.checked = checked;
+      else {
+        try {
+          var typ = String(el.type || '').toLowerCase();
+          if (typ === 'checkbox' || typ === 'radio') st.checked = !!el.checked;
+        } catch (eC) {}
+      }
+      return st;
+    }
+
+    function ensureSnapIdx(el) {
+      if (!el) return 0;
+      var n = 0;
+      try { n = snapIdxOf(el); } catch (e0) { n = 0; }
+      if (n) return n;
+      var idx = snapIndex.length || 1;
+      if (idx < 1) idx = 1;
+      snapIndex[idx] = el;
+      try { el.setAttribute('data-wpa-i', String(idx)); } catch (eR) {}
+      return idx;
+    }
+
+    function overlayRootSelector() {
+      return 'dialog, [role="dialog"], [role="alertdialog"], ' +
+        '[class*="el-dialog"], [class*="ivu-modal"], [class*="ant-modal"], [class*="layui-layer"], ' +
+        '[class*="Dialog"], [class*="Modal"], [class*="Overlay"], [class*="Drawer"], ' +
+        '[class*="dialog"], [class*="modal"], [class*="overlay"], [class*="drawer"]';
+    }
+
+    function overlayRootEls() {
+      var roots = [];
+      try { roots = queryAllDeep(overlayRootSelector()); } catch (eR) { roots = []; }
+      var out = [];
+      var seen = typeof Set === 'function' ? new Set() : [];
+      function add(el) {
+        if (!el || isIgnored(el)) return;
+        if (seen.has) {
+          if (seen.has(el)) return;
+          seen.add(el);
+        } else {
+          if (seen.indexOf(el) >= 0) return;
+          seen.push(el);
+        }
+        out.push(el);
+      }
+      var i;
+      for (i = 0; i < roots.length; i++) {
+        var vis = false;
+        try { vis = isVisible(roots[i]); } catch (eV) {}
+        if (vis || looksLikeOverlay(roots[i])) add(roots[i]);
+      }
+      var body = document.body;
+      var kids = body && body.children ? body.children : [];
+      for (i = 0; i < kids.length; i++) {
+        if (looksLikeOverlay(kids[i])) add(kids[i]);
+      }
+      return out;
+    }
+
     // 可交互元素采集范围：标准标签 + ARIA 角色 + 非标准可点击控件（图标按钮、data-act 操作按钮等）
     // 许多前端框架用 <span>/<i>/<div> + data-* 或图标类实现按钮（如文件删除 span.file-action[data-file-act="delete"]），
     // 仅靠标准标签会漏采，导致模型在快照中根本看不到这些控件。
@@ -2917,13 +3150,14 @@
     }
 
     function pointerLookupFail(looked) {
-      return {
+      var out = {
         ok: false,
         kind: 'query',
         reason: looked && looked.kind === 'many' ? 'ambiguous' : ((looked && looked.reason) || 'not-found'),
-        catalog: (looked && looked.catalog) || [],
+        catalog: catalogOrOverlay((looked && looked.catalog) || []),
         idxRoundOnly: true
       };
+      return withResolved(out, looked);
     }
 
     function nearbyPointerCatalog(el) {
@@ -2939,32 +3173,43 @@
           seen.push(node);
         }
         if (lines.length >= 24) return;
+        try { ensureSnapIdx(node); } catch (eIdx) {}
         var vis = false;
         try { vis = isVisible(node); } catch (eV) {}
-        var text = '';
-        try { text = compactFieldText(node.innerText || node.textContent || '').slice(0, 80); } catch (eT) {}
+        var acc = '';
+        try { acc = accessibleName(node); } catch (eAcc) { acc = ''; }
+        var text = acc;
         if (!text) {
-          try { text = String(node.getAttribute && (node.getAttribute('aria-label') || node.getAttribute('title')) || '').slice(0, 80); } catch (eA) {}
+          try { text = compactFieldText(node.innerText || node.textContent || '').slice(0, 80); } catch (eT) {}
         }
         if (!text) {
           try { text = rowLabelNear(node); } catch (eR) {}
         }
         var icon = '';
         try { icon = iconClassOf(node); } catch (eI) {}
+        var role = '';
+        try { role = htmlAamRole(node); } catch (eRo) {}
         lines.push(catalogLineForEl(node, {
           tag: node.tagName || '',
           text: text,
+          accName: acc,
+          role: role,
           hidden: !vis,
-          icon: icon,
-          omitIdx: true
+          icon: icon
         }));
       }
       var card = liftToFileCard(el) || el;
       var nodes = [];
-      try {
-        nodes = (card && card.querySelectorAll) ? card.querySelectorAll(INTERACTIVE_SELECTOR) : [];
-      } catch (eN) { nodes = []; }
+      try { nodes = elementsUnder(card, INTERACTIVE_SELECTOR); } catch (eN) { nodes = []; }
       for (var i = 0; i < nodes.length && lines.length < 24; i++) add(nodes[i]);
+      var iconNodes = [];
+      try {
+        iconNodes = elementsUnder(card, 'i[class*="icon-"], i[class*="el-icon"], span[class*="el-icon"]');
+      } catch (eIc) { iconNodes = []; }
+      for (var ii = 0; ii < iconNodes.length && lines.length < 24; ii++) add(iconNodes[ii]);
+      var marked = [];
+      try { marked = (card && card.querySelectorAll) ? card.querySelectorAll('[data-wpa-i]') : []; } catch (eM2) { marked = []; }
+      for (var mi = 0; mi < marked.length && lines.length < 24; mi++) add(marked[mi]);
       var menus = [];
       try {
         menus = queryAllDeep(
@@ -3018,6 +3263,7 @@
             cn = String(node.className && node.className.baseVal != null ? node.className.baseVal : (node.className || ''));
           } catch (e2) { cn = ''; }
           if (/(?:^|[\s_-])(?:modal|popup|dialog|drawer|overlay)(?:[\s_-]|$)/i.test(cn)) return true;
+          if (/dialog|modal|overlay|drawer/i.test(cn)) return true;
           node = node.parentElement;
           hops++;
         }
@@ -3033,23 +3279,50 @@
         if (!s) return '';
         return ' ' + key + '=' + s;
       }
+      function normAxKey(s) {
+        return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      }
+      var acc = String((entry && (entry.accName || entry.axName)) || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      var label = String((entry && entry.label) || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      var title = String((entry && entry.title) || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      var value = String((entry && entry.value) || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      var text = String((entry && entry.text) || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      var nk = normAxKey(acc);
+      var lk = normAxKey(label);
+      var tk = normAxKey(title);
+      var vk = normAxKey(value);
+      var outLabel = (label && lk !== nk) ? label : '';
+      var outTitle = (title && tk !== nk && tk !== lk) ? title : '';
+      var outValue = (value && vk !== nk) ? value : '';
+      var outText = (!acc && !outValue && text) ? text : '';
+      var outIcon = (!acc && entry && entry.icon) ? entry.icon : '';
+      var st = (entry && entry.axStates) || {};
       var tag = (entry && entry.tag) || '';
       return (inOverlay ? '\t' : '') + (isNew ? '*' : '') + '[' + (entry && entry.idx) + ']<' + tag
-        + attr('label', entry && entry.label)
+        + attr('role', entry && entry.role && entry.role !== 'generic' ? entry.role : '')
+        + attr('name', acc)
+        + attr('label', outLabel)
         + attr('sec', entry && entry.sec)
-        + attr('text', entry && entry.text)
+        + attr('title', outTitle)
+        + attr('value', outValue)
+        + attr('text', outText)
         + attr('placeholder', entry && entry.placeholder)
-        + attr('value', entry && entry.value)
         + attr('box', entry && entry.box)
-        + attr('checked', entry && entry.checked === true)
+        + attr('checked', !!(entry && entry.checked === true) || st.checked === true || st.checked === 'true')
         + attr('hidden', !!(entry && entry.hidden))
         + attr('widget', entry && entry.widget)
         + attr('dataAct', entry && entry.dataAct)
-        + attr('icon', entry && entry.icon)
+        + attr('icon', outIcon)
         + attr('required', !!(entry && entry.required))
         + attr('minLength', entry && entry.minLength)
         + attr('hint', entry && entry.hint)
         + attr('handoff', entry && entry.handoff)
+        + attr('expanded', st.expanded === true)
+        + attr('selected', st.selected === true)
+        + attr('pressed', st.pressed)
+        + attr('busy', st.busy === true)
+        + attr('current', st.current)
+        + attr('disabled', st.disabled === true)
         + '>';
     }
 
@@ -3672,15 +3945,24 @@
         }
         var idx = extra.idx;
         var band = extra.band || snapBandOf(el, extra);
+        var accName = extra.accName != null ? extra.accName : '';
+        try { if (!accName) accName = accessibleName(el); } catch (eAcc) { accName = accName || ''; }
+        var aamRole = extra.role != null ? extra.role : '';
+        try { if (!aamRole) aamRole = htmlAamRole(el); } catch (eRo) { aamRole = aamRole || ''; }
+        var states = extra.axStates;
+        try { if (!states) states = axStates(el); } catch (eSt) { states = states || {}; }
+        if (!text && accName) text = accName;
         var entry = {
           idx: idx,
           tag: tag,
           type: type,
           name: extra.name != null ? extra.name : (el && el.getAttribute ? (el.getAttribute('name') || '') : ''),
+          accName: String(accName || '').slice(0, 80),
           id: extra.id != null ? extra.id : ((el && el.id) || ''),
           placeholder: extra.placeholder != null ? extra.placeholder : (el && el.getAttribute ? (el.getAttribute('placeholder') || '') : ''),
           ariaLabel: el && el.getAttribute ? (el.getAttribute('aria-label') || '') : '',
-          role: el && el.getAttribute ? (el.getAttribute('role') || '') : '',
+          role: aamRole,
+          axStates: states || {},
           label: extra.label != null ? extra.label : fieldLabelOf(el),
           value: value,
           text: text,
@@ -3786,22 +4068,6 @@
         if (hint.band) extra.band = hint.band;
         return pushSnapEntry(el, extra);
       }
-      function overlayRootEls() {
-        var roots = [];
-        try {
-          roots = queryAllDeep(
-            'dialog, [role="dialog"], [role="alertdialog"], ' +
-            '[class*="el-dialog"], [class*="ivu-modal"], [class*="ant-modal"], [class*="layui-layer"]'
-          );
-        } catch (eR) { roots = []; }
-        var out = [];
-        for (var i = 0; i < roots.length; i++) {
-          var vis = false;
-          try { vis = isVisible(roots[i]); } catch (eV) {}
-          if (vis || looksLikeOverlay(roots[i])) out.push(roots[i]);
-        }
-        return out;
-      }
       function collectOpenPanes() {
         var out = [];
         var seen = typeof Set === 'function' ? new Set() : [];
@@ -3839,12 +4105,7 @@
           if (visF) add(frames[fi], 'iframe');
         }
         var dialogs = [];
-        try {
-          dialogs = queryAllDeep(
-            'dialog, [role="dialog"], [role="alertdialog"], ' +
-            '[class*="el-dialog"], [class*="ivu-modal"], [class*="ant-modal"], [class*="layui-layer"]'
-          );
-        } catch (eD) { dialogs = []; }
+        try { dialogs = overlayRootEls(); } catch (eD) { dialogs = []; }
         for (var di = 0; di < dialogs.length && out.length < SNAPSHOT_PANE_MAX; di++) {
           if (timedOut()) break;
           var visD = false;
@@ -3896,6 +4157,23 @@
         try { ovNodes = elementsUnder(ovRoots[ox], INTERACTIVE_SELECTOR); } catch (eOn) { ovNodes = []; }
         for (var oy = 0; oy < ovNodes.length && !timedOut(); oy++) {
           considerInteractive(ovNodes[oy], { band: 'overlay' });
+        }
+        var shortAdded = 0;
+        var shortNodes = [];
+        try { shortNodes = elementsUnder(ovRoots[ox], TEXT_ACTION_SCAN_SEL); } catch (eSn) { shortNodes = []; }
+        for (var os = 0; os < shortNodes.length && shortAdded < 24 && !timedOut(); os++) {
+          var sn = shortNodes[os];
+          if (!sn || isIgnored(sn)) continue;
+          try { if (snapIdxOf(sn)) continue; } catch (eHaveS) {}
+          var visS = false;
+          try { visS = isVisible(sn); } catch (eVs) {}
+          if (!visS) continue;
+          var nm = '';
+          try { nm = accessibleName(sn); } catch (eNm) { nm = ''; }
+          nm = String(nm || '').replace(/\s+/g, ' ').trim();
+          if (!nm || nm.length < 2 || nm.length > 24) continue;
+          var sid = pushSnapEntry(sn, { band: 'overlay', accName: nm, text: nm, hidden: false });
+          if (sid) shortAdded++;
         }
       }
 
@@ -5019,34 +5297,95 @@
 
     function catalogLineForEl(el, extra) {
       extra = extra || {};
-      var idx = extra.omitIdx ? '-' : (snapIdxOf(el) || '-');
+      var idx = '-';
+      try { idx = snapIdxOf(el) || ensureSnapIdx(el) || '-'; } catch (eI) { idx = snapIdxOf(el) || '-'; }
       var label = extra.label || '';
       if (!label) {
         try { label = fieldLabelOf(el) || ''; } catch (eL) { label = ''; }
       }
-      var text = extra.text || '';
+      var acc = extra.accName || '';
+      if (!acc && el) {
+        try { acc = accessibleName(el); } catch (eAcc) { acc = ''; }
+      }
+      var text = extra.text || acc || '';
       if (!text && el) {
         try { text = compactFieldText(el.innerText || el.textContent || '').slice(0, 80); } catch (eT) { text = ''; }
+      }
+      var role = extra.role || '';
+      if (!role && el) {
+        try { role = htmlAamRole(el); } catch (eRo) { role = ''; }
+      }
+      var states = extra.axStates;
+      if (!states && el) {
+        try { states = axStates(el); } catch (eSt) { states = {}; }
+      }
+      var title = extra.title || '';
+      if (!title && el) {
+        try { title = String(el.getAttribute && el.getAttribute('title') || '').slice(0, 80); } catch (eTi) {}
       }
       var entry = {
         idx: idx || '-',
         tag: extra.tag || (el && el.tagName) || '',
         label: label,
+        accName: acc,
+        role: role,
+        axStates: states || {},
+        title: title,
         text: text,
         placeholder: extra.placeholder || (el && el.placeholder) || '',
         name: extra.name || (el && el.name) || '',
         icon: extra.icon || ''
       };
       if (!entry.icon && el) {
-        try { extra["icon"] = iconClassOf(el) || extra.icon; } catch (eIc) {}
+        try { entry.icon = iconClassOf(el) || extra.icon; } catch (eIc) {}
       }
       var vis = true;
       try { vis = !el || isVisible(el); } catch (eV) { vis = true; }
       entry.hidden = extra.hidden != null ? !!extra.hidden : !vis;
-      try { if (el) entry.sec = nearestSectionTitle(el, label); } catch (eSec) {}
+      try { if (el) entry.sec = nearestSectionTitle(el, label || acc); } catch (eSec) {}
       var inOverlay = false;
       try { inOverlay = !!(el && isOverlayEl(el)); } catch (eOv) {}
       return formatOutlineLine(entry, false, inOverlay);
+    }
+
+    function overlayShortNameCatalog(cap) {
+      cap = Math.max(1, Math.min(Number(cap) || 24, 24));
+      var lines = [];
+      var roots = [];
+      try { roots = overlayRootEls(); } catch (eR) { roots = []; }
+      var seen = typeof Set === 'function' ? new Set() : [];
+      function add(el) {
+        if (!el || isIgnored(el)) return;
+        if (seen.has) {
+          if (seen.has(el)) return;
+          seen.add(el);
+        } else {
+          if (seen.indexOf(el) >= 0) return;
+          seen.push(el);
+        }
+        if (lines.length >= cap) return;
+        var vis = false;
+        try { vis = isVisible(el); } catch (eV) {}
+        if (!vis) return;
+        var nm = '';
+        try { nm = accessibleName(el); } catch (eN) { nm = ''; }
+        nm = String(nm || '').replace(/\s+/g, ' ').trim();
+        if (!nm || nm.length < 2 || nm.length > 24) return;
+        try { ensureSnapIdx(el); } catch (eI) {}
+        lines.push(catalogLineForEl(el, { accName: nm, text: nm, hidden: false }));
+      }
+      for (var r = 0; r < roots.length && lines.length < cap; r++) {
+        var nodes = [];
+        try { nodes = elementsUnder(roots[r], TEXT_ACTION_SCAN_SEL); } catch (eN) { nodes = []; }
+        for (var i = 0; i < nodes.length && lines.length < cap; i++) add(nodes[i]);
+      }
+      return lines;
+    }
+
+    function catalogOrOverlay(catalog) {
+      var lines = Array.isArray(catalog) ? catalog : [];
+      if (lines.length) return lines;
+      try { return overlayShortNameCatalog(24); } catch (e) { return []; }
     }
 
     function elFromControlHit(hit) {
@@ -5080,10 +5419,47 @@
       return lines;
     }
 
+    function withResolved(out, looked) {
+      if (!out || typeof out !== 'object') return out;
+      if (looked && looked.resolved) out.resolved = looked.resolved;
+      if (looked && looked.idx != null) out.idx = looked.idx;
+      return out;
+    }
+
+    function describeTargetResolved(sel) {
+      var meta = pageMetaTarget(sel);
+      if (meta) return { resolved: 'meta' };
+      var idxN = isNumericIdx(sel);
+      if (idxN == null && sel && typeof sel === 'object' && !Array.isArray(sel) && sel.idx != null) {
+        idxN = isNumericIdx(sel.idx);
+      }
+      if (idxN != null) return { resolved: 'idx', idx: idxN };
+      if (sel && typeof sel === 'object' && !Array.isArray(sel)) {
+        if (typeof sel.selector === 'string' && String(sel.selector).trim() && looksLikeCssSelector(String(sel.selector).trim())) {
+          return { resolved: 'selector', selector: String(sel.selector).trim() };
+        }
+        if (typeof sel.text === 'string' && String(sel.text).trim()) return { resolved: 'name' };
+        if (typeof sel.target === 'string' || typeof sel.target === 'number') return describeTargetResolved(sel.target);
+      } else if (typeof sel === 'string') {
+        var s = sel.trim();
+        if (looksLikeCssSelector(s)) return { resolved: 'selector', selector: s };
+        return { resolved: 'name' };
+      }
+      return { resolved: 'name' };
+    }
+
+    function attachTargetResolved(looked, sel) {
+      if (!looked || typeof looked !== 'object') return looked;
+      var r = describeTargetResolved(sel);
+      if (r.resolved) looked.resolved = r.resolved;
+      if (r.idx != null) looked.idx = r.idx;
+      return looked;
+    }
+
     function lookupTarget(sel, findFn, catalogCap) {
       catalogCap = Math.max(1, Math.min(Number(catalogCap) || 20, 80));
       var meta = pageMetaTarget(sel);
-      if (meta) return { kind: 'meta', page: meta };
+      if (meta) return attachTargetResolved({ kind: 'meta', page: meta }, sel);
       var idxN = isNumericIdx(sel);
       if (idxN == null && sel && typeof sel === 'object' && !Array.isArray(sel) && sel.idx != null) {
         idxN = isNumericIdx(sel.idx);
@@ -5091,10 +5467,10 @@
       if (idxN != null) {
         var hit = null;
         try { hit = resolveTarget(idxN); } catch (eStale) {
-          return { kind: 'fail', reason: 'stale-idx', catalog: [] };
+          return attachTargetResolved({ kind: 'fail', reason: 'stale-idx', catalog: [] }, sel);
         }
-        if (!hit) return { kind: 'fail', reason: 'stale-idx', catalog: [] };
-        return { kind: 'one', el: hit, catalog: [catalogLineForEl(hit, {})] };
+        if (!hit) return attachTargetResolved({ kind: 'fail', reason: 'stale-idx', catalog: [] }, sel);
+        return attachTargetResolved({ kind: 'one', el: hit, catalog: [catalogLineForEl(hit, {})] }, sel);
       }
       var textNeedle = '';
       var cssSel = '';
@@ -5117,25 +5493,25 @@
         var found = [];
         try { found = typeof findFn === 'function' ? (findFn(textNeedle, catalogCap) || []) : []; }
         catch (eF) { found = []; }
-        if (!found.length) return { kind: 'fail', reason: 'not-found', catalog: [] };
+        if (!found.length) return attachTargetResolved({ kind: 'fail', reason: 'not-found', catalog: catalogOrOverlay([]) }, sel);
         var lines = catalogFromHits(found);
         if (found.length === 1) {
           var oneEl = elFromControlHit(found[0]);
-          if (!oneEl) return { kind: 'fail', reason: 'not-found', catalog: lines };
-          return { kind: 'one', el: oneEl, hits: found, catalog: lines };
+          if (!oneEl) return attachTargetResolved({ kind: 'fail', reason: 'not-found', catalog: catalogOrOverlay(lines) }, sel);
+          return attachTargetResolved({ kind: 'one', el: oneEl, hits: found, catalog: lines }, sel);
         }
-        return { kind: 'many', hits: found, catalog: lines };
+        return attachTargetResolved({ kind: 'many', hits: found, catalog: lines }, sel);
       }
       if (cssSel) {
         if (cssSelectorInvalid(cssSel)) {
-          return { kind: 'fail', reason: 'bad-selector', catalog: [] };
+          return attachTargetResolved({ kind: 'fail', reason: 'bad-selector', catalog: catalogOrOverlay([]) }, sel);
         }
         var cssEl = null;
         try { cssEl = queryDeep(cssSel); } catch (eQ) { cssEl = null; }
-        if (!cssEl) return { kind: 'fail', reason: 'not-found', catalog: [] };
-        return { kind: 'one', el: cssEl, catalog: [catalogLineForEl(cssEl, {})] };
+        if (!cssEl) return attachTargetResolved({ kind: 'fail', reason: 'not-found', catalog: catalogOrOverlay([]) }, sel);
+        return attachTargetResolved({ kind: 'one', el: cssEl, catalog: [catalogLineForEl(cssEl, {})] }, sel);
       }
-      return { kind: 'fail', reason: 'not-found', catalog: [] };
+      return attachTargetResolved({ kind: 'fail', reason: 'not-found', catalog: catalogOrOverlay([]) }, sel);
     }
 
     function clampGetTextLimit(raw) {
@@ -5161,7 +5537,8 @@
         chars: t.length,
         limit: textLimit,
         offset: textOffset,
-        truncated: textOffset > 0 || textLimit < t.length
+        truncated: textOffset > 0 || textLimit < t.length,
+        via: 'get'
       };
     }
 
@@ -6822,13 +7199,25 @@
             if (sel && typeof sel === 'object' && !Array.isArray(sel) && typeof sel.text === 'string' && !sel.idx && !sel.selector) {
               return await page.clickByText(sel.text, Object.assign({}, sel, clickOpts || {}));
             }
-            if (typeof sel === 'string' && clickOpts && clickOpts.within && !/[#.\[>]/.test(sel) && !/^\d+$/.test(sel.trim())) {
+            if (typeof sel === 'string' && clickOpts && clickOpts.within && !looksLikeCssSelector(sel) && isNumericIdx(sel) == null) {
               return await page.clickByText(sel, clickOpts);
             }
-            var el = page.q(sel);
+            if (typeof sel === 'string' && isNumericIdx(sel) == null && !looksLikeCssSelector(sel)) {
+              return await page.clickByText(sel, clickOpts || {});
+            }
+            if (sel && typeof sel === 'object' && !Array.isArray(sel) && !sel.idx && !sel.selector &&
+                typeof sel.target === 'string' && isNumericIdx(sel.target) == null && !looksLikeCssSelector(sel.target)) {
+              return await page.clickByText(sel.target, Object.assign({}, sel, clickOpts || {}));
+            }
+            var looked = lookupTarget(sel, function (n, c) { return page.findControls(n, c); }, 20);
+            if (!looked || looked.kind === 'fail' || looked.kind === 'many' || !looked.el) {
+              var fail = pointerLookupFail(looked || { kind: 'fail', reason: 'not-found', catalog: [] });
+              fail.catalog = catalogOrOverlay(fail.catalog);
+              return fail;
+            }
+            var el = looked.el;
             var officeHit = officeSurfaceRefuse(sel, el);
-            if (officeHit) return officeHit;
-            if (!el) throw notFoundError(sel);
+            if (officeHit) return withResolved(officeHit, looked);
             if (isPagerHost(el)) {
               throw new Error('请点分页条上的页码或下一页/上一页按钮，不要点整条分页容器');
             }
@@ -6837,18 +7226,18 @@
               dispatchClick(cascaderClickTarget(el));
               var optUs;
               try { optUs = uniqueSelector(el); } catch (eOu) { optUs = null; }
-              return {
+              return withResolved({
                 ok: true, kind: 'action', via: 'cascader-option', verified: null,
                 selector: optUs && optUs.selector ? optUs.selector : '',
                 fieldState: collectFieldState(el, { harvest: true })
-              };
+              }, looked);
             }
             var cascadeClickHost = cascaderHostOf(el);
             if (cascadeClickHost) {
               var opened = await ensureOpenDropdown(cascaderTriggerOf(cascadeClickHost, el));
               var cus;
               try { cus = uniqueSelector(el); } catch (e2) { cus = null; }
-              return {
+              return withResolved({
                 ok: true,
                 kind: 'action',
                 via: 'cascader-open',
@@ -6857,15 +7246,15 @@
                 selector: cus && cus.selector ? cus.selector : '',
                 retargeted: false,
                 fieldState: collectFieldState(el, { harvest: true })
-              };
+              }, looked);
             }
             if (isDisabledTree(el) || el.disabled || (el.getAttribute && el.getAttribute('aria-disabled') === 'true')) {
-              return {
+              return withResolved({
                 ok: false,
                 reason: 'disabled',
                 continueBatch: true,
                 hint: '目标已禁用。'
-              };
+              }, looked);
             }
             var target = retargetFileSelectClick(el);
             try { if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' }); } catch (e) {}
@@ -6873,13 +7262,13 @@
             dispatchClick(target);
             var us;
             try { us = uniqueSelector(target); } catch (e2) { us = null; }
-            return {
+            return withResolved({
               ok: true,
               kind: 'action',
               verified: null,
               selector: us && us.selector ? us.selector : '',
               retargeted: target !== el
-            };
+            }, looked);
           },
           select: async function (sel, valOrLabel, opts) {
             var el = page.q(sel); if (!el) throw notFoundError(sel);
@@ -6935,6 +7324,7 @@
             for (var i = 0; i < all.length; i++) {
               var el = all[i];
               var fields = [
+                accessibleName(el),
                 fieldLabelOf(el),
                 el.getAttribute && el.getAttribute('aria-label'),
                 el.getAttribute && el.getAttribute('placeholder'),
@@ -7017,17 +7407,24 @@
                   ok: false,
                   reason: 'disabled',
                   continueBatch: true,
-                  hint: '「' + raw + '」已禁用。'
+                  hint: '「' + raw + '」已禁用。',
+                  catalog: catalogOrOverlay([]),
+                  idxRoundOnly: true
                 };
               }
-              if (within && scope.missing) {
-                throw new Error('clickByText: within 容器未找到: ' + within +
-                  '，且页面上也未找到「' + raw + '」。可见短文本示例：' +
-                  (sample.length ? sample.join(' / ') : '(无)'));
+              var missLines = [];
+              var si;
+              for (si = 0; si < sample.length && missLines.length < 12; si++) {
+                missLines.push(String(sample[si] || '').slice(0, 80));
               }
-              throw new Error('clickByText: 未找到「' + raw + '」。' +
-                (within ? 'within 内' : '页面上') +
-                '可见短文本示例：' + (sample.length ? sample.join(' / ') : '(无)'));
+              return {
+                ok: false,
+                kind: 'query',
+                reason: 'not-found',
+                catalog: catalogOrOverlay(missLines.length ? missLines : []),
+                idxRoundOnly: true,
+                hint: (within && scope.missing ? 'within 容器未找到。' : '') + '未找到「' + raw + '」。'
+              };
             }
             if (picked.ambiguousEls) {
               var extra = (within && (scope.missing || pageFallback))
@@ -7791,7 +8188,7 @@
             if (looked.kind === 'meta') {
               var metaText = looked.page === 'title' ? (document.title || '') : (location.href || '');
               var metaSlice = sliceGetTextResult(metaText, opts);
-              return {
+              return withResolved({
                 ok: true,
                 kind: 'query',
                 tool: 'get',
@@ -7802,24 +8199,24 @@
                 limit: metaSlice.limit,
                 offset: metaSlice.offset,
                 truncated: metaSlice.truncated
-              };
+              }, looked);
             }
             if (looked.kind === 'fail' || looked.kind === 'many') {
-              return {
+              return withResolved({
                 ok: false,
                 kind: 'query',
                 tool: 'get',
                 reason: looked.kind === 'many' ? 'ambiguous' : (looked.reason || 'not-found'),
-                catalog: looked.catalog || [],
+                catalog: catalogOrOverlay(looked.catalog || []),
                 idxRoundOnly: true
-              };
+              }, looked);
             }
             var el = looked.el;
             if (!el) {
-              return {
+              return withResolved({
                 ok: false, kind: 'query', tool: 'get', reason: 'not-found',
-                catalog: [], idxRoundOnly: true
-              };
+                catalog: catalogOrOverlay([]), idxRoundOnly: true
+              }, looked);
             }
             if (opts.open) {
               try {
@@ -7838,7 +8235,7 @@
             try { label = fieldLabelOf(el) || ''; } catch (eLb) {}
             var sec = '';
             try { sec = nearestSectionTitle(el, label) || ''; } catch (eSec) {}
-            return {
+            return withResolved({
               ok: true,
               kind: 'query',
               tool: 'get',
@@ -7847,12 +8244,13 @@
               limit: sliced.limit,
               offset: sliced.offset,
               truncated: sliced.truncated,
+              via: sliced.via || 'get',
               fieldState: fs,
               options: fs.optionsTop,
               optionsCount: fs.optionsCount,
               label: label,
               sec: sec
-            };
+            }, looked);
           },
           type: async function (sel, val) {
             return await page.setVal(sel, val);
@@ -7872,7 +8270,7 @@
           print: function (query, opts) {
             opts = opts && typeof opts === 'object' ? opts : {};
             if (query == null || query === '' || (typeof query === 'string' && !query.trim())) {
-              return { ok: false, kind: 'query', reason: 'missing-query', catalog: [], text: '' };
+              return { ok: false, kind: 'query', reason: 'missing-query', catalog: catalogOrOverlay([]), text: '' };
             }
             var cap = Math.max(1, Math.min(Number(opts.limit) || 20, 80));
             var self = this;
@@ -7883,15 +8281,16 @@
               lines = ['[meta]<' + looked.page + ' text=' + String(metaText).replace(/\s+/g, ' ').trim().slice(0, 80) + '>'];
             }
             var poke = looked.kind !== 'fail';
+            var printCat = poke ? lines : catalogOrOverlay(lines);
             return {
               ok: poke,
               kind: 'query',
               tool: 'print',
               query: typeof query === 'string' ? String(query).trim() : describeTarget(query),
               reason: poke ? '' : (looked.reason || 'not-found'),
-              count: lines.length,
-              catalog: lines,
-              text: lines.length ? (lines.join('\n') + '\n（idx 仅本轮有效）') : '',
+              count: printCat.length,
+              catalog: printCat,
+              text: printCat.length ? (printCat.join('\n') + '\n（idx 仅本轮有效）') : '',
               idxRoundOnly: true,
               limit: cap
             };

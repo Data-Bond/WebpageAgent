@@ -307,9 +307,10 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
   const pbEnd = bg.indexOf('PLAYBOOK_END;', pbStart);
   ok(pbStart >= 0 && pbEnd > pbStart && (pbEnd - pbStart) < 2800, '运行时手册源码不超过约 2KB');
   const pbSrc = bg.slice(pbStart, pbEnd);
-  ok(/get\.limit 是字数/.test(pbSrc) && /print\.limit 是目录条数/.test(pbSrc), '手册：get/print 的 limit 单位');
+  ok(/get\.limit 默认 10000 字/.test(pbSrc) && /print\.limit 是目录条数/.test(pbSrc), '手册：get/print 的 limit 单位');
   ok(/无法解析时按观察改写/.test(pbSrc) && /summary 为回答/.test(pbSrc), '手册：解析失败改写、回答用 done.summary');
-  ok(/纯文本得目录或唯一节点/.test(pbSrc) && /勿编 CSS/.test(pbSrc), '手册：纯文本查找、勿编 CSS');
+  ok(/勿当 click\/get\/type 的 target/.test(pbSrc) && /提交 idx 或 name/.test(pbSrc), '手册：CSS 只对照快照，点 idx 或 name');
+  ok(/click 短文按 name 得 0\/1\/多/.test(pbSrc) && /失败回执带本轮 catalog/.test(pbSrc), '手册：click 短文 0/1/多');
   ok(/hover 只移指针不点击/.test(pbSrc) && /right 只发右键菜单/.test(pbSrc) && /dblclick 为双击/.test(pbSrc),
     '手册：click hover/right/dblclick 指针原语');
   ok(/panes 或 <PANE>/.test(pbSrc) && /用其 idx get\/scroll/.test(pbSrc),
@@ -319,6 +320,10 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
   ok(/回执 catalog 编号与上轮快照同批，跨轮作废/.test(pbSrc), '手册：回执 catalog idx 跨轮作废');
   ok(/本轮快照已有（常 hidden）用本轮 idx 点/.test(pbSrc) && /回执文案或下一轮快照/.test(pbSrc),
     '手册：hidden 用本轮 idx，否则看回执文案或新快照');
+  ok(/memorize recall forget goto/.test(pbSrc) && /每轮【记忆】只给目录/.test(pbSrc),
+    '手册：memorize/recall 与记忆目录');
+  ok(/不必再 recall/.test(pbSrc) && /\{\} 或缺 value/.test(pbSrc) && /快照 panes 不算/.test(pbSrc),
+    '手册：历史够用则不必 recall；空对象不是 value');
   ok(!/预览、ESC/.test(pbSrc) && !/button=hover 只悬停，button=right 只右键；菜单项、预览/.test(pbSrc),
     '手册不写预览/ESC 任务例子');
   ok(!/abstractContent/.test(pbSrc) && !/审批按钮/.test(pbSrc), '手册不写审核字段名');
@@ -396,6 +401,9 @@ ok((bridge.match(/await waitElementStable\(/g) || []).length >= 3,
   const textPos = clickOp.indexOf('clickByText');
   ok(hoverPos >= 0 && rightPos >= 0 && textPos > hoverPos && textPos > rightPos,
     'page.click 先分流 hover/right 再 clickByText');
+  ok(/lookupTarget/.test(clickOp) && !/throw notFoundError/.test(clickOp),
+    'page.click 未命中走 lookup catalog，不 throw 元素未找到');
+  ok(/!looksLikeCssSelector\(sel\)/.test(clickOp), 'page.click 非 CSS 短文走 clickByText');
 }
 {
   const hoverFn = (bridge.match(/function hoverElement\([\s\S]*?\n    \}/) || [''])[0];
@@ -413,8 +421,16 @@ ok(/MouseEvent\('dblclick'/.test(bridge) && /detail: 2/.test(bridge),
   '双击派发 dblclick 且 click.detail=2');
 ok(/function nearbyPointerCatalog/.test(bridge) && /function resolvePointerTarget/.test(bridge),
   '指针操作后收割附近目录，定位走 lookupTarget');
-ok(/omitIdx: true/.test(bridge) && /extra\.omitIdx \? '-'/.test(bridge),
-  '指针回执 catalog 不写快照 idx');
+ok(!/throw new Error\('clickByText: 未找到/.test(bridge),
+  'clickByText 未命中返回 catalog 不 throw');
+ok(/function accessibleName/.test(bridge) && /function htmlAamRole/.test(bridge) && /function axStates/.test(bridge),
+  '语义原语 accessibleName/htmlAamRole/axStates');
+ok(/class\*="Dialog"/.test(bridge) && /function overlayRootEls/.test(bridge) && /function overlayShortNameCatalog/.test(bridge),
+  '覆盖层根含 Dialog 类名且短 name 进目录');
+ok(/labelledByText/.test(extractFn(bridge, 'accessibleName')) && /aria-label/.test(extractFn(bridge, 'accessibleName')),
+  'AccName 含 labelledby 与 aria-label');
+ok(!/omitIdx: true/.test(bridge) && /function ensureSnapIdx/.test(bridge),
+  '指针回执 catalog 写本轮 idx');
 ok(/var OVERFLOW_ACT_SEL/.test(bridge) && /OVERFLOW_ACT_SEL,/.test(bridge),
   'INTERACTIVE 含溢出/更多选择器');
 ok(/actionableHidden = isOverflowActEl\(el\)/.test(bridge), '隐藏溢出控件仍进快照');
@@ -595,8 +611,12 @@ ok(!/\.[A-Za-z0-9]{1,8}$/.test('opt_codes'), '目录名无后缀不误判为文�
 
 ok(!/\bocrFill\s*:/.test(allowedBody), 'ocrFill 不在 pagebridge 白名单（由 background 拦截）');
 ok(!/\bneedAttach\s*:/.test(allowedBody), 'needAttach 不在 pagebridge 白名单（由 background 拦截）');
-ok(!/\bremember\s*:/.test(allowedBody) && !/\bforget\s*:/.test(allowedBody) && !/\bgoto\s*:/.test(allowedBody),
-  'remember/forget/goto 不在 pagebridge 白名单（由 background 拦截）');
+ok(!/\bremember\s*:/.test(allowedBody) && !/\bmemorize\s*:/.test(allowedBody) && !/\brecall\s*:/.test(allowedBody) &&
+  !/\bforget\s*:/.test(allowedBody) && !/\bgoto\s*:/.test(allowedBody),
+  'memorize/recall/forget/goto 不在 pagebridge 白名单（由 background 拦截）');
+ok(/function describeTargetResolved/.test(bridge) && /resolved: 'idx'/.test(extractFn(bridge, 'describeTargetResolved')),
+  '复合 target 回执标 resolved，idx 优先');
+ok(/function withResolved/.test(bridge), 'get/click 回执可附 resolved');
 ok(/function ocrFillAndSubmit/.test(bg), 'background 实现 ocrFillAndSubmit');
 ok(/opName === 'ocrFill'/.test(bg), 'runOperationsSafe 拦截 ocrFill');
 ok(!/【技能·验证码】/.test(bg) && !/不要拆成 ocr\+type\+click/.test(bg), '不再发验证码技能卡配方');
@@ -711,6 +731,14 @@ ok(!/!continueAsk && !resumeMeta && isBoundedInstruction/.test(bg), '执行路�
 ok(/LLM_TEXT_ERROR_RETRY/.test(bg), '文本模型瞬时错误会重试');
 ok(/文本模型暂时不可用，正在重试/.test(bg), '瞬时错误有重试状态文案');
 ok(/rememberResumeCheckpoint/.test(bg) && /clearResumeCheckpoint/.test(bg), '中断会记下检查点，完成时清除');
+ok(/function rememberResumeCheckpoint/.test(bg) && /function rememberLlmTrace/.test(bg),
+  '内部记账 rememberResumeCheckpoint/rememberLlmTrace 不随工具改名');
+{
+  const clearHist = bg.slice(bg.indexOf("cmd === 'clearHistory'"), bg.indexOf("cmd === 'cancel'"));
+  ok(/clearTaskMemory\(origin\)/.test(clearHist) && /clearResumeCheckpoint\(origin\)/.test(clearHist),
+    '清空对话同时清记忆表与 resume 检查点');
+  ok(/lastReads\.delete/.test(extractFn(bg, 'clearTaskMemory')), 'clearTaskMemory 清 lastRead');
+}
 ok(!/张文帅/.test(bg) && !/学科分类等级联字段必须/.test(bg), 'PLAYBOOK 不写某一站字段名');
 
 const boundStart = bg.indexOf('\nconst MUTATING_HELPER_OPS');
@@ -1498,8 +1526,9 @@ const plainClick = doneSandbox.attachTaskHintToOps(
 );
 ok(!plainClick[0].args[1], '普通 click 不注入 hint');
 
-ok(/function rememberIntoList/.test(bg) && /function valueFromPriorReads/.test(bg),
-  '记忆从本轮成功 get/print 回填');
+ok(/function memorizeIntoList/.test(bg) && /function valueFromPriorReads/.test(bg) &&
+  /function recallFromList/.test(bg) && /function coerceMemorizeValue/.test(bg),
+  '记忆从本轮成功 get/print 或 lastRead 回填，取用走 recall');
 ok(/【记忆】/.test(bg) && /formatMemoryBlock/.test(bg), '每轮快照头可注入记忆块');
 ok(/print-catalog/.test(panelSrc), '面板有 print 可复制目录');
 {
@@ -1511,43 +1540,76 @@ ok(/print-catalog/.test(panelSrc), '面板有 print 可复制目录');
       'const TASK_MEMORY_VALUE_MAX = 2000;\n' +
       'const READ_MEMORY_SOURCE_OPS = { get: 1, print: 1, getText: 1, officeRead: 1 };\n' +
       extractFn(bg, 'cloneMemoryList') + '\n' +
+      extractFn(bg, 'coerceMemorizeValue') + '\n' +
+      extractFn(bg, 'pickMemorizeSource') + '\n' +
       extractFn(bg, 'valueFromPriorReads') + '\n' +
-      extractFn(bg, 'rememberIntoList') + '\n' +
+      extractFn(bg, 'memorizeIntoList') + '\n' +
+      extractFn(bg, 'recallFromList') + '\n' +
       extractFn(bg, 'forgetFromList') + '\n' +
       extractFn(bg, 'batchAllSucceeded') + '\n' +
       extractFn(bg, 'formatMemoryBlock') + '\n' +
       'this.valueFromPriorReads = valueFromPriorReads;\n' +
-      'this.rememberIntoList = rememberIntoList;\n' +
+      'this.coerceMemorizeValue = coerceMemorizeValue;\n' +
+      'this.memorizeIntoList = memorizeIntoList;\n' +
+      'this.recallFromList = recallFromList;\n' +
       'this.forgetFromList = forgetFromList;\n' +
       'this.batchAllSucceeded = batchAllSucceeded;\n' +
       'this.formatMemoryBlock = formatMemoryBlock;',
       memBox
     );
-    const fromGet = memBox.valueFromPriorReads([
-      { op: 'get', value: { ok: true, url: 'https://gitcode.com/hpcscc/WebpageAgent', title: 'x' } }
+    const fromTitle = memBox.valueFromPriorReads([
+      { op: 'get', value: { ok: true, url: 'https://page.example/path', title: '文档标题', text: '文档标题' } }
     ]);
-    ok(fromGet === 'https://gitcode.com/hpcscc/WebpageAgent', 'valueFromPriorReads 优先取 get.url');
-    const linked = memBox.rememberIntoList([], { name: '智能体首页' }, [
-      { op: 'get', value: { ok: true, url: 'https://gitcode.com/hpcscc/WebpageAgent' } }
+    ok(fromTitle === '文档标题', 'valueFromPriorReads 优先取 get.text 而不是 url');
+    const fromUrlMeta = memBox.valueFromPriorReads([
+      { op: 'get', value: { ok: true, url: 'https://gitcode.com/hpcscc/WebpageAgent', title: 'x', text: 'https://gitcode.com/hpcscc/WebpageAgent' } }
     ]);
-    ok(linked.ok && linked.value.indexOf('gitcode.com') >= 0 && linked.list.length === 1,
-      'remember 无 value 时从本轮 get 回填');
-    const missing = memBox.rememberIntoList([], { name: '智能体首页' }, []);
-    ok(!missing.ok && missing.reason === 'missing-source', '无本轮读时 remember 不抄快照');
+    ok(fromUrlMeta.indexOf('gitcode.com') >= 0, 'get(url) 的 text 即地址，可回填');
+    const linked = memBox.memorizeIntoList([], { name: '智能体首页' }, [
+      { op: 'get', value: { ok: true, text: 'https://gitcode.com/hpcscc/WebpageAgent', url: 'https://gitcode.com/hpcscc/WebpageAgent' } }
+    ]);
+    ok(linked.ok && linked.value.indexOf('gitcode.com') >= 0 && linked.list.length === 1 && linked.via === 'prior-get',
+      'memorize 无 value 时从本轮 get 回填');
+    const emptyObj = memBox.memorizeIntoList([], { name: 'HW', value: {} }, [
+      { op: 'get', value: { ok: true, text: 'BODY_TEXT_FROM_GET', url: 'https://page.example' } }
+    ]);
+    ok(emptyObj.ok && emptyObj.value === 'BODY_TEXT_FROM_GET' && emptyObj.value.indexOf('[object Object]') < 0 &&
+      emptyObj.via === 'prior-get',
+      'memorize(name,{}) 不写成 [object Object]，回填本批 get.text');
+    const invalid = memBox.memorizeIntoList([], { name: 'HW', value: { foo: 1 } }, []);
+    ok(!invalid.ok && invalid.reason === 'invalid-value' && JSON.stringify(invalid).indexOf('[object Object]') < 0,
+      '非 {value:string} 的对象记 invalid-value，禁止 [object Object]');
+    const lastRead = memBox.memorizeIntoList([], { name: 'HW', value: {} }, [], 'previous-step-body');
+    ok(lastRead.ok && lastRead.via === 'last-read' && lastRead.value === 'previous-step-body',
+      '跨批缺 value 时用 lastRead');
+    const missing = memBox.memorizeIntoList([], { name: '智能体首页' }, []);
+    ok(!missing.ok && missing.reason === 'missing-source', '无本轮读且无 lastRead 时 memorize 不抄快照');
+    const longBody = 'Z'.repeat(900);
+    const storedLong = memBox.memorizeIntoList([], { name: '全文', value: longBody }, []);
+    ok(storedLong.ok && storedLong.chars === 900 && storedLong.via === 'explicit',
+      'memorize 显式长文记下 chars');
+    const recSlice = memBox.recallFromList(storedLong.list, { name: '全文', limit: 10, offset: 2 });
+    ok(recSlice.ok && recSlice.via === 'recall' && recSlice.chars === 900 && recSlice.limit === 10 &&
+      recSlice.offset === 2 && recSlice.truncated === true && recSlice.text === 'Z'.repeat(10),
+      'recall 按 limit/offset 切片，via=recall');
+    const catalog = memBox.formatMemoryBlock(storedLong.list);
+    ok(catalog.indexOf(longBody) < 0 && /"chars":900/.test(catalog) && /"same"/.test(catalog) &&
+      /"head"/.test(catalog) && /全文=/.test(catalog),
+      '【记忆】目录不含整份长文');
     const forgot = memBox.forgetFromList(linked.list, { name: '智能体首页' });
     ok(forgot.ok && forgot.list.length === 0, 'forget 删除同名记忆');
     ok(memBox.batchAllSucceeded(JSON.stringify({
       kind: 'batch',
       results: [
         { op: 'get', value: { ok: true, url: 'https://x' } },
-        { op: 'remember', value: { ok: true, name: '智能体首页' } }
+        { op: 'memorize', value: { ok: true, name: '智能体首页' } }
       ]
-    })), 'get+remember 全成功可 batchAllSucceeded');
+    })), 'get+memorize 全成功可 batchAllSucceeded');
     ok(!memBox.batchAllSucceeded(JSON.stringify({
       kind: 'batch',
-      results: [{ op: 'remember', value: { ok: false, reason: 'missing-source' } }]
-    })), 'remember 失败不可 batchAllSucceeded');
-    ok(/智能体首页=https:/.test(memBox.formatMemoryBlock(linked.list)), '记忆块写成 name=value');
+      results: [{ op: 'memorize', value: { ok: false, reason: 'missing-source' } }]
+    })), 'memorize 失败不可 batchAllSucceeded');
+    ok(/智能体首页=https:/.test(memBox.formatMemoryBlock(linked.list)), '短记忆块写成 name=value');
   } catch (e) {
     ok(false, '记忆辅助函数测试失败: ' + (e && e.message));
   }
@@ -1711,7 +1773,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.7.0', '锁步版本为 5.7.0');
+ok(manifestVer === '5.9.0', '锁步版本为 5.9.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -1772,8 +1834,8 @@ ok(/pdf:' \+ pdfPageSpecKey\(cfg\)/.test(bg), '附件缓存 key 含 PDF 页范�
 ok(/按配置仅解析第 /.test(bg), '选页模式覆盖说明按配置页码');
 ok(/pdfParseMode/.test(bg) && /pdfParsePages/.test(bg) && /pdfTextMaxChars/.test(bg),
   '配置含 pdfParseMode/pdfParsePages/pdfTextMaxChars');
-ok(/ocrCacheMaxChars: 500000/.test(bg) && /attachContextMaxChars: 150000/.test(bg),
-  'OCR 缓存默认 50 万字、多附件正文合计默认 15 万字');
+ok(/ocrCacheMaxChars: 500000/.test(bg) && /attachContextMaxChars: WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS/.test(bg),
+  'OCR 缓存默认 50 万字、多附件正文合计锁步契约');
 ok(/id="ocrCacheMaxChars"/.test(settingsHtml) && /每个站点 OCR 缓存总字数/.test(settingsHtml),
   '全局配置可改每个站点 OCR 缓存总字数');
 ok(/条数最多 50 条/.test(settingsHtml) && /OCR_CACHE_MAX_ENTRIES = 50/.test(bg),
@@ -1815,7 +1877,7 @@ ok(/'pdfParseMode' in obj/.test(bg) && /'pdfParsePages' in obj/.test(bg) && /imp
 
 const WPA_PDF_PAGES = require(path.join(ROOT, 'shared/pdfPages.js'));
 
-const importBox = { WPA_PDF_PAGES: WPA_PDF_PAGES };
+const importBox = { WPA_PDF_PAGES: WPA_PDF_PAGES, WPA_CONTRACTS: C };
 try {
   vm.runInNewContext(
     extractFn(bg, 'clampInt') + '\n' +
@@ -2281,6 +2343,19 @@ if (outlineBox.formatOutlineLine) {
   ok(/sec=发行版信息/.test(secLine) && /label=名称/.test(secLine), '同名控件 outline 带 sec=');
   const noSec = outlineBox.formatOutlineLine({ idx: 1, tag: 'INPUT', label: '唯一' }, false, false);
   ok(noSec.indexOf('sec=') < 0, '唯一标签不输出空 sec');
+  const axLine = outlineBox.formatOutlineLine({
+    idx: 12, tag: 'DIV', role: 'button', accName: 'ESC', hidden: true
+  }, false, false);
+  ok(axLine === '[12]<DIV role=button name=ESC hidden>', 'outline 输出 role+name，同串不堆 title');
+  const titleDiff = outlineBox.formatOutlineLine({
+    idx: 9, tag: 'I', role: 'button', accName: '×', title: '关闭'
+  }, false, false);
+  ok(/name=×/.test(titleDiff) && /title=关闭/.test(titleDiff), '异串 title 保留');
+  const sameName = outlineBox.formatOutlineLine({
+    idx: 2, tag: 'BUTTON', accName: '确定', label: '确定', text: '确定'
+  }, false, false);
+  ok(/name=确定/.test(sameName) && !/label=/.test(sameName) && !/text=/.test(sameName),
+    '同串只留 name');
 }
 
 const resolveBox = {};
@@ -3172,6 +3247,36 @@ if (runCompactBox.compactRunResult) {
   ok(hoverEmpty.results[0].via === 'hover' && Array.isArray(hoverEmpty.results[0].catalog) &&
     hoverEmpty.results[0].catalog.length === 0,
     'hover 空 catalog 经 compact 仍保留，不省略');
+  const memCompact = JSON.parse(runCompactBox.compactRunResult(JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'memorize',
+      value: { ok: true, name: 'HW', value: 'Q'.repeat(200), chars: 200, via: 'last-read', truncated: false }
+    }]
+  })));
+  const memC = memCompact.results[0];
+  ok(memC.ok && memC.name === 'HW' && memC.chars === 200 && memC.via === 'last-read' &&
+    memC.value == null && memC.head && memC.tail && memC.same && JSON.stringify(memC).indexOf('[object Object]') < 0,
+    'compact memorize 带 chars/via，长文只留 head/tail+same');
+  const recCompact = JSON.parse(runCompactBox.compactRunResult(JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'recall',
+      value: { ok: true, name: 'HW', text: 'ABCDEFGHIJ', chars: 20, limit: 10, offset: 0, truncated: true, via: 'recall' }
+    }]
+  })));
+  const recC = recCompact.results[0];
+  ok(recC.ok && recC.name === 'HW' && recC.chars === 20 && recC.limit === 10 && recC.via === 'recall' && recC.truncated === true,
+    'compact recall 带切片字段');
+  const resolvedCompact = JSON.parse(runCompactBox.compactRunResult(JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'click',
+      value: { ok: true, resolved: 'idx', idx: 39, selector: '#x' }
+    }]
+  })));
+  ok(resolvedCompact.results[0].resolved === 'idx' && resolvedCompact.results[0].idx === 39,
+    'compact 保留 get/click 的 resolved');
   const errLine = runCompactBox.compactRunResult(
     'ERROR: Error: 元素未找到: text=资源类型\n    at notFoundError (pagebridge.js:1)\n    at Object.get (pagebridge.js:2)'
   );
@@ -3217,11 +3322,9 @@ if (runCompactBox.compactRunResult) {
         '\nthis.formatMemoryBlock = formatMemoryBlock;',
       memBoxDedup
     );
-    const seenMem = C.makeTextDedupSeen();
-    C.foldLongText(body900, seenMem);
-    const memOut = memBoxDedup.formatMemoryBlock([{ name: '全文', value: body900 }], seenMem);
-    ok(memOut.indexOf(body900) < 0 && /"same"/.test(memOut) && /全文=/.test(memOut),
-      '记忆块对同哈希第二次只留指针');
+    const memOut = memBoxDedup.formatMemoryBlock([{ name: '全文', value: body900 }]);
+    ok(memOut.indexOf(body900) < 0 && /"same"/.test(memOut) && /"chars":900/.test(memOut) && /全文=/.test(memOut),
+      '【记忆】目录首次也不倒整份长文');
   } catch (e) {
     ok(false, '记忆去重测试失败: ' + (e && e.message));
   }

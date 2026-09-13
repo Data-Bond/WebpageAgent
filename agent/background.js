@@ -16,7 +16,7 @@ const DEFAULT_ARCHIVE_REDACT_HINT =
 
 const SNAPSHOT_MAX_CHARS = WPA_CONTRACTS.SNAPSHOT_MAX_CHARS;
 const LAST_CHANCE_SNAPSHOT_MAX = WPA_CONTRACTS.SNAPSHOT_LAST_CHANCE_CHARS;
-const ATTACHMENT_CONTEXT_MAX_CHARS = 150000;
+const ATTACHMENT_CONTEXT_MAX_CHARS = WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS;
 const LLM_TEXT_TIMEOUT_BASE_MS = 120000;
 const LLM_TEXT_TIMEOUT_MAX_MS = 300000;
 const LLM_TEXT_TIMEOUT_RETRY = 2;
@@ -43,7 +43,7 @@ const DEFAULT_CONFIG = {
   pdfParsePages: '1,2,3,-2,-1',
   pdfTextMaxChars: 150000,
   ocrCacheMaxChars: 500000,
-  attachContextMaxChars: 150000,
+  attachContextMaxChars: WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS,
   uiOpacity: 80,
   panelScaleX: 50,
   panelScaleY: 90,
@@ -171,7 +171,7 @@ function applyAttachBudgetKnobs(cfg) {
   const src = cfg || {};
   return {
     ocrCacheMaxChars: clampInt(src.ocrCacheMaxChars, 50000, 2000000, DEFAULT_CONFIG.ocrCacheMaxChars),
-    attachContextMaxChars: clampInt(src.attachContextMaxChars, 10000, 500000, DEFAULT_CONFIG.attachContextMaxChars)
+    attachContextMaxChars: clampInt(src.attachContextMaxChars, 10000, WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS_CAP, DEFAULT_CONFIG.attachContextMaxChars)
   };
 }
 
@@ -244,15 +244,16 @@ const PLAYBOOK_END = '【运行时手册·结束】';
 const RUNTIME_PLAYBOOK =
   PLAYBOOK_BEGIN + '\n' +
   '通过工具操作当前页。禁止编造 CSS，禁止输出可执行 JS，禁止 plan/script。\n' +
-  '工具：get type click check select scroll wait upload ocr ocrFill officeRead officeFill print remember forget goto。\n' +
+  '工具：get type click check select scroll wait upload ocr ocrFill officeRead officeFill print memorize recall forget goto。\n' +
   'JSON 回退：{"action":"execute","calls":[{"tool":"type","args":{"target":5,"value":"张三"}}]}；ask；done。\n' +
-  '定位优先本轮 idx，idx 每轮重排；回执 catalog 编号与上轮快照同批，跨轮作废。纯文本得目录或唯一节点，勿编 CSS。\n' +
+  '定位优先本轮 idx，idx 每轮重排；回执 catalog 编号与上轮快照同批，跨轮作废。用户/技能中的 CSS 只对照本轮快照，勿当 click/get/type 的 target；提交 idx 或 name。\n' +
+  'outline 的 role/name 为无障碍名；同串不重复堆字段。click 短文按 name 得 0/1/多，失败回执带本轮 catalog。\n' +
   '无因果依赖，或页面已清楚、因果序列极大概率能顺完：可一轮多个工具；否则一次一个，后一步看前一步回执。\n' +
-  '改写选后同轮可再 get/print；跨轮要用的 remember（无 value 须紧跟本轮已成功的 get/print）。读 URL 用 get(target=url) 再 remember。打开记住的页用 goto。\n' +
-  'print 只把目录打进对话。forget 删记忆。type 只打字，不自动点选项。check 只用于真正复选/单选。\n' +
+  '页面正文用 get。跨步保留用 memorize；{} 或缺 value 从本批成功 get/print 或上一拍 lastRead 回填，快照 panes 不算。每轮【记忆】只给目录（name/chars/same/短头），不倒全文。取槽里全文或续读用 recall；若本段历史【执行结果】或先前 get 已有同 same、未 truncated、字段已够当前判断，不必再 recall。看回执 chars。forget 删槽。goto 打开记住的页。读 URL 用 get(target=url) 再 memorize。\n' +
+  'print 搜控件打目录进对话，不算字数。type 只打字，不自动点选项。check 只用于真正复选/单选。\n' +
   'click 的 button：省略或 left 为左键；hover 只移指针不点击；right 只发右键菜单；dblclick 为双击。移上去才出现的控件：本轮快照已有（常 hidden）用本轮 idx 点；没有则 hover 后按回执文案或下一轮快照点。菜单项仍要再 click。覆盖层/iframe 正文在快照 panes 或 <PANE>，用其 idx get/scroll。\n' +
   '快照优先当前覆盖层、文件名、隐藏操作与大块正文；truncated 则 get/print/scroll。\n' +
-  '多轮完不成：换 print/get/scroll。get.limit 是字数，offset 从第 N 字起；truncated 则加大再 get。print.limit 是目录条数。\n' +
+  '多轮完不成：换 print/get/scroll。get.limit 默认 10000 字，offset 从第 N 字起；truncated 则加大 limit 或设 offset 再 get，见截断尾注，勿换 CSS 重点。print.limit 是目录条数。\n' +
   '上一轮无法解析时按观察改写；回答用户用 done（summary 为回答）或 ask。\n' +
   '缺用户才有的信息才 ask。上传用 upload(控件, 附件key)，禁止 click 上传按钮弹系统框。\n' +
   '技能变量 {{name}} 须原样输出，由引擎替换本地值。\n' +
@@ -957,7 +958,7 @@ function configPayload(cfg) {
     pdfParsePages: String(cfg.pdfParsePages == null ? DEFAULT_CONFIG.pdfParsePages : cfg.pdfParsePages),
     pdfTextMaxChars: clampPdfTextMaxChars(cfg.pdfTextMaxChars),
     ocrCacheMaxChars: clampInt(cfg.ocrCacheMaxChars, 50000, 2000000, DEFAULT_CONFIG.ocrCacheMaxChars),
-    attachContextMaxChars: clampInt(cfg.attachContextMaxChars, 10000, 500000, DEFAULT_CONFIG.attachContextMaxChars),
+    attachContextMaxChars: clampInt(cfg.attachContextMaxChars, 10000, WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS_CAP, DEFAULT_CONFIG.attachContextMaxChars),
     uiOpacity: cfg.uiOpacity,
     panelScaleX: cfg.panelScaleX,
     panelScaleY: cfg.panelScaleY,
@@ -1183,7 +1184,7 @@ function validateImportConfig(obj, current) {
   importClamped('diagCapKb', 10, 200, DEFAULT_CONFIG.diagCapKb);
   importClamped('pdfTextMaxChars', 10000, 500000, DEFAULT_CONFIG.pdfTextMaxChars);
   importClamped('ocrCacheMaxChars', 50000, 2000000, DEFAULT_CONFIG.ocrCacheMaxChars);
-  importClamped('attachContextMaxChars', 10000, 500000, DEFAULT_CONFIG.attachContextMaxChars);
+  importClamped('attachContextMaxChars', 10000, WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS_CAP, DEFAULT_CONFIG.attachContextMaxChars);
   if ('busyMaskEnabled' in obj) {
     merged.busyMaskEnabled = obj.busyMaskEnabled === true;
   }
@@ -3576,7 +3577,7 @@ async function inject(tabId) {
 
 const AGENT_ACTIONS = { execute: 1, ask: 1, done: 1, plan: 1 };
 const JSON_NUDGE_MAX = 2;
-const JSON_ONLY_HINT = '\n【输出】tools 或 JSON：{"action":"execute","calls":[{"tool":"get","args":{"target":"url"}}]} / print / remember / forget / goto / ask / done。若在回答用户，用 action:done 且 summary 为回答。';
+const JSON_ONLY_HINT = '\n【输出】tools 或 JSON：{"action":"execute","calls":[{"tool":"get","args":{"target":"url"}}]} / print / memorize / recall / forget / goto / ask / done。若在回答用户，用 action:done 且 summary 为回答。';
 const sessionToolsOff = new Set();
 function toolsEndpointKey(baseURL, model) {
   return String(baseURL || '').replace(/\/+$/, '') + '|' + String(model || '');
@@ -3588,7 +3589,7 @@ const HELPER_OPS = {
   waitFor: 1, probe: 1, scroll: 1, ocr: 1, ocrFill: 1, needAttach: 1,
   urlHints: 1, scriptHints: 1, hover: 1, dblclick: 1, openFileMenu: 1, contextClick: 1, watchTraffic: 1,
   officeRead: 1, officeFill: 1,
-  get: 1, type: 1, check: 1, wait: 1, print: 1, remember: 1, forget: 1, goto: 1
+  get: 1, type: 1, check: 1, wait: 1, print: 1, memorize: 1, recall: 1, forget: 1, goto: 1
 };
 
 function isAgentAction(obj) {
@@ -3599,7 +3600,8 @@ function isAgentAction(obj) {
 function operationsFromLoose(obj) {
   if (!obj || typeof obj !== 'object') return null;
   if (Array.isArray(obj.operations) && obj.operations.length) return obj.operations;
-  const name = String(obj.action || obj.op || '');
+  const nameRaw = String(obj.action || obj.op || '');
+  const name = nameRaw === 'remember' ? 'memorize' : nameRaw;
   if (!HELPER_OPS[name]) return null;
   if (Array.isArray(obj.args)) return [{ op: name, args: obj.args }];
   // 单参数 helper 常被写成标量：{"action":"click","args":12}
@@ -4592,7 +4594,7 @@ const MUTATING_HELPER_OPS = {
   hover: 1, dblclick: 1, openFileMenu: 1, contextClick: 1, officeFill: 1,
   type: 1, check: 1, goto: 1
 };
-const HELPER_LINE_RE = /^(clickByText|click|setVal|setChecked|select|upload|ocrFill|selectOption|clickOptionByText|filterSelect|inspect|getText|listOptions|findControls|findOption|optionTexts|waitFor|probe|sleep|ocr|urlHints|scriptHints|hover|dblclick|openFileMenu|contextClick|watchTraffic|officeRead|officeFill|get|type|check|wait|print|remember|forget|goto)\b/i;
+const HELPER_LINE_RE = /^(clickByText|click|setVal|setChecked|select|upload|ocrFill|selectOption|clickOptionByText|filterSelect|inspect|getText|listOptions|findControls|findOption|optionTexts|waitFor|probe|sleep|ocr|urlHints|scriptHints|hover|dblclick|openFileMenu|contextClick|watchTraffic|officeRead|officeFill|get|type|check|wait|print|memorize|recall|remember|forget|goto)\b/i;
 const HELPER_ARG_LINE_RE = /^(within|selector|css|选择器|容器)\s*[：:]/i;
 const MORE_STEPS_RE = /然后|接着|并且|同时|直到|之后|下一步|完成后|再点|再选|再填|再点击|并勾选|并上传|并发布|并填写/;
 
@@ -4856,6 +4858,7 @@ const TASK_MEMORY_MAX = 32;
 const TASK_MEMORY_NAME_MAX = 40;
 const TASK_MEMORY_VALUE_MAX = WPA_CONTRACTS.GET_TEXT_HARD;
 const taskMemories = new Map();
+const lastReads = new Map();
 const READ_MEMORY_SOURCE_OPS = { get: 1, print: 1, getText: 1, officeRead: 1 };
 
 function memorySessionKey(origin) {
@@ -4867,36 +4870,93 @@ function cloneMemoryList(list) {
   const out = [];
   for (let i = 0; i < src.length; i++) {
     if (!src[i] || src[i].name == null) continue;
-    out.push({ name: String(src[i].name), value: String(src[i].value == null ? '' : src[i].value) });
+    const raw = src[i].value;
+    out.push({ name: String(src[i].name), value: typeof raw === 'string' ? raw : (raw == null ? '' : String(raw)) });
   }
   return out;
 }
 
-function valueFromPriorReads(results) {
-  if (!Array.isArray(results)) return '';
+function coerceMemorizeValue(raw) {
+  if (raw == null) return { missing: true };
+  if (typeof raw === 'string') {
+    if (!String(raw).trim()) return { missing: true };
+    return { text: String(raw) };
+  }
+  if (typeof raw === 'number' || typeof raw === 'boolean') return { text: String(raw) };
+  if (Array.isArray(raw)) {
+    if (!raw.length) return { missing: true };
+    return { error: 'invalid-value' };
+  }
+  if (typeof raw === 'object') {
+    const keys = Object.keys(raw);
+    if (!keys.length) return { missing: true };
+    if (Object.prototype.hasOwnProperty.call(raw, 'value')) return coerceMemorizeValue(raw.value);
+    return { error: 'invalid-value' };
+  }
+  return { missing: true };
+}
+
+function pickMemorizeSource(results) {
+  if (!Array.isArray(results)) return null;
   for (let i = results.length - 1; i >= 0; i--) {
     const r = results[i] || {};
     const op = String(r.op || '');
     if (!READ_MEMORY_SOURCE_OPS[op]) continue;
     const val = r.value;
     if (!val || typeof val !== 'object' || val.ok === false) continue;
-    if (val.url) return String(val.url);
-    if (val.text && String(val.text).trim()) return String(val.text);
-    if (val.actual != null && String(val.actual).trim()) return String(val.actual);
-    if (Array.isArray(val.catalog) && val.catalog.length) return val.catalog.join('\n');
+    let text = '';
+    if (val.text != null && String(val.text).trim()) text = String(val.text);
+    else if (val.actual != null && String(val.actual).trim()) text = String(val.actual);
+    else if (Array.isArray(val.catalog) && val.catalog.length) text = val.catalog.join('\n');
+    else if (val.url) text = String(val.url);
+    if (!String(text).trim()) continue;
+    return { text: text, via: op === 'print' ? 'prior-print' : 'prior-get' };
   }
-  return '';
+  return null;
 }
 
-function rememberIntoList(list, spec, priorResults) {
+function valueFromPriorReads(results) {
+  const picked = pickMemorizeSource(results);
+  return picked ? picked.text : '';
+}
+
+function noteLastReadFromResults(origin, results) {
+  if (!origin) return;
+  const picked = pickMemorizeSource(results);
+  if (picked && picked.text) lastReads.set(String(origin), picked.text);
+}
+
+function noteLastReadFromResp(origin, resp) {
+  if (!origin || !resp || resp.result == null) return;
+  try {
+    const v = JSON.parse(String(resp.result));
+    noteLastReadFromResults(origin, v && v.results);
+  } catch (e) {}
+}
+
+function memorizeIntoList(list, spec, priorResults, lastReadText) {
   const out = cloneMemoryList(list);
   const name = String(spec && spec.name || '').trim().slice(0, TASK_MEMORY_NAME_MAX);
   if (!name) return { ok: false, kind: 'query', reason: 'missing-name', list: out };
-  let value = spec && spec.value != null ? String(spec.value) : '';
-  if (!String(value).trim()) {
-    value = valueFromPriorReads(priorResults);
-    if (!String(value).trim()) return { ok: false, kind: 'query', reason: 'missing-source', name: name, list: out };
+  const coerced = coerceMemorizeValue(spec && spec.value);
+  if (coerced.error) {
+    return { ok: false, kind: 'query', reason: coerced.error, name: name, list: out };
   }
+  let value = coerced.missing ? '' : String(coerced.text || '');
+  let via = 'explicit';
+  if (!String(value).trim()) {
+    const picked = pickMemorizeSource(priorResults);
+    if (picked && String(picked.text).trim()) {
+      value = picked.text;
+      via = picked.via;
+    } else if (lastReadText != null && String(lastReadText).trim()) {
+      value = String(lastReadText);
+      via = 'last-read';
+    } else {
+      return { ok: false, kind: 'query', reason: 'missing-source', name: name, list: out };
+    }
+  }
+  const rawLen = String(value).length;
   value = String(value).slice(0, TASK_MEMORY_VALUE_MAX);
   let hit = -1;
   for (let i = 0; i < out.length; i++) {
@@ -4905,7 +4965,50 @@ function rememberIntoList(list, spec, priorResults) {
   if (hit >= 0) out[hit] = { name: name, value: value };
   else out.push({ name: name, value: value });
   if (out.length > TASK_MEMORY_MAX) out.splice(0, out.length - TASK_MEMORY_MAX);
-  return { ok: true, kind: 'query', name: name, value: value, list: out };
+  const same = (typeof WPA_CONTRACTS !== 'undefined' && WPA_CONTRACTS && typeof WPA_CONTRACTS.hashTextBody === 'function')
+    ? WPA_CONTRACTS.hashTextBody(value) : '';
+  return {
+    ok: true,
+    kind: 'query',
+    name: name,
+    value: value,
+    list: out,
+    chars: value.length,
+    via: via,
+    truncated: rawLen > TASK_MEMORY_VALUE_MAX,
+    same: same
+  };
+}
+
+function recallFromList(list, spec) {
+  const name = String(spec && spec.name || '').trim();
+  if (!name) return { ok: false, kind: 'query', reason: 'missing-name' };
+  const rows = cloneMemoryList(list);
+  let hit = null;
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].name === name) { hit = rows[i]; break; }
+  }
+  if (!hit) return { ok: false, kind: 'query', reason: 'not-found', name: name };
+  let limit = spec && spec.limit;
+  let offset = spec && spec.offset;
+  if (spec && spec.value && typeof spec.value === 'object' && !Array.isArray(spec.value)) {
+    if (limit == null) limit = spec.value.limit;
+    if (offset == null) offset = spec.value.offset;
+  }
+  const sliced = (typeof WPA_CONTRACTS !== 'undefined' && WPA_CONTRACTS && typeof WPA_CONTRACTS.sliceGetText === 'function')
+    ? WPA_CONTRACTS.sliceGetText(hit.value, limit, offset)
+    : { text: String(hit.value || ''), chars: String(hit.value || '').length, limit: limit, offset: offset || 0, truncated: false };
+  return {
+    ok: true,
+    kind: 'query',
+    name: name,
+    text: sliced.text,
+    chars: sliced.chars,
+    limit: sliced.limit,
+    offset: sliced.offset,
+    truncated: sliced.truncated,
+    via: 'recall'
+  };
 }
 
 function forgetFromList(list, spec) {
@@ -4921,21 +5024,22 @@ function forgetFromList(list, spec) {
 }
 
 function formatMemoryBlock(list, seen) {
+  void seen;
   const rows = cloneMemoryList(list);
   if (!rows.length) return '';
   const lines = [];
   const min = (typeof WPA_CONTRACTS !== 'undefined' && WPA_CONTRACTS && WPA_CONTRACTS.GET_TEXT_DEDUP_MIN) || 800;
+  const headN = (typeof WPA_CONTRACTS !== 'undefined' && WPA_CONTRACTS && WPA_CONTRACTS.GET_TEXT_DEDUP_HEAD) || 80;
   for (let i = 0; i < rows.length; i++) {
     const name = rows[i].name;
     const value = rows[i].value;
-    if (seen && typeof WPA_CONTRACTS !== 'undefined' && WPA_CONTRACTS && typeof WPA_CONTRACTS.foldLongText === 'function' && value.length >= min) {
-      const r = WPA_CONTRACTS.foldLongText(value, seen, { name: name });
-      if (!r.first) {
-        lines.push(name + '=' + JSON.stringify({
-          same: r.same, chars: r.chars, head: r.head, tail: r.tail, name: name
-        }));
-        continue;
+    if (value.length >= min) {
+      const rec = { chars: value.length, head: value.slice(0, headN) };
+      if (typeof WPA_CONTRACTS !== 'undefined' && WPA_CONTRACTS && typeof WPA_CONTRACTS.hashTextBody === 'function') {
+        rec.same = WPA_CONTRACTS.hashTextBody(value);
       }
+      lines.push(name + '=' + JSON.stringify(rec));
+      continue;
     }
     lines.push(name + '=' + value);
   }
@@ -4960,7 +5064,12 @@ function foldOutgoingMessages(messages, seen) {
 function sessionOpSpec(args) {
   if (!Array.isArray(args) || !args.length) return {};
   if (args[0] && typeof args[0] === 'object' && !Array.isArray(args[0])) return args[0];
-  return { name: args[0], value: args[1], url: args[0] };
+  const spec = { name: args[0], value: args[1], url: args[0] };
+  if (args[1] && typeof args[1] === 'object' && !Array.isArray(args[1])) {
+    if (args[1].limit != null) spec.limit = args[1].limit;
+    if (args[1].offset != null) spec.offset = args[1].offset;
+  }
+  return spec;
 }
 
 function batchResultsStopped(results) {
@@ -5024,6 +5133,7 @@ async function hydrateTaskMemory(origin) {
 function clearTaskMemory(origin) {
   const key = String(origin || '');
   taskMemories.delete(key);
+  lastReads.delete(key);
   try {
     const rm = chrome.storage.session.remove(memorySessionKey(origin));
     if (rm && typeof rm.catch === 'function') rm.catch(function () {});
@@ -5033,13 +5143,17 @@ function clearTaskMemory(origin) {
 async function runSessionOp(tabId, opName, args, origin, priorResults) {
   const spec = sessionOpSpec(args);
   const key = String(origin || '');
-  if (opName === 'remember') {
-    const val = rememberIntoList(taskMemories.get(key) || [], spec, priorResults);
+  if (opName === 'remember') opName = 'memorize';
+  if (opName === 'memorize') {
+    const val = memorizeIntoList(taskMemories.get(key) || [], spec, priorResults, lastReads.get(key) || '');
     if (val.ok) {
       taskMemories.set(key, val.list);
       persistTaskMemory(origin);
     }
     return val;
+  }
+  if (opName === 'recall') {
+    return recallFromList(taskMemories.get(key) || [], spec);
   }
   if (opName === 'forget') {
     const val = forgetFromList(taskMemories.get(key) || [], spec);
@@ -5145,7 +5259,7 @@ function snapshotOutlineLineBand(line) {
   if (s.indexOf('<PANE') >= 0) return 0;
   if (s.charAt(0) === '\t' || s.indexOf('<OPT') >= 0) return 0;
   if (/icon=/.test(s)) return 1;
-  if (/\b(?:text|label)=[\w.\-\u4e00-\u9fff]+\.[A-Za-z0-9]{1,8}(?:\s|>)/.test(s)) return 1;
+  if (/\b(?:text|label|name)=[\w.\-\u4e00-\u9fff]+\.[A-Za-z0-9]{1,8}(?:\s|>)/.test(s)) return 1;
   if (s.indexOf(' required') >= 0 || /<(INPUT|SELECT|TEXTAREA)\b/.test(s)) return 2;
   return 3;
 }
@@ -5262,17 +5376,19 @@ function stringifySnapshot(snapshot, maxChars, opts) {
   }
   if (Array.isArray(src.viewItems)) copy.viewItems = src.viewItems.slice(0, 48);
   if (Array.isArray(src.panes)) {
-    const paneCap = (WPA_CONTRACTS && WPA_CONTRACTS.SNAPSHOT_PANE_MAX) || 4;
-    const paneChars = (WPA_CONTRACTS && WPA_CONTRACTS.SNAPSHOT_PANE_CHARS) || 16000;
+    const paneCap = (WPA_CONTRACTS && WPA_CONTRACTS.SNAPSHOT_PANE_MAX) || 6;
+    const paneChars = (WPA_CONTRACTS && WPA_CONTRACTS.SNAPSHOT_PANE_CHARS) || 100000;
     copy.panes = src.panes.slice(0, paneCap).map(function (p) {
       if (!p || typeof p !== 'object') return p;
       const raw = String(p.text || '');
       const row = {
         idx: p.idx,
-        via: p.via,
+        via: p.via || 'pane',
         tag: p.tag,
-        chars: p.chars,
+        chars: p.chars != null ? p.chars : raw.length,
         text: raw.slice(0, paneChars),
+        limit: paneChars,
+        offset: 0,
         truncated: !!p.truncated || raw.length > paneChars
       };
       if (opts && opts.dedupSeen && WPA_CONTRACTS && typeof WPA_CONTRACTS.applyFoldToTextField === 'function') {
@@ -5290,7 +5406,7 @@ function stringifySnapshot(snapshot, maxChars, opts) {
   copy.elements = Array.isArray(copy.elements) ? copy.elements.slice() : [];
   copy.images = Array.isArray(copy.images) ? copy.images.slice(0, 20) : [];
   copy.textActions = Array.isArray(copy.textActions)
-    ? copy.textActions.slice(0, (WPA_CONTRACTS && WPA_CONTRACTS.TEXT_ACTION_MAX) || 200)
+    ? copy.textActions.slice(0, (WPA_CONTRACTS && WPA_CONTRACTS.TEXT_ACTION_MAX) || 400)
     : [];
   dropEmptySnapshotFields(copy);
   if (opts && opts.maskPii) maskSnapshotPiiInPlace(copy);
@@ -5473,7 +5589,7 @@ function compactOneHelperValue(op, val) {
   else if (val.inputPresent === true) o.inputPresent = true;
   if (val.reason) o.reason = String(val.reason).slice(0, 40);
   if (val.url) o.url = String(val.url).slice(0, 300);
-  if (val.name && (op === 'remember' || op === 'forget' || op === 'goto')) o.name = String(val.name).slice(0, 40);
+  if (val.name && (op === 'memorize' || op === 'recall' || op === 'forget' || op === 'goto')) o.name = String(val.name).slice(0, 40);
     if (Array.isArray(val.catalog)) {
       if (val.catalog.length) {
         let catCap = 24;
@@ -5494,25 +5610,45 @@ function compactOneHelperValue(op, val) {
       }
     }
   if (val.via) o.via = String(val.via).slice(0, 40);
+  if (val.resolved) o.resolved = String(val.resolved).slice(0, 24);
+  if (val.idx != null && Number.isFinite(Number(val.idx))) o.idx = Math.round(Number(val.idx));
   if (val.expected != null) o.expected = String(val.expected).slice(0, 80);
   if (val.actual != null) o.actual = String(val.actual).slice(0, 80);
   if (val.sec) o.sec = String(val.sec).slice(0, 40);
   if (val.label && (op === 'get' || op === 'print')) o.label = String(val.label).slice(0, 80);
-  if (op === 'get') {
+  if (op === 'get' || op === 'recall') {
     let textCap = Number(val.limit);
-    if (!Number.isFinite(textCap) || textCap <= 0) textCap = WPA_CONTRACTS.GET_TEXT_DEFAULT || 2000;
+    if (!Number.isFinite(textCap) || textCap <= 0) textCap = WPA_CONTRACTS.GET_TEXT_DEFAULT || 10000;
     const hard = WPA_CONTRACTS.GET_TEXT_HARD || 500000;
     textCap = Math.max(1, Math.min(Math.round(textCap), hard));
-    if (val.text && !o.actual) {
-      const rawText = String(val.text);
-      o.text = rawText.slice(0, textCap);
-      if (rawText.length > textCap) o.truncated = true;
-    }
     if (val.chars != null) o.chars = val.chars;
     if (val.limit != null) o.limit = val.limit;
     if (val.offset != null) o.offset = val.offset;
+    if (val.text && !o.actual) {
+      const rawText = String(val.text);
+      if (rawText.length > textCap) {
+        o.text = rawText.slice(0, textCap);
+        o.truncated = true;
+        o.limit = textCap;
+        o.offset = val.offset != null ? val.offset : 0;
+        if (o.chars == null) o.chars = rawText.length;
+        o.via = val.via || (op === 'recall' ? 'recall' : 'get');
+      } else {
+        o.text = rawText;
+      }
+    }
     if (o.text && WPA_CONTRACTS && typeof WPA_CONTRACTS.hashTextBody === 'function') {
       o.same = WPA_CONTRACTS.hashTextBody(o.text);
+    }
+  } else if (op === 'memorize') {
+    if (val.chars != null) o.chars = val.chars;
+    if (val.truncated) o.truncated = true;
+    const rawMem = val.value != null ? String(val.value) : '';
+    if (rawMem && rawMem.length <= 80) o.value = rawMem;
+    else if (rawMem) {
+      if (WPA_CONTRACTS && typeof WPA_CONTRACTS.hashTextBody === 'function') o.same = WPA_CONTRACTS.hashTextBody(rawMem);
+      o.head = rawMem.slice(0, 80);
+      o.tail = rawMem.length > 80 ? rawMem.slice(-80) : rawMem;
     }
   } else if (val.text && !o.actual) {
     o.text = String(val.text).slice(0, 80);
@@ -6576,11 +6712,13 @@ async function runOperationsSafe(tabId, operations, ctx) {
   void journalWrite(tabId, { phase: 'ops-intent', ops: list.map((x) => x && x.op) });
   function isBackgroundOp(op) {
     const o = String(op || '');
-    return o === 'ocr' || o === 'ocrFill' || o === 'remember' || o === 'forget' || o === 'goto';
+    return o === 'ocr' || o === 'ocrFill' || o === 'remember' || o === 'memorize' ||
+      o === 'recall' || o === 'forget' || o === 'goto';
   }
   if (!list.some((item) => item && isBackgroundOp(item.op))) {
     const pageOnly = await runPageOpsBatch(tabId, list, ctx);
     notifyPrintFromResp(pageOnly && pageOnly.resp, ctx && ctx.postMsg);
+    try { if (ctx && ctx.origin) noteLastReadFromResp(ctx.origin, pageOnly && pageOnly.resp); } catch (eLr) {}
     return pageOnly;
   }
 
@@ -6593,6 +6731,7 @@ async function runOperationsSafe(tabId, operations, ctx) {
 
   function stoppedResult() {
     pageOps.length = 0;
+    try { if (origin) noteLastReadFromResults(origin, results); } catch (eLr) {}
     return {
       resp: {
         ok: false,
@@ -6607,6 +6746,7 @@ async function runOperationsSafe(tabId, operations, ctx) {
   }
 
   function batchStoppedResult() {
+    try { if (origin) noteLastReadFromResults(origin, results); } catch (eLr) {}
     return {
       resp: {
         ok: true,
@@ -6662,12 +6802,13 @@ async function runOperationsSafe(tabId, operations, ctx) {
       if (batchResultsStopped(results)) return batchStoppedResult();
       continue;
     }
-    if (opName === 'remember' || opName === 'forget' || opName === 'goto') {
+    if (opName === 'remember' || opName === 'memorize' || opName === 'recall' || opName === 'forget' || opName === 'goto') {
       const flushed = await flushPageOps();
       if (flushed !== true) return flushed;
-      const sessVal = await runSessionOp(tabId, opName, item.args, origin, results);
+      const sessOp = opName === 'remember' ? 'memorize' : opName;
+      const sessVal = await runSessionOp(tabId, sessOp, item.args, origin, results);
       if (sessVal && sessVal.navigated) navigated = true;
-      results.push({ op: opName, value: sessVal });
+      results.push({ op: sessOp, value: sessVal });
       if ((sessVal && sessVal.cancelled) || isUserCancelled(null, cancelRef)) {
         return stoppedResult();
       }
@@ -6678,6 +6819,7 @@ async function runOperationsSafe(tabId, operations, ctx) {
   }
   const flushed = await flushPageOps();
   if (flushed !== true) return flushed;
+  try { if (origin) noteLastReadFromResults(origin, results); } catch (eLr) {}
   return {
     resp: {
       ok: true,
@@ -7419,7 +7561,14 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       kind: 'snapshot',
       content: snapLead + wrappedSnap + '\n步骤 ' + i + '/' + maxSteps + '；URL相对上步：' + urlNote
     };
-    const contextMessages = foldedHistory.concat([snapshotUser]);
+    let contextMessages = foldedHistory.concat([snapshotUser]);
+    if (WPA_CONTRACTS && typeof WPA_CONTRACTS.packContextToTokenBudget === 'function') {
+      const packed = WPA_CONTRACTS.packContextToTokenBudget(contextMessages, {
+        soft: WPA_CONTRACTS.CONTEXT_TOKEN_SOFT,
+        hard: WPA_CONTRACTS.CONTEXT_TOKEN_HARD
+      });
+      if (packed && Array.isArray(packed.messages)) contextMessages = packed.messages;
+    }
 
     void journalWrite(tabId, { phase: 'llm-intent', step: i });
     let llmText;
@@ -8509,6 +8658,7 @@ chrome.runtime.onConnect.addListener((port) => {
         }
         ocrBreakerReset(origin); // 清空对话视为“修复后再试”信号，复位熔断
         clearTaskMemory(origin);
+        clearResumeCheckpoint(origin);
         clearLlmTraces();
         postMsg({ type: 'historyCleared', ok: true, keepFiles: !!msg.keepFiles });
       })();

@@ -506,8 +506,8 @@
       <div class="pdf-parse-label">附件正文预算</div>
       <label class="field">每个站点 OCR 缓存总字数<input id="ocrCacheMaxChars" type="number" min="50000" max="2000000" step="10000" value="500000" title="按网页 origin 分别计，缓存已抽出的 PDF/图片正文合计"></label>
       <div class="hint">按站点（网页 origin）分别计，缓存的是该站已抽出的 PDF/图片正文合计，用来免重复 OCR。不是发给模型的提示词，也不是单份附件上限，更不是「PDF 文本层上限」。默认 50 万，可填 5 万–200 万。只需管总字数；条数最多 50 条，超出总字数或条数时按写入先后丢掉最旧条目。</div>
-      <label class="field">发给文本模型的多附件正文合计字数<input id="attachContextMaxChars" type="number" min="10000" max="500000" step="1000" value="150000" title="一次请求里钉入文本模型的多附件正文总长"></label>
-      <div class="hint">一次发给文本模型的多附件正文合计，不是 PDF 文本层、不是 OCR 缓存、也不是整段系统提示词或对话历史。默认 15 万，可填 1 万–50 万。超出会截断并标注。</div>
+      <label class="field">发给文本模型的多附件正文合计字数<input id="attachContextMaxChars" type="number" min="10000" max="800000" step="1000" value="300000" title="一次请求里钉入文本模型的多附件正文总长"></label>
+      <div class="hint">一次发给文本模型的多附件正文合计，不是 PDF 文本层、不是 OCR 缓存、也不是整段系统提示词或对话历史。默认 30 万，可填 1 万–80 万。超出会截断并标注。</div>
       <label class="check-row"><input id="busyMaskEnabled" type="checkbox">操作时显示半透明遮罩</label>
       <label class="check-row"><input id="snapshotPiiMask" type="checkbox">快照脱敏（邮箱 / 手机 / 证件号；默认关）</label>
     </div>
