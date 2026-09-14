@@ -311,6 +311,8 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
   ok(/无法解析时按观察改写/.test(pbSrc) && /summary 为回答/.test(pbSrc), '手册：解析失败改写、回答用 done.summary');
   ok(/勿当 click\/get\/type 的 target/.test(pbSrc) && /提交 idx 或 name/.test(pbSrc), '手册：CSS 只对照快照，点 idx 或 name');
   ok(/click 短文按 name 得 0\/1\/多/.test(pbSrc) && /失败回执带本轮 catalog/.test(pbSrc), '手册：click 短文 0/1/多');
+  ok(/先查本轮 idx（含 hidden）/.test(pbSrc) && /不是同一张表/.test(pbSrc),
+    '手册：click 短文查本轮 idx（含 hidden），与 get live 不同表');
   ok(/hover 只移指针不点击/.test(pbSrc) && /right 只发右键菜单/.test(pbSrc) && /dblclick 为双击/.test(pbSrc),
     '手册：click hover/right/dblclick 指针原语');
   ok(/panes 或 <PANE>/.test(pbSrc) && /用其 idx get\/scroll/.test(pbSrc),
@@ -318,8 +320,10 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
   ok(/快照优先当前覆盖层/.test(pbSrc) && /truncated 则 get\/print\/scroll/.test(pbSrc),
     '手册一句：快照优先当前面，truncated 则继续探');
   ok(/回执 catalog 编号与上轮快照同批，跨轮作废/.test(pbSrc), '手册：回执 catalog idx 跨轮作废');
-  ok(/本轮快照已有（常 hidden）用本轮 idx 点/.test(pbSrc) && /回执文案或下一轮快照/.test(pbSrc),
-    '手册：hidden 用本轮 idx，否则看回执文案或新快照');
+  ok(/本轮快照已有（常 hidden）用本轮 idx 点/.test(pbSrc) && /下一轮快照/.test(pbSrc),
+    '手册：hidden 用本轮 idx，否则看回执或新快照');
+  ok(/本批停/.test(pbSrc) && /不要同批点刚出现的项/.test(pbSrc),
+    '手册：hover 后本批停，不在同批点新节点');
   ok(/memorize recall forget goto/.test(pbSrc) && /每轮【记忆】只给目录/.test(pbSrc),
     '手册：memorize/recall 与记忆目录');
   ok(/不必再 recall/.test(pbSrc) && /\{\} 或缺 value/.test(pbSrc) && /快照 panes 不算/.test(pbSrc),
@@ -374,7 +378,11 @@ ok(/function desktopHandoffOf/.test(bridge) && /entry\.handoff/.test(bridge),
 ok(/function enterSameOriginFrame/.test(bridge) && /function readableTextOf/.test(bridge),
   'getText/inspect 可进入同源 iframe');
 ok(/function preferFileActionHits/.test(bridge) && /function isPageChromeDownload/.test(bridge),
-  'clickByText 下载/预览优先菜单');
+  'preferFileActionHits 辅助仍在源码');
+ok(!/preferFileActionHits\(/.test(extractFn(bridge, 'chooseClickByText')),
+  'chooseClickByText 不把下载/预览菜单优先改成唯一命中');
+ok(!/\/添加\//.test(extractFn(bridge, 'chooseClickByText')),
+  'chooseClickByText 不把「添加」按钮优先改成唯一命中');
 ok(/function waitElementStable/.test(bridge) && /ELEMENT_STABLE_MAX_MS = 400/.test(bridge),
   '点击前有元素稳定等待，上限 400ms');
 ok((bridge.match(/await waitElementStable\(/g) || []).length >= 3,
@@ -472,7 +480,30 @@ ok(/__assistantPanelDispose/.test(panelSrc), '面板升级时会 dispose 旧实�
 ok(/function classAnchorsFromSelector/.test(bridge), 'pagebridge 可从长 within 抽出稳定 class');
 ok(/function isStableClass/.test(bridge), 'pagebridge 区分稳定 class 与框架/泛化 class');
 ok(/禁止编造 CSS/.test(bg), '短手册禁止编造 CSS');
-ok(/function pickByTaskHint/.test(bridge), 'clickByText 可用当前指令与卡片标题消歧');
+ok(/function lookupNameInSnap/.test(bridge) && /function lookupNameInIndex/.test(bridge) &&
+  /function snapHandleName/.test(bridge),
+  'click 短文可按 snapIndex name 查表');
+ok(!/isVisible/.test(extractFn(bridge, 'lookupNameInIndex')),
+  'snapIndex name 查表含 hidden，不滤可见性');
+{
+  const clickByTextOp = (bridge.match(/clickByText: async function \(text, opts\) \{[\s\S]*?inspect: function/) || [''])[0];
+  const snapPos = clickByTextOp.indexOf('lookupNameInSnap');
+  const livePos = clickByTextOp.indexOf('collectClickByTextCandidates');
+  ok(snapPos >= 0 && livePos > snapPos, 'click 短文先查 snapIndex 再可见 live');
+  ok(/clickNameFail\('ambiguous'/.test(clickByTextOp) && /catalogLinesForClickHits/.test(bridge),
+    '短文歧义走 idx catalog 行');
+  ok(/'\[' \+ \(entry && entry.idx\)/.test(extractFn(bridge, 'formatOutlineLine')),
+    '歧义 catalog 行含 [idx]');
+  ok(/clickNameFail\(\s*'not-found'/.test(clickByTextOp) && /catalogOrOverlay\(\[\]\)/.test(extractFn(bridge, 'clickNameFail')),
+    '短文 0 命中走 overlay，不把 samples 当 catalog');
+  ok(!/found\.samples/.test(clickByTextOp) && !/missLines/.test(clickByTextOp),
+    'clickByText 不再用未匹配 samples 当 catalog');
+  ok(!/continueBatch:\s*true/.test(clickByTextOp), 'click 短文 ambiguous/not-found/disabled 停批');
+  ok(!/pickByTaskHint/.test(clickByTextOp), 'pickByTaskHint 不再接到 clickByText');
+  ok(!/preferFileActionHits/.test(clickByTextOp), 'clickByText 不调用 preferFileActionHits');
+  ok(/assignIdx: false/.test(extractFn(bridge, 'catalogLinesForClickHits')),
+    'click catalog 不给未进快照的节点补号');
+}
 ok(!/function looksLikeDoneProse/.test(bg), '引擎不再用页面完成词收 done');
 ok(/暂不根据同条 trailing done 收工/.test(bg), '同条 trailing done 暂不收工');
 ok(/JSON_ONLY_HINT/.test(bg), '执行结果回执要求下一轮输出 JSON 或 tools');
@@ -489,7 +520,7 @@ ok(!/pendingBoundedAfterChecks/.test(bg), '有 checks 时不再跨步自动 done
 ok(/function lastEvidenceFromMessages/.test(bg), '仍可从历史抽出上步期待');
 ok(/function compactRunResult/.test(bg), '工具结果写入历史前会压缩');
 ok(!/【变化报告】' \+ JSON.stringify\(report\)/.test(bg), '变化报告不再写入整份探针 JSON');
-ok(/function attachTaskHintToOps/.test(bg), '执行前把当前指令注入 clickByText hint');
+ok(/function attachTaskHintToOps/.test(bg), '执行前仍可给 clickOptionByText 注入 hint');
 ok(/function looksLikeCssSelector/.test(bridge), 'within 能区分 CSS 与标题文案');
 ok(/function findRootByVisibleText/.test(bridge), 'within 标题文案按可见文本定位容器');
 ok(/function retargetFileSelectClick/.test(bridge), 'pagebridge 有文件行点击改向勾选图标');
@@ -572,8 +603,14 @@ ok(/var comboHost = comboboxHostOf\(el\)[\s\S]{0,600}typed-not-committed/.test(b
   '对 combobox setVal 只打字并标 typed-not-committed');
 ok(!/page\.selectOption\(sel, comboVal\)/.test(bridge), 'combobox setVal 不再劫持到 selectOption');
 ok(/comboboxHostOf\(el\) \? 'combobox'/.test(bridge), '快照把可输入下拉标成 combobox widget');
-ok(/value\.ok === false && !value\.continueBatch\) break/.test(bridge),
-  '同一批 operations 中 helper 返回 ok:false 时停止后续操作（disabled 软失败除外）');
+ok(/function shouldStopBatch/.test(bridge) && /value\.yieldBatch/.test(extractFn(bridge, 'shouldStopBatch')),
+  '同批在 yieldBatch 或 ok:false 且非 continueBatch 时停后续操作');
+ok(/function shouldStopBatch/.test(bg) && /shouldStopBatch\(/.test(extractFn(bg, 'batchResultsStopped')),
+  'SW 混合批同样在 yieldBatch 时停后续页外操作');
+ok(/out\.yieldBatch = true/.test(bridge) && /via: 'hover'/.test(bridge),
+  'hover 成功标 yieldBatch，把附近 catalog 交给下一轮');
+ok(/via: 'contextmenu'[\s\S]*?yieldBatch: true/.test(bridge),
+  '右键揭菜单后同样 yieldBatch');
 ok(/function cascaderClickTarget/.test(bridge), '带复选框的级联节点点击勾选框而不是展开箭头');
 ok(/不用 aria-hidden/.test(bridge), '级联弹层不因 Element UI 误标 aria-hidden 而被当成关闭');
 ok(/function cascaderLeafLabel/.test(bridge), '级联建议路径按末级标签匹配');
@@ -1450,51 +1487,81 @@ ok(
   '包装祖先丢弃后，仍与另一枝同文 → 两个独立目标'
 );
 
-const hintHelpers = [
-  extractFn(bridge, 'compactHintText'),
-  extractFn(bridge, 'longestCommonSubstringLen'),
-  extractFn(bridge, 'quotedHintPhrases'),
-  extractFn(bridge, 'stripGenericClickWords'),
-  extractFn(bridge, 'distinctiveTitleScore'),
-  extractFn(bridge, 'pickByTaskHint')
+const nameLookupHelpers = [
+  'var CLICK_BY_TEXT_MAX_LEN = 80;',
+  'function isInsideAssistant(){ return false; }',
+  'function isDisabledTree(el){ return !!(el && el.disabled); }',
+  'function accessibleName(el){ return (el && el.acc) || ""; }',
+  'function ownText(el){ return (el && el.own) || ""; }',
+  extractFn(bridge, 'normText'),
+  extractFn(bridge, 'rankMatch'),
+  extractFn(bridge, 'snapHandleName'),
+  extractFn(bridge, 'lookupNameInIndex'),
+  extractFn(bridge, 'nodeDepth'),
+  extractFn(bridge, 'innermostIndependent'),
+  extractFn(bridge, 'chooseClickByText')
 ].join('\n');
-const hintSandbox = {};
+const nameLookupBox = {};
 try {
   vm.runInNewContext(
-    hintHelpers + '\nthis.pickByTaskHint = pickByTaskHint;\nthis.distinctiveTitleScore = distinctiveTitleScore;',
-    hintSandbox
+    nameLookupHelpers +
+      '\nthis.lookupNameInIndex = lookupNameInIndex;\nthis.chooseClickByText = chooseClickByText;\nthis.snapHandleName = snapHandleName;',
+    nameLookupBox
   );
-  ok(typeof hintSandbox.pickByTaskHint === 'function', 'pickByTaskHint 可在测试中加载');
+  ok(typeof nameLookupBox.lookupNameInIndex === 'function', 'lookupNameInIndex 可在测试中加载');
 } catch (e) {
-  ok(false, '加载 pickByTaskHint 失败: ' + (e && e.message));
+  ok(false, '加载 lookupNameInIndex 失败: ' + (e && e.message));
 }
-const cards = [
-  { itemTitle: '某某项目名称 进入', text: '进入' },
-  { itemTitle: '气象数值模拟平台 进入', text: '进入' },
-  { itemTitle: '分子动力学计算 进入', text: '进入' }
-];
-function pickHint(hint) {
-  const hit = hintSandbox.pickByTaskHint(cards, hint, '进入');
-  return hit && hit.itemTitle;
+function fakeSnap(id, acc, extra) {
+  extra = extra || {};
+  return {
+    id: id,
+    acc: acc,
+    own: extra.own || '',
+    disabled: !!extra.disabled,
+    tagName: extra.tagName || 'BUTTON',
+    parentNode: extra.parent || null,
+    contains: function (other) {
+      return (extra.childIds || []).indexOf(other && other.id) >= 0;
+    }
+  };
 }
-ok(
-  /某某项目名称/.test(pickHint('登录后在「某某项目名称」这一项里 clickByText："进入"') || ''),
-  '书名号+这一项 能消歧'
-);
-ok(
-  /某某项目名称/.test(pickHint('点击某某项目名称的进入按钮') || ''),
-  '不加引号直接写标题也能消歧'
-);
-ok(
-  /某某项目名称/.test(pickHint('Open Enter on 某某项目名称') || ''),
-  '中英混写句式也能消歧'
-);
-ok(
-  /气象数值模拟/.test(pickHint('please click Enter for 气象数值模拟平台') || ''),
-  '英文 please click Enter for 标题 也能消歧'
-);
-ok(!pickHint('clickByText："进入"'), '只有通用按钮文案时不猜');
-ok(!pickHint('进入第二个项目'), '没有独特标题时不猜');
+if (nameLookupBox.lookupNameInIndex) {
+  const hiddenEsc = fakeSnap('esc-hidden', 'ESC');
+  const one = nameLookupBox.lookupNameInIndex([null, hiddenEsc], 'ESC', null);
+  ok(one.list.length === 1 && one.list[0].el.id === 'esc-hidden',
+    'snapIndex 精确 name 含 hidden（无 isVisible 过滤）');
+  const exact = fakeSnap('esc', 'ESC');
+  const contains = fakeSnap('esc-wrap', '关闭ESC');
+  const ranked = nameLookupBox.lookupNameInIndex([null, contains, exact], 'ESC', null);
+  ok(ranked.list.length === 1 && ranked.list[0].el.id === 'esc',
+    '精确优先于包含');
+  const a = fakeSnap('a', '进入');
+  const b = fakeSnap('b', '进入');
+  const many = nameLookupBox.lookupNameInIndex([null, a, b], '进入', null);
+  const manyPick = nameLookupBox.chooseClickByText(many.list, '进入');
+  ok(many.list.length === 2 && manyPick && manyPick.ambiguousEls && manyPick.ambiguousEls.length === 2,
+    '互不包含的同名算多个，交给歧义 catalog');
+  const inner = fakeSnap('inner', '进入');
+  const outer = fakeSnap('outer', '进入', { childIds: ['inner'] });
+  const wrapPick = nameLookupBox.chooseClickByText(
+    nameLookupBox.lookupNameInIndex([null, outer, inner], '进入', null).list,
+    '进入'
+  );
+  ok(wrapPick && wrapPick.winner && wrapPick.winner.el.id === 'inner',
+    '同文包装留最内层');
+  const dead = fakeSnap('dead', 'ESC', { disabled: true });
+  const dis = nameLookupBox.lookupNameInIndex([null, dead], 'ESC', null);
+  ok(dis.list.length === 0 && dis.disabled.length === 1,
+    '禁用句柄不进可点列表');
+  const root = fakeSnap('root', '卡片');
+  const inCard = fakeSnap('in', '进入');
+  const outCard = fakeSnap('out', '进入');
+  root.contains = function (other) { return other && other.id === 'in'; };
+  const scoped = nameLookupBox.lookupNameInIndex([null, root, inCard, outCard], '进入', root);
+  ok(scoped.list.length === 1 && scoped.list[0].el.id === 'in',
+    'within 只限容器子树');
+}
 
 const doneHelpers = extractFn(bg, 'attachTaskHintToOps');
 const doneSandbox = {};
@@ -1511,15 +1578,20 @@ const hintedOps = doneSandbox.attachTaskHintToOps(
   [{ op: 'clickByText', args: ['进入'] }],
   '在「某某项目名称」里点进入'
 );
-ok(
-  hintedOps[0].args[1] && /某某项目名称/.test(hintedOps[0].args[1].hint),
-  'clickByText 会带上当前指令全文作 hint'
-);
+ok(!hintedOps[0].args[1] || !hintedOps[0].args[1].hint,
+  'clickByText 不再注入任务 hint');
 const keptWithin = doneSandbox.attachTaskHintToOps(
   [{ op: 'clickByText', args: ['进入', { within: 'ul.block-list-warp > li:nth-of-type(6)' }] }],
   '任务说明'
 );
-ok(keptWithin[0].args[1].within.indexOf('nth-of-type(6)') >= 0 && keptWithin[0].args[1].hint, '已有 within 时仍附加 hint 且不覆盖 within');
+ok(keptWithin[0].args[1].within.indexOf('nth-of-type(6)') >= 0 && !keptWithin[0].args[1].hint,
+  '已有 within 时不覆盖 within，也不再附加 hint');
+const optionHinted = doneSandbox.attachTaskHintToOps(
+  [{ op: 'clickOptionByText', args: ['张三'] }],
+  '选张三'
+);
+ok(optionHinted[0].args[1] && /张三/.test(optionHinted[0].args[1].hint),
+  'clickOptionByText 仍可带 hint');
 const plainClick = doneSandbox.attachTaskHintToOps(
   [{ op: 'click', args: [12] }],
   '下载这个文件'
@@ -1742,12 +1814,12 @@ const openMenuMiss = JSON.stringify({
   results: [{
     op: 'openFileMenu',
     value: {
-      ok: false, kind: 'query', menuLikely: false, reason: 'noMoreButton', continueBatch: true
+      ok: false, kind: 'query', menuLikely: false, reason: 'noMoreButton'
     }
   }]
 });
-ok(!analyzeSandbox.analyzeRunResult(openMenuMiss).failed,
-  'openFileMenu 找不到「…」且 continueBatch 时不报 VERIFY FAILED');
+ok(analyzeSandbox.analyzeRunResult(openMenuMiss).failed,
+  'openFileMenu 找不到「…」停批，算失败');
 ok(analyzeSandbox.analyzeRunResult(JSON.stringify({
   kind: 'query', ok: false, reason: 'notFound', options: []
 })).failed, 'selectOption 未命中且无 continueBatch 仍判 failed');
@@ -1773,7 +1845,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.9.0', '锁步版本为 5.9.0');
+ok(manifestVer === '5.9.1', '锁步版本为 5.9.1');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -3229,14 +3301,15 @@ if (runCompactBox.compactRunResult) {
     results: [{
       op: 'click',
       value: {
-        ok: true, via: 'hover', idxRoundOnly: true,
+        ok: true, via: 'hover', idxRoundOnly: true, yieldBatch: true,
         catalog: ['[3]<BUTTON text=… hidden>', '[4]<BUTTON text=预览>']
       }
     }]
   })));
   ok(hoverCat.results[0].ok === true && hoverCat.results[0].via === 'hover' &&
+    hoverCat.results[0].yieldBatch === true &&
     hoverCat.results[0].catalog.length === 2 && /hidden/.test(hoverCat.results[0].catalog[0]),
-    'hover 回执经 compact 仍带附近 catalog');
+    'hover 回执经 compact 仍带附近 catalog 与 yieldBatch');
   const hoverEmpty = JSON.parse(runCompactBox.compactRunResult(JSON.stringify({
     kind: 'batch',
     results: [{
@@ -3969,6 +4042,9 @@ ok(fs.existsSync(path.join(__dirname, 'tests/fixtures/hidden-row-actions.html'))
   ok(/data-file-act="delete"/.test(hiddenFix) && /icon-more/.test(hiddenFix) && /title="更多"/.test(hiddenFix),
     '隐藏行夹具含 data-file-act 与溢出 … 按钮');
 }
+ok(!fs.existsSync(path.join(__dirname, 'tests/fixtures/preview-esc.html')) &&
+  !fs.existsSync(path.join(__dirname, 'tests/fixtures/ustc-esc.html')),
+  '无预览/ESC 站点夹具');
 ok(/maxSteps: 60/.test(bg) && /pageMaxSteps/.test(panelSrc), '默认 maxSteps 与面板本页配置同源量级');
 ok(/copyTextOffscreen/.test(bg) && /cmd === 'copyText'/.test(offscreenSrc), '复制走扩展 offscreen 而非宿主 DOM');
 ok(!/document\.body\.appendChild\(ta\)/.test(panelSrc), '面板复制不再向宿主插入 textarea');
@@ -3999,6 +4075,17 @@ ok(/技能\r?\n\r?\n<img src="doc\/screenshot1\.png"/.test(readmeSrc), 'README �
 ok(/\*\*图1\. 六句指令完成发布软件流程自动化\*\*\r?\n\r?\n## 安装/.test(readmeSrc), 'README 图注后空一行');
 ok(/doc\/screenshot1\.png/.test(readmeSrc) && fs.existsSync(path.join(__dirname, 'doc/screenshot1.png')),
   'README 引用 doc/screenshot1.png 且文件存在');
+ok(/doc\/user-guide\.md/.test(readmeSrc) && fs.existsSync(path.join(__dirname, 'doc/user-guide.md')),
+  'README 链到使用说明且文件存在');
+{
+  const guideSrc = fs.readFileSync(path.join(__dirname, 'doc/user-guide.md'), 'utf8');
+  ok(/### `get`/.test(guideSrc) && /### `goto`/.test(guideSrc) && /### `click`/.test(guideSrc),
+    '使用说明列出公开工具 get/click/goto');
+  ok(/button/.test(guideSrc) && /hover/.test(guideSrc) && /yieldBatch/.test(guideSrc),
+    '使用说明写明 click.button 与悬停后停批');
+  ok(!/clickByText\("预览"/.test(guideSrc) && !/预览、ESC/.test(guideSrc),
+    '使用说明不写预览/ESC 站点菜谱');
+}
 ok(/max-width:100%/.test(readmeSrc), 'README 截图随页面宽度缩放');
 
 function runCancelPrimitiveTests() {

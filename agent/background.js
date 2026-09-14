@@ -247,11 +247,11 @@ const RUNTIME_PLAYBOOK =
   '工具：get type click check select scroll wait upload ocr ocrFill officeRead officeFill print memorize recall forget goto。\n' +
   'JSON 回退：{"action":"execute","calls":[{"tool":"type","args":{"target":5,"value":"张三"}}]}；ask；done。\n' +
   '定位优先本轮 idx，idx 每轮重排；回执 catalog 编号与上轮快照同批，跨轮作废。用户/技能中的 CSS 只对照本轮快照，勿当 click/get/type 的 target；提交 idx 或 name。\n' +
-  'outline 的 role/name 为无障碍名；同串不重复堆字段。click 短文按 name 得 0/1/多，失败回执带本轮 catalog。\n' +
+  'outline 的 role/name 为无障碍名；同串不重复堆字段。click 短文按 name 得 0/1/多：先查本轮 idx（含 hidden），失败回执带本轮 catalog；get 短文仍 live 反查，不是同一张表。\n' +
   '无因果依赖，或页面已清楚、因果序列极大概率能顺完：可一轮多个工具；否则一次一个，后一步看前一步回执。\n' +
   '页面正文用 get。跨步保留用 memorize；{} 或缺 value 从本批成功 get/print 或上一拍 lastRead 回填，快照 panes 不算。每轮【记忆】只给目录（name/chars/same/短头），不倒全文。取槽里全文或续读用 recall；若本段历史【执行结果】或先前 get 已有同 same、未 truncated、字段已够当前判断，不必再 recall。看回执 chars。forget 删槽。goto 打开记住的页。读 URL 用 get(target=url) 再 memorize。\n' +
   'print 搜控件打目录进对话，不算字数。type 只打字，不自动点选项。check 只用于真正复选/单选。\n' +
-  'click 的 button：省略或 left 为左键；hover 只移指针不点击；right 只发右键菜单；dblclick 为双击。移上去才出现的控件：本轮快照已有（常 hidden）用本轮 idx 点；没有则 hover 后按回执文案或下一轮快照点。菜单项仍要再 click。覆盖层/iframe 正文在快照 panes 或 <PANE>，用其 idx get/scroll。\n' +
+  'click 的 button：省略或 left 为左键；hover 只移指针不点击；right 只发右键菜单；dblclick 为双击。移上去才出现的控件：本轮快照已有（常 hidden）用本轮 idx 点；没有则 hover，本批停，按回执 catalog 或下一轮快照再点。不要同批点刚出现的项。覆盖层/iframe 正文在快照 panes 或 <PANE>，用其 idx get/scroll。\n' +
   '快照优先当前覆盖层、文件名、隐藏操作与大块正文；truncated 则 get/print/scroll。\n' +
   '多轮完不成：换 print/get/scroll。get.limit 默认 10000 字，offset 从第 N 字起；truncated 则加大 limit 或设 offset 再 get，见截断尾注，勿换 CSS 重点。print.limit 是目录条数。\n' +
   '上一轮无法解析时按观察改写；回答用户用 done（summary 为回答）或 ask。\n' +
@@ -3893,7 +3893,7 @@ function attachTaskHintToOps(operations, task) {
   for (let i = 0; i < operations.length; i++) {
     const item = operations[i];
     const op = item && item.op;
-    const injectHint = op === 'clickByText' || op === 'clickOptionByText';
+    const injectHint = op === 'clickOptionByText';
     if (!item || !injectHint) {
       out.push(item);
       continue;
@@ -5072,11 +5072,16 @@ function sessionOpSpec(args) {
   return spec;
 }
 
+function shouldStopBatch(value) {
+  if (!value || typeof value !== 'object') return false;
+  if (value.yieldBatch) return true;
+  return value.ok === false && !value.continueBatch;
+}
+
 function batchResultsStopped(results) {
   if (!Array.isArray(results)) return false;
   for (let i = 0; i < results.length; i++) {
-    const val = results[i] && results[i].value;
-    if (val && typeof val === 'object' && val.ok === false && !val.continueBatch) return true;
+    if (shouldStopBatch(results[i] && results[i].value)) return true;
   }
   return false;
 }
@@ -5609,6 +5614,7 @@ function compactOneHelperValue(op, val) {
         o.idxRoundOnly = true;
       }
     }
+  if (val.yieldBatch) o.yieldBatch = true;
   if (val.via) o.via = String(val.via).slice(0, 40);
   if (val.resolved) o.resolved = String(val.resolved).slice(0, 24);
   if (val.idx != null && Number.isFinite(Number(val.idx))) o.idx = Math.round(Number(val.idx));

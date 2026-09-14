@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '5.9.0';
+  var BRIDGE_VERSION = '5.9.1';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
   var SNAPSHOT_L0_CAP_FULL = 1500;
@@ -1414,7 +1414,59 @@
       return out;
     }
 
-    // 按 needle 分级收集，不按文档序截断「任意可见短文本」。
+    // 与 outline `name=` 同源：accessibleName，否则 ownText。
+    function snapHandleName(el) {
+      var text = '';
+      try { text = accessibleName(el); } catch (eAcc) { text = ''; }
+      if (!text) {
+        try { text = ownText(el); } catch (eOwn) { text = ''; }
+      }
+      return String(text || '').replace(/\s+/g, ' ').trim();
+    }
+
+    // 本轮 snapIndex（含 hidden）按 name 查表。精确 > 前缀 > 包含。within 只限容器子树。
+    function lookupNameInIndex(table, raw, root) {
+      var needle = normText(raw || '');
+      var exact = [];
+      var prefix = [];
+      var contains = [];
+      var disabled = [];
+      if (!needle) return { list: exact, disabled: disabled };
+      table = table || [];
+      for (var i = 1; i < table.length; i++) {
+        var el = table[i];
+        if (!el) continue;
+        if (root) {
+          var inRoot = false;
+          try { inRoot = el === root || !!(root.contains && root.contains(el)); } catch (eSc) { inRoot = false; }
+          if (!inRoot) continue;
+        }
+        try { if (isInsideAssistant(el)) continue; } catch (eIg) {}
+        var text = '';
+        try { text = snapHandleName(el); } catch (eN) { text = ''; }
+        if (!text || text.length > CLICK_BY_TEXT_MAX_LEN) continue;
+        var r = rankMatch(text, needle);
+        if (r < 0) continue;
+        var item = { el: el, text: text, idx: i };
+        var dis = false;
+        try { dis = isDisabledTree(el); } catch (eD) { dis = false; }
+        if (dis) {
+          if (disabled.length < 5) disabled.push(item);
+          continue;
+        }
+        if (r === 0) exact.push(item);
+        else if (r === 1) prefix.push(item);
+        else contains.push(item);
+      }
+      var list = exact.length ? exact : (prefix.length ? prefix : contains);
+      return { list: list, disabled: disabled };
+    }
+
+    function lookupNameInSnap(raw, root) {
+      return lookupNameInIndex(snapIndex, raw, root);
+    }
+
+    // 按 needle 分级收集可见 live 节点，供快照无名时的 fallback。
     // 多层 li 的目标在 DOM 后部：先走完整扫描，精确/前缀命中优先于包含命中。
     function collectClickByTextCandidates(root, raw) {
       var nodes = elementsUnder(root || document, TEXT_ACTION_SCAN_SEL);
@@ -1422,8 +1474,6 @@
       var prefix = [];
       var contains = [];
       var disabled = [];
-      var samples = [];
-      var seenSample = {};
       var needle = normText(raw || '');
       var CONTAINS_CAP = 200;
       for (var i = 0; i < nodes.length; i++) {
@@ -1431,21 +1481,13 @@
         var tag = (el.tagName || '').toUpperCase();
         if (TEXT_SKIP_TAGS[tag]) continue;
         if (isInsideAssistant(el)) continue;
-        var text = '';
-        try { text = accessibleName(el); } catch (eAcc) { text = ''; }
-        if (!text) text = ownText(el);
+        var text = snapHandleName(el);
         if (!text || text.length > CLICK_BY_TEXT_MAX_LEN) continue;
         var r = needle ? rankMatch(text, needle) : 0;
-        if (r < 0) {
-          if (!seenSample[text] && samples.length < 12) {
-            seenSample[text] = true;
-            samples.push(text);
-          }
-          continue;
-        }
+        if (r < 0) continue;
         if (!isVisible(el)) continue;
         if (isDisabledTree(el)) {
-          if (disabled.length < 5) disabled.push(text);
+          if (disabled.length < 5) disabled.push({ el: el, text: text });
           continue;
         }
         var item = { el: el, text: text };
@@ -1454,7 +1496,7 @@
         else if (contains.length < CONTAINS_CAP) contains.push(item);
       }
       var list = exact.length ? exact : (prefix.length ? prefix : contains);
-      return { list: list, disabled: disabled, samples: samples };
+      return { list: list, disabled: disabled };
     }
 
     function nodeDepth(el) {
@@ -1812,23 +1854,6 @@
         if (String(winners[j].text).length !== shortest) break;
         tied.push(winners[j]);
         distinct[normText(winners[j].text)] = true;
-      }
-      if (/添加/.test(needle)) {
-        var btns = [];
-        for (var bi = 0; bi < tied.length; bi++) {
-          var bel = tied[bi].el;
-          var btag = String((bel && bel.tagName) || '').toUpperCase();
-          var brole = '';
-          try { brole = String(bel.getAttribute && bel.getAttribute('role') || '').toLowerCase(); } catch (eB) {}
-          if (btag === 'BUTTON' || brole === 'button') btns.push(tied[bi]);
-        }
-        if (btns.length) tied = btns;
-      }
-      if (/下载|预览|复制名称|download|preview/.test(needle)) {
-        tied = preferFileActionHits(tied, needle);
-        if (!tied.length) return null;
-        distinct = {};
-        for (var dj = 0; dj < tied.length; dj++) distinct[normText(tied[dj].text)] = true;
       }
       if (Object.keys(distinct).length > 1) {
         return { ambiguousEls: tied };
@@ -5298,7 +5323,11 @@
     function catalogLineForEl(el, extra) {
       extra = extra || {};
       var idx = '-';
-      try { idx = snapIdxOf(el) || ensureSnapIdx(el) || '-'; } catch (eI) { idx = snapIdxOf(el) || '-'; }
+      try {
+        var existingIdx = snapIdxOf(el);
+        if (existingIdx) idx = existingIdx;
+        else if (extra.assignIdx !== false) idx = ensureSnapIdx(el) || '-';
+      } catch (eI) { idx = snapIdxOf(el) || '-'; }
       var label = extra.label || '';
       if (!label) {
         try { label = fieldLabelOf(el) || ''; } catch (eL) { label = ''; }
@@ -5346,6 +5375,35 @@
       var inOverlay = false;
       try { inOverlay = !!(el && isOverlayEl(el)); } catch (eOv) {}
       return formatOutlineLine(entry, false, inOverlay);
+    }
+
+    function catalogLinesForClickHits(hits) {
+      var lines = [];
+      var seen = {};
+      var list = hits || [];
+      for (var i = 0; i < list.length && lines.length < 12; i++) {
+        var el = list[i] && list[i].el ? list[i].el : list[i];
+        if (!el) continue;
+        var line = '';
+        try { line = catalogLineForEl(el, { assignIdx: false }); } catch (eL) { line = ''; }
+        if (!line || seen[line]) continue;
+        seen[line] = true;
+        lines.push(line);
+      }
+      return lines;
+    }
+
+    function clickNameFail(reason, hint, hits) {
+      var lines = [];
+      try { lines = catalogLinesForClickHits(hits); } catch (eC) { lines = []; }
+      return {
+        ok: false,
+        kind: 'query',
+        reason: reason || 'not-found',
+        catalog: lines.length ? lines : catalogOrOverlay([]),
+        idxRoundOnly: true,
+        hint: hint || ''
+      };
     }
 
     function overlayShortNameCatalog(cap) {
@@ -7366,7 +7424,7 @@
             found.sort(function (a, b) { return a.rank - b.rank; });
             return found.slice(0, cap);
           },
-          // 按可见自身文本点击最短匹配节点。within 限定子树（用户给的容器 CSS 放这里）。
+          // 短文先查本轮 snapIndex 的 name（含 hidden），0 再扫可见 live。within 只限范围。
           clickByText: async function (text, opts) {
             var raw = String(text == null ? '' : text).trim();
             if (!raw) throw new Error('clickByText: 文本为空');
@@ -7382,65 +7440,37 @@
               return await page.dblclick(opts.within ? { text: raw, within: opts.within } : raw);
             }
             var within = String(opts.within || opts.selector || '').trim();
-            var taskHint = String(opts.hint || opts.task || '').trim();
             var scope = resolveClickByTextRoot(within);
-            var found = collectClickByTextCandidates(scope.root, raw);
-            var picked = chooseClickByText(found.list, raw);
-            var pageFallback = false;
-            if (!picked && within && scope.missing) {
-              found = collectClickByTextCandidates(null, raw);
-              picked = chooseClickByText(found.list, raw);
-              pageFallback = true;
-            }
-            var sample = found.samples && found.samples.length
-              ? found.samples
-              : sampleCandidateTexts(found.list, 12);
-            if (picked && picked.ambiguousEls) {
-              var hinted = pickByTaskHint(picked.ambiguousEls, taskHint, raw);
-              if (hinted) {
-                picked = { winner: hinted, hintResolved: true };
-              }
+            var scopedEmpty = !!(within && !scope.root);
+            var snapFound = scopedEmpty
+              ? { list: [], disabled: [] }
+              : lookupNameInSnap(raw, scope.root);
+            var picked = chooseClickByText(snapFound.list, raw);
+            var live = { list: [], disabled: [] };
+            if (!picked) {
+              live = scopedEmpty
+                ? { list: [], disabled: [] }
+                : collectClickByTextCandidates(scope.root, raw);
+              picked = chooseClickByText(live.list, raw);
             }
             if (!picked) {
-              if (found.disabled.length) {
-                return {
-                  ok: false,
-                  reason: 'disabled',
-                  continueBatch: true,
-                  hint: '「' + raw + '」已禁用。',
-                  catalog: catalogOrOverlay([]),
-                  idxRoundOnly: true
-                };
+              var disabledHits = (snapFound.disabled && snapFound.disabled.length)
+                ? snapFound.disabled
+                : (live.disabled || []);
+              if (disabledHits.length) {
+                return clickNameFail('disabled', '「' + raw + '」已禁用。', disabledHits);
               }
-              var missLines = [];
-              var si;
-              for (si = 0; si < sample.length && missLines.length < 12; si++) {
-                missLines.push(String(sample[si] || '').slice(0, 80));
-              }
-              return {
-                ok: false,
-                kind: 'query',
-                reason: 'not-found',
-                catalog: catalogOrOverlay(missLines.length ? missLines : []),
-                idxRoundOnly: true,
-                hint: (within && scope.missing ? 'within 容器未找到。' : '') + '未找到「' + raw + '」。'
-              };
+              return clickNameFail(
+                'not-found',
+                (within && (scope.missing || scopedEmpty) ? 'within 容器未找到。' : '') + '未找到「' + raw + '」。',
+                []
+              );
             }
             if (picked.ambiguousEls) {
-              var extra = (within && (scope.missing || pageFallback))
+              var extra = (within && scope.missing)
                 ? 'within 容器未找到: ' + within + '。'
                 : '';
-              return {
-                ok: false,
-                reason: 'ambiguous',
-                continueBatch: true,
-                hint: extra + '「' + raw + '」匹配到多处。',
-                options: (picked.ambiguousEls || []).slice(0, 12).map(function (item) {
-                  var t = '';
-                  try { t = String((item && item.el && (item.el.innerText || item.el.textContent)) || item.text || '').replace(/\s+/g, ' ').trim().slice(0, 80); } catch (eA) {}
-                  return { t: t };
-                })
-              };
+              return clickNameFail('ambiguous', extra + '「' + raw + '」匹配到多处。', picked.ambiguousEls);
             }
             var el = picked.winner.el;
             el = retargetFileSelectClick(el);
@@ -7449,26 +7479,18 @@
             dispatchClick(el);
             var us;
             try { us = uniqueSelector(el); } catch (e) { us = null; }
-            var usedWithin = pageFallback ? '' : (scope.used || '');
-            if (picked.hintResolved && !usedWithin) {
-              try {
-                var rootEl = nearestItemRoot(el);
-                var ru = uniqueSelector(rootEl);
-                if (ru && ru.selector) usedWithin = ru.selector;
-              } catch (e3) {}
-            }
-            return {
+            var hitIdx = 0;
+            try { hitIdx = snapIdxOf(el); } catch (eIdx) { hitIdx = 0; }
+            return withResolved({
               ok: true,
               kind: 'action',
               text: picked.winner.text,
               selector: us && us.selector ? us.selector : '',
               verified: null,
               withinMissing: !!(within && scope.missing),
-              withinRelaxed: !!(scope.relaxed && !pageFallback) || !!picked.hintResolved,
-              withinUsed: usedWithin,
-              pageFallback: pageFallback,
-              hintResolved: !!picked.hintResolved
-            };
+              withinRelaxed: !!scope.relaxed,
+              withinUsed: scope.used || ''
+            }, { resolved: 'name', idx: hitIdx || undefined });
           },
           // 按容器查看可见后代短文本（去包装）。文案不在 L0 或用户给了容器时用。
           // 多层 li：默认不深入非根下的嵌套 ul/ol/[role=tree|group]，只列当前层；
@@ -8078,6 +8100,7 @@
             await sleepMs(320);
             out.catalog = nearbyPointerCatalog(el);
             out.idxRoundOnly = true;
+            out.yieldBatch = true;
             return out;
           },
           openFileMenu: async function (target) {
@@ -8094,7 +8117,6 @@
                 kind: 'query',
                 menuLikely: false,
                 reason: 'noMoreButton',
-                continueBatch: true,
                 catalog: nearbyPointerCatalog(el),
                 idxRoundOnly: true
               };
@@ -8109,7 +8131,8 @@
               verified: null,
               menuLikely: true,
               catalog: nearbyPointerCatalog(el),
-              idxRoundOnly: true
+              idxRoundOnly: true,
+              yieldBatch: true
             };
           },
           contextClick: async function (target) {
@@ -8131,7 +8154,8 @@
               via: 'contextmenu',
               verified: null,
               catalog: nearbyPointerCatalog(el),
-              idxRoundOnly: true
+              idxRoundOnly: true,
+              yieldBatch: true
             };
           },
           watchTraffic: async function (arg) {
@@ -8301,6 +8325,12 @@
       return page;
     }
 
+    function shouldStopBatch(value) {
+      if (!value || typeof value !== 'object') return false;
+      if (value.yieldBatch) return true;
+      return value.ok === false && !value.continueBatch;
+    }
+
     async function runOperations(operations) {
       scriptAborted = false;
       hydrateSnapIndexFromDom();
@@ -8336,7 +8366,7 @@
           results.push({ op: op, value: value });
           // selectOption 未命中会返回 {ok:false,kind:'query'} 而不是抛错；
           // 同一批后续 click（例如「下一步」）不应在选值失败后继续执行。
-          if (value && typeof value === 'object' && value.ok === false && !value.continueBatch) break;
+          if (shouldStopBatch(value)) break;
         }
         if (trafficHook) {
           var leftover = stopTrafficHook();
