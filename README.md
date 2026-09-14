@@ -2,6 +2,8 @@
 
 用大模型操作当前网页：理解页面、填写表单、点击、上传已附加文件。Chrome / Edge 的 MV3 扩展，需要 Chrome 109 或更高版本。
 
+详细的使用手册见 [doc/user-guide.md](doc/user-guide.md)。
+
 ## 能做什么
 
 - 点击工具栏图标，在当前页注入聊天面板（须已在目标网站登录）
@@ -54,7 +56,7 @@ chmod +x WebpageAgent-Installer-Linux-Mac.sh && ./WebpageAgent-Installer-Linux-M
 
 ## 使用说明
 
-如何编写任务指令，以及模型可调用的全部工具、参数与分支，见 [doc/user-guide.md](doc/user-guide.md)。
+详细的使用手册见 [doc/user-guide.md](doc/user-guide.md)：如何编写任务指令，以及模型可调用的全部工具、参数与分支。
 
 ## 免责声明
 

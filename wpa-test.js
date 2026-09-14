@@ -328,6 +328,10 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
     '手册：memorize/recall 与记忆目录');
   ok(/不必再 recall/.test(pbSrc) && /\{\} 或缺 value/.test(pbSrc) && /快照 panes 不算/.test(pbSrc),
     '手册：历史够用则不必 recall；空对象不是 value');
+  ok(/ocr\/ocrFill 只读当前像素/.test(pbSrc) && /换图先 click/.test(pbSrc) && /submit 仅当传入才点/.test(pbSrc),
+    '手册：ocr/ocrFill 只读像素，换图先 click');
+  ok(/button=right 只开菜单/.test(pbSrc) && /回执 selection/.test(pbSrc) && /statusMessages 再点/.test(pbSrc),
+    '手册：右键不改选中，确认框看 statusMessages');
   ok(!/预览、ESC/.test(pbSrc) && !/button=hover 只悬停，button=right 只右键；菜单项、预览/.test(pbSrc),
     '手册不写预览/ESC 任务例子');
   ok(!/abstractContent/.test(pbSrc) && !/审批按钮/.test(pbSrc), '手册不写审核字段名');
@@ -611,6 +615,20 @@ ok(/out\.yieldBatch = true/.test(bridge) && /via: 'hover'/.test(bridge),
   'hover 成功标 yieldBatch，把附近 catalog 交给下一轮');
 ok(/via: 'contextmenu'[\s\S]*?yieldBatch: true/.test(bridge),
   '右键揭菜单后同样 yieldBatch');
+{
+  const ctxStart = bridge.indexOf('contextClick: async function');
+  const ctxEnd = bridge.indexOf('watchTraffic: async function', ctxStart);
+  const ctxBody = ctxStart >= 0 && ctxEnd > ctxStart ? bridge.slice(ctxStart, ctxEnd) : '';
+  ok(ctxBody && !/dispatchClick\(/.test(ctxBody), '右键不先左键，避免改选中集');
+  ok(/selection: selection/.test(ctxBody) && /collectCheckedNamedRows/.test(ctxBody),
+    '右键回执带当前 selection');
+}
+ok(/function collectCheckedNamedRows/.test(bridge) && /selection: selection/.test(bridge),
+  '快照收录当前勾选/高亮条目');
+ok(/rowName === 'file'/.test(extractFn(bridge, 'isFileSelectRow')),
+  '无后缀目录行只要 name=file 也算可选中行');
+ok(/isFileSelectRow\(el\) \|\| fileRowOf\(el\)/.test(bridge),
+  '视图变化不把文件行当成 suggest');
 ok(/function cascaderClickTarget/.test(bridge), '带复选框的级联节点点击勾选框而不是展开箭头');
 ok(/不用 aria-hidden/.test(bridge), '级联弹层不因 Element UI 误标 aria-hidden 而被当成关闭');
 ok(/function cascaderLeafLabel/.test(bridge), '级联建议路径按末级标签匹配');
@@ -665,11 +683,12 @@ ok(!/很可能已登录/.test(ocrFillBody) && !/禁止再 ocrFill/.test(ocrFillB
   'ocrFill 不猜测已登录、不禁止再试');
 ok(ocrFillBody.indexOf("op: 'waitFor'") >= 0 &&
    ocrFillBody.indexOf("op: 'waitFor'") < ocrFillBody.indexOf('await ocrPageSelector'),
-  'ocrFill 前置核查在 OCR/刷新之前，不白花 OCR 调用');
+  'ocrFill 前置核查在 OCR 之前，不白花 OCR 调用');
 ok(!/ocrFillLoginVerdict/.test(bg) && !/probeCaptchaRejected/.test(bg),
   'ocrFill 不再把探针正则写成登录 verdict');
-ok(/sanitizePageOcrText\(String\(ocrVal\.text \|\| ''\), true\)/.test(ocrFillBody),
-  'ocrFill 填入前按验证码清洗 OCR 文本');
+ok(/sanitizePageOcrText\(String\(ocrVal\.text \|\| ''\), likelyCaptcha\)/.test(ocrFillBody),
+  'ocrFill 按 likelyCaptcha 清洗，不一律当验证码');
+ok(!/那会先点验证码图/.test(ocrFillBody), 'ocrFill 不再暗示会先点图刷新');
 ok(!/opsWantFreshCaptcha/.test(bg), '验证码不再作为重复护栏例外');
 ok(/Math\.abs\(report\.domChanged\) > 30000/.test(bg), 'SPA 大幅 DOM 变化后等 DOM 安静再快照');
 ok(/jsonNudgeCount/.test(bg), '非 JSON 输出有纠正重试计数');
@@ -1289,10 +1308,17 @@ ok(/function captchaShaped/.test(bridge), 'pagebridge 有验证码几何特征')
 ok(/function adjacentCaptchaHint/.test(bridge), 'pagebridge 用邻接短文案判定验证码，不用整表 innerText');
 ok(!/n\.innerText \|\| ''\)\.replace/.test(bridge.match(/function ancestorCaptchaText\([\s\S]*?\n    \}/)[0]), '祖先验证码文案不再扫整段 innerText');
 ok(/area > 20000/.test(bridge), '验证码打分惩罚过大 Logo/banner');
-ok(/function refreshCaptchaPixels/.test(bridge), 'captcha 魔术值截图前先点击刷新');
-ok(/refreshFirst/.test(extractFn(bridge, 'captureImage')) && /looksCaptcha\(target\)/.test(extractFn(bridge, 'captureImage')),
-  '像验证码的图也在 OCR 前点刷新，识别后不再点图');
+ok(!/function refreshCaptchaPixels/.test(bridge) && !/refreshFirst/.test(extractFn(bridge, 'captureImage')),
+  'OCR 截图不再自动点图换新');
+ok(!/\.click\(\)/.test(extractFn(bridge, 'captureImage')), 'captureImage 不 click');
+ok(/reason: 'ambiguous'/.test(extractFn(bridge, 'captureImage')) &&
+  /\/\^\(img\|canvas\)\$\/i/.test(extractFn(bridge, 'captureImage')),
+  '裸 IMG/CANVAS 多图时交目录');
+ok(/refreshed: false/.test(extractFn(bridge, 'captureImage')), 'captureImage 诚实标 refreshed=false');
 ok(/function looksLikeCaptchaCode/.test(bg), 'OCR 结果过长时拒绝填入验证码');
+ok(/registerSnapEl\(liveIm\)/.test(bridge) && /imgRow\.captcha/.test(bridge),
+  '快照给图片编本轮 idx，验证码图进 outline');
+ok(/via: 'image'/.test(bridge), 'findControls 把 img/canvas 标 via=image');
 ok(/else if \(combo\) committed = comboCommittedText/.test(extractFn(bridge, 'collectFieldState')),
   '普通输入框不用下拉 committed 逻辑');
 ok(/committed = filter/.test(extractFn(bridge, 'collectFieldState')),
@@ -1845,7 +1871,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.9.1', '锁步版本为 5.9.1');
+ok(manifestVer === '5.10.0', '锁步版本为 5.10.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -2934,8 +2960,9 @@ try {
 if (ocrSelBox.ocrTargetToSelector) {
   ok(ocrSelBox.ocrTargetToSelector(12) === '12', 'ocr 目标接受数字 idx');
   ok(ocrSelBox.ocrTargetToSelector(' captcha ') === 'captcha', 'ocr 目标字符串去空白');
+  ok(ocrSelBox.ocrTargetToSelector({ idx: 12 }) === '12', 'ocr 目标接受 {idx}');
   ok(ocrSelBox.ocrTargetToSelector({ x: 1 }) === '' && ocrSelBox.ocrTargetToSelector(-3) === '',
-    'ocr 目标拒绝对象与非正数');
+    'ocr 目标拒绝无 idx 对象与非正数');
 }
 ok(/需要选择器字符串或本轮快照 idx/.test(bg) && /ocrTargetToSelector\(args && args\[0\]\)/.test(bg),
   'ocr/ocrFill 入口放行本轮快照 idx');
@@ -2958,6 +2985,12 @@ if (captchaOcrBox.sanitizePageOcrText) {
   ok(captchaOcrBox.sanitizePageOcrText('验证码：NX65', true) === 'NX65', '去掉验证码标签只留字符');
   ok(captchaOcrBox.sanitizePageOcrText('`AB12`', true) === 'AB12', '去掉验证码反引号包裹');
   ok(captchaOcrBox.sanitizePageOcrText('hello world', false) === 'hello world', '非验证码 OCR 不抽字母数字');
+}
+if (captchaOcrBox.looksLikeCaptchaCode) {
+  ok(captchaOcrBox.looksLikeCaptchaCode('ab'), '两字符短码不因过短拒绝');
+  ok(captchaOcrBox.looksLikeCaptchaCode('USTCScienceD'), '十余字符仍可作短码');
+  ok(!captchaOcrBox.looksLikeCaptchaCode('这是一段很长的页面标题文字再加上更多说明内容，已经超过四十个字符了还在继续写下去。'),
+    '长文不像验证码短码');
 }
 ok(!/opsWantFreshCaptcha/.test(bg), 'ocrFill 不再挂在重复护栏例外上');
 ok(/function enqueueDiagMut\(/.test(bg) && /enqueueDiagMut\(persistDiagTrail\)/.test(bg)
@@ -3218,6 +3251,31 @@ if (runCompactBox.compactRunResult) {
     ocrOut.indexOf('验证码错误') >= 0 && ocrOut.indexOf('drop-me') < 0 && ocrOut.indexOf('qU6c') >= 0 &&
     ocrOut.indexOf('请输入验证码') >= 0,
     'ocrFill 压缩保留 filled/statusMessages/placeholder，不发明 loginError');
+  const ocrRefPacked = JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'ocrFill',
+      value: { ok: true, filled: true, submitted: false, text: 'qU6c', refreshed: false, likelyCaptcha: true, tag: 'IMG' }
+    }]
+  });
+  const ocrRefOut = runCompactBox.compactRunResult(ocrRefPacked);
+  ok(ocrRefOut.indexOf('"refreshed":false') >= 0 && ocrRefOut.indexOf('"likelyCaptcha":true') >= 0 &&
+    ocrRefOut.indexOf('"submitted":false') >= 0,
+    'ocrFill 压缩保留 refreshed/likelyCaptcha/submitted');
+  const selPacked = JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'click',
+      value: {
+        ok: true, via: 'contextmenu', yieldBatch: true,
+        selection: [{ idx: 1, name: 'AMD_opt_vasp_result.txt' }, { idx: 4, name: '超算应用' }]
+      }
+    }]
+  });
+  const selOut = runCompactBox.compactRunResult(selPacked);
+  ok(selOut.indexOf('AMD_opt_vasp_result.txt') >= 0 && selOut.indexOf('超算应用') >= 0 &&
+    selOut.indexOf('"selection"') >= 0,
+    '右键回执压缩保留 selection 条目名');
   const verifiedPacked = JSON.stringify({
     kind: 'batch',
     results: [{ op: 'setVal', value: { ok: true, verified: true, actual: '单位', expected: '单位' } }]
@@ -4075,8 +4133,9 @@ ok(/技能\r?\n\r?\n<img src="doc\/screenshot1\.png"/.test(readmeSrc), 'README �
 ok(/\*\*图1\. 六句指令完成发布软件流程自动化\*\*\r?\n\r?\n## 安装/.test(readmeSrc), 'README 图注后空一行');
 ok(/doc\/screenshot1\.png/.test(readmeSrc) && fs.existsSync(path.join(__dirname, 'doc/screenshot1.png')),
   'README 引用 doc/screenshot1.png 且文件存在');
-ok(/doc\/user-guide\.md/.test(readmeSrc) && fs.existsSync(path.join(__dirname, 'doc/user-guide.md')),
-  'README 链到使用说明且文件存在');
+ok(/详细的使用手册见/.test(readmeSrc) && /doc\/user-guide\.md/.test(readmeSrc) &&
+    fs.existsSync(path.join(__dirname, 'doc/user-guide.md')),
+  'README 写明详细使用手册见 doc/user-guide.md');
 {
   const guideSrc = fs.readFileSync(path.join(__dirname, 'doc/user-guide.md'), 'utf8');
   ok(/### `get`/.test(guideSrc) && /### `goto`/.test(guideSrc) && /### `click`/.test(guideSrc),
@@ -4085,6 +4144,12 @@ ok(/doc\/user-guide\.md/.test(readmeSrc) && fs.existsSync(path.join(__dirname, '
     '使用说明写明 click.button 与悬停后停批');
   ok(!/clickByText\("预览"/.test(guideSrc) && !/预览、ESC/.test(guideSrc),
     '使用说明不写预览/ESC 站点菜谱');
+  ok(/只读当前像素/.test(guideSrc) && /不点图换新/.test(guideSrc) && /仅当传入才点/.test(guideSrc) &&
+    /把现在屏幕上的验证码/.test(guideSrc) && /填进『验证码』框/.test(guideSrc),
+    '使用说明：ocr/ocrFill 只读像素，submit 仅传入才点，并给出 captcha 选图的用户指令');
+  ok(!/一步完成/.test(guideSrc), '使用说明不再把 ocrFill 写成一步完成');
+  ok(/不先左键/.test(guideSrc) && /selection/.test(guideSrc),
+    '使用说明：右键不改选中，回执带 selection');
 }
 ok(/max-width:100%/.test(readmeSrc), 'README 截图随页面宽度缩放');
 

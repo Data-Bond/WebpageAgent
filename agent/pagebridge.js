@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '5.9.1';
+  var BRIDGE_VERSION = '5.10.0';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
   var SNAPSHOT_L0_CAP_FULL = 1500;
@@ -1201,8 +1201,10 @@
             w: Math.round(w),
             h: Math.round(h),
             captcha: captcha,
+            shaped: captchaShaped(el),
             inForm: inForm,
-            hidden: !visible
+            hidden: !visible,
+            _el: el
           }
         });
       }
@@ -1210,6 +1212,27 @@
       for (var k = 0; k < extras.length; k++) consider(extras[k]);
       scored.sort(function (a, b) { return b.score - a.score; });
       return scored.slice(0, 20).map(function (s) { return s.entry; });
+    }
+
+    function collectCheckedNamedRows() {
+      var rows = [];
+      try { rows = collectFileSelectRows(); } catch (eR) { rows = []; }
+      var out = [];
+      var seen = {};
+      for (var i = 0; i < rows.length && out.length < 24; i++) {
+        var row = rows[i];
+        var on = false;
+        try { on = readFileRowChecked(row); } catch (eC) { on = false; }
+        if (!on) continue;
+        var lab = fileRowLabel(row);
+        var key = normText(lab);
+        if (!key || seen[key]) continue;
+        seen[key] = true;
+        var idx = 0;
+        try { idx = snapIdxOf(row) || snapIdxOf(fileRowNameEl(row)) || 0; } catch (eI) { idx = 0; }
+        out.push({ idx: idx || undefined, name: String(lab).replace(/\s+/g, ' ').trim().slice(0, 80) });
+      }
+      return out;
     }
 
     var TEXT_ACTION_MAX = 400;
@@ -1883,32 +1906,6 @@
       return new Promise(function (resolve) { setTimeout(resolve, ms); });
     }
 
-    async function refreshCaptchaPixels(el) {
-      if (!el) return;
-      var tag = (el.tagName || '').toUpperCase();
-      if (tag !== 'IMG' && tag !== 'CANVAS') return;
-      var oldSrc = '';
-      try { oldSrc = el.currentSrc || el.src || ''; } catch (e) {}
-      var loaded = false;
-      function onLoad() { loaded = true; }
-      if (tag === 'IMG') {
-        try { el.addEventListener('load', onLoad); } catch (e2) {}
-      }
-      try { el.click(); } catch (e3) {}
-      var waited = 0;
-      while (waited < 700) {
-        await waitMs(50);
-        waited += 50;
-        var now = '';
-        try { now = el.currentSrc || el.src || ''; } catch (e4) {}
-        if (loaded || (now && now !== oldSrc)) break;
-      }
-      if (tag === 'IMG') {
-        try { el.removeEventListener('load', onLoad); } catch (e5) {}
-      }
-      await waitMs(80);
-    }
-
     async function captureImage(sel) {
       var rawSel = String(sel == null ? '' : sel).trim();
       var magicCaptcha = /^captcha$/i.test(rawSel);
@@ -1920,21 +1917,39 @@
         // 本轮快照 idx：resolveTarget 自带 data-wpa-i 回退，MAIN world 无需先 hydrate
         el = resolveTarget(rawSel);
         if (!el) throw new Error('元素未找到: ' + sel);
+      } else if (/^(img|canvas)$/i.test(rawSel)) {
+        var tagged = [];
+        try { tagged = queryAllDeep(rawSel); } catch (eT) { tagged = []; }
+        var vis = [];
+        for (var ti = 0; ti < tagged.length; ti++) {
+          var visT = false;
+          try { visT = isVisible(tagged[ti]); } catch (eV) {}
+          if (visT) vis.push(tagged[ti]);
+        }
+        if (vis.length > 1) {
+          var lines = [];
+          for (var ci = 0; ci < vis.length && lines.length < 16; ci++) {
+            lines.push(catalogLineForEl(vis[ci], {
+              tag: vis[ci].tagName || '',
+              text: String((vis[ci].alt || vis[ci].id || '')).slice(0, 80)
+            }));
+          }
+          return {
+            ok: false,
+            reason: 'ambiguous',
+            catalog: lines,
+            idxRoundOnly: true,
+            count: vis.length
+          };
+        }
+        el = vis[0] || tagged[0] || null;
+        if (!el) throw new Error('元素未找到: ' + sel);
       } else {
         el = queryDeep(rawSel);
         if (!el) throw new Error('元素未找到: ' + sel);
       }
       var target = findCaptureTarget(el);
       try { if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
-      // 点图换新必须在 OCR 之前。识别之后立刻填入，中间不再 click/快照。
-      var refreshFirst = magicCaptcha || looksCaptcha(target) || looksCaptcha(el);
-      if (refreshFirst) {
-        await refreshCaptchaPixels(target);
-        if (magicCaptcha) {
-          var again = pickPageCaptchaImage();
-          if (again) target = findCaptureTarget(again);
-        }
-      }
       await waitMs(60);
       var tag = (target.tagName || '').toUpperCase();
       if (tag === 'CANVAS') {
@@ -1970,6 +1985,8 @@
       }
       var inForm = false;
       try { inForm = !!(target.closest && target.closest('form')) || !!(el.closest && el.closest('form')); } catch (e) {}
+      var snapIdx = 0;
+      try { snapIdx = snapIdxOf(target) || snapIdxOf(el) || 0; } catch (eIdx) { snapIdx = 0; }
       return {
         ok: true,
         via: pixels.via,
@@ -1977,6 +1994,8 @@
         tag: tag,
         dataUrl: pixels.dataUrl || '',
         geom: geom,
+        refreshed: false,
+        idx: snapIdx || undefined,
         likelyCaptcha: !!(magicCaptcha || looksCaptcha(target) || looksCaptcha(el) ||
           CAPTCHA_RE.test(rawSel) || captchaShaped(target) || (captchaShaped(el) && inForm))
       };
@@ -3003,9 +3022,11 @@
       var icon = fileSelectIcon(el);
       var label = fileRowLabel(el);
       if (!label) return false;
-      if (nameEl && icon) return true;
+      var rowName = '';
+      try { rowName = String(el.getAttribute && el.getAttribute('name') || '').toLowerCase(); } catch (eN) {}
+      if (rowName === 'file' || rowName === 'folder' || rowName === 'dir') return true;
+      if (nameEl) return true;
       if (icon && looksLikeFileName(label)) return true;
-      if (nameEl && looksLikeFileName(label)) return true;
       return false;
     }
 
@@ -3413,10 +3434,13 @@
           hops++;
         }
         try {
-          var firstHead = parent.querySelector && parent.querySelector(SECTION_HEAD_SEL);
-          if (firstHead && firstHead !== el && !(el.contains && el.contains(firstHead))) {
-            var ft = headingTextOf(firstHead, skip);
-            if (ft) return ft;
+          var kidCount = parent.children ? parent.children.length : 0;
+          if (kidCount > 0 && kidCount <= 16) {
+            var firstHead = parent.querySelector && parent.querySelector(SECTION_HEAD_SEL);
+            if (firstHead && firstHead !== el && !(el.contains && el.contains(firstHead))) {
+              var ft = headingTextOf(firstHead, skip);
+              if (ft) return ft;
+            }
           }
         } catch (eHead) {}
         n = parent;
@@ -3781,7 +3805,9 @@
       function addEl(el, preferNear) {
         if (!el || items.length >= maxItems) return;
         if (isIgnored(el) || !isVisible(el)) return;
+        try { if (isFileSelectRow(el) || fileRowOf(el)) return; } catch (eFile) {}
         var root = viewItemRootOf(el) || el;
+        try { if (isFileSelectRow(root)) return; } catch (eFile2) {}
         if (seenEl && seenEl.has(root)) return;
         var rec = serializeViewItem(root);
         if (preferNear && !rec.near) {
@@ -4004,7 +4030,7 @@
           title: extra.title != null ? extra.title : (el && el.getAttribute ? (el.getAttribute('title') || '').slice(0, 60) : ''),
           box: box,
           widget: extra.widget != null ? extra.widget : (box ? boxWidgetOf(el) : (tagHostOf(el) ? 'tags' : (comboboxHostOf(el) ? 'combobox' : undefined))),
-          checked: extra.checked != null ? extra.checked : (box ? readBoxChecked(el) : undefined),
+          checked: extra.checked != null ? extra.checked : (box ? readBoxChecked(el) : (fileRowOf(el) ? readFileRowChecked(fileRowOf(el)) : undefined)),
           cascaderRole: isCascaderSearchInput(el)
             ? 'filter'
             : (cascaderHostOf(el) ? 'trigger-or-control' : undefined),
@@ -4378,12 +4404,33 @@
           'rest'
         );
       }
-      var outlineLines = bandBuckets[0].concat(bandBuckets[1], bandBuckets[2], bandBuckets[3]);
       var images = [];
       var textActions = [];
       if (!timedOut() && (deadline - Date.now() > 400)) {
         try { images = collectPageImages({ skipSelector: true }); } catch (eIm) { images = []; }
       }
+      for (var imi = 0; imi < images.length; imi++) {
+        var imgRow = images[imi];
+        var liveIm = imgRow && imgRow._el;
+        if (liveIm) {
+          imgRow.idx = registerSnapEl(liveIm);
+          var showIm = !!(imgRow.captcha || (imgRow.shaped && imgRow.inForm));
+          if (showIm) {
+            pushOutline(
+              '[' + imgRow.idx + ']<' + (imgRow.tag || 'IMG') +
+              (imgRow.captcha ? ' captcha' : '') +
+              ' w=' + imgRow.w + ' h=' + imgRow.h +
+              (imgRow.alt ? ' name=' + String(imgRow.alt).replace(/\s+/g, ' ').slice(0, 40) : '') +
+              '>',
+              imgRow.captcha ? 'field' : 'rest'
+            );
+          }
+          delete imgRow._el;
+        }
+      }
+      var outlineLines = bandBuckets[0].concat(bandBuckets[1], bandBuckets[2], bandBuckets[3]);
+      var selection = [];
+      try { selection = collectCheckedNamedRows(); } catch (eSel) { selection = []; }
       if (!timedOut() && (deadline - Date.now() > 400)) {
         try { textActions = collectPageTextActions({ skipSelector: true }); } catch (eTa) { textActions = []; }
       }
@@ -4428,6 +4475,7 @@
         framesSummary: framesSummary(),
         formDigest: formDigest(),
         images: images,
+        selection: selection,
         textActions: textActions,
         elements: elements
       }));
@@ -5448,6 +5496,7 @@
 
     function elFromControlHit(hit) {
       if (!hit) return null;
+      if (hit.el && hit.el.nodeType === 1) return hit.el;
       if (hit.idx) {
         try {
           var byIdx = resolveTarget(hit.idx);
@@ -7375,7 +7424,8 @@
                 placeholder: el.placeholder || '',
                 title: (el.getAttribute && el.getAttribute('title')) || '',
                 text: extra.text || '',
-                via: extra.via || undefined
+                via: extra.via || undefined,
+                el: el
               });
             }
             var all = queryAllDeep(INTERACTIVE_SELECTOR);
@@ -7420,6 +7470,37 @@
               if (lrt >= 0 && (best < 0 || lrt < best)) best = lrt;
               if (best < 0) continue;
               pushHit(row.el, best, { text: row.text, label: row.label, via: 'field' });
+            }
+            var imgs = [];
+            try { imgs = queryAllDeep('img, canvas'); } catch (eIm) { imgs = []; }
+            for (var ii = 0; ii < imgs.length; ii++) {
+              var im = imgs[ii];
+              var visIm = false;
+              try { visIm = isVisible(im); } catch (eVis) {}
+              var capIm = false;
+              try { capIm = looksCaptcha(im); } catch (eCap) {}
+              if (!visIm && !capIm) continue;
+              var inFormIm = false;
+              try { inFormIm = !!(im.closest && im.closest('form')); } catch (eF) {}
+              var imFields = [
+                im.alt,
+                im.id,
+                im.className,
+                im.getAttribute && im.getAttribute('title'),
+                im.getAttribute && im.getAttribute('aria-label'),
+                nearestLabel(im),
+                accessibleName(im)
+              ];
+              var imRank = -1;
+              for (var ij = 0; ij < imFields.length; ij++) {
+                var ir = rankMatch(imFields[ij], needle);
+                if (ir >= 0 && (imRank < 0 || ir < imRank)) imRank = ir;
+              }
+              if (imRank < 0 && CAPTCHA_RE.test(needle) && (capIm || (captchaShaped(im) && inFormIm))) {
+                imRank = 0;
+              }
+              if (imRank < 0) continue;
+              pushHit(im, imRank, { text: String(im.alt || '').slice(0, 80), via: 'image' });
             }
             found.sort(function (a, b) { return a.rank - b.rank; });
             return found.slice(0, cap);
@@ -8141,18 +8222,20 @@
             if (!looked || looked.kind !== 'one' || !looked.el) return pointerLookupFail(looked);
             var el = looked.el;
             hoverElement(el);
-            await sleepMs(120);
-            dispatchClick(el);
             await sleepMs(80);
             dispatchContextMenu(el);
-            var inner = null;
-            try { inner = el.querySelector('.textBox, img, [class*="text"]'); } catch (e) {}
-            if (inner && inner !== el) dispatchContextMenu(inner);
+            var row = null;
+            try { row = fileRowOf(el); } catch (eRow) { row = null; }
+            var rowName = '';
+            try { rowName = (row && fileRowLabel(row)) || accessibleName(el) || ''; } catch (eNm) {}
+            var selection = [];
+            try { selection = collectCheckedNamedRows(); } catch (eSel) { selection = []; }
             return {
               ok: true,
               kind: 'action',
               via: 'contextmenu',
-              verified: null,
+              name: String(rowName || '').replace(/\s+/g, ' ').trim().slice(0, 80) || undefined,
+              selection: selection,
               catalog: nearbyPointerCatalog(el),
               idxRoundOnly: true,
               yieldBatch: true

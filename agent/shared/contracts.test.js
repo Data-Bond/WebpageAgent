@@ -248,6 +248,24 @@ describe('toolProtocol hybrid', () => {
     assert.equal(aliasDbl.calls[0].args[0], 'a.txt');
   });
 
+  it('ocr 只读当前像素；ocrFill 不自动提交', () => {
+    const tools = P.toOpenAiTools();
+    const ocr = tools.find((t) => t.function.name === 'ocr');
+    const ocrFill = tools.find((t) => t.function.name === 'ocrFill');
+    assert.match(ocr.function.description, /不点击/);
+    assert.match(ocrFill.function.description, /submit 仅当传入才点/);
+    assert.ok(Array.isArray(ocrFill.function.parameters.properties.image.oneOf));
+    const filled = P.parseAssistantMessage({
+      tool_calls: [
+        { function: { name: 'ocrFill', arguments: '{"image":9,"input":18}' } }
+      ]
+    });
+    assert.equal(filled.calls[0].op, 'ocrFill');
+    assert.equal(filled.calls[0].args[0], 9);
+    assert.equal(filled.calls[0].args[1], 18);
+    assert.equal(filled.calls[0].args[2], undefined);
+  });
+
   it('get.limit 是字数、print.limit 是目录条数', () => {
     const tools = P.toOpenAiTools();
     const get = tools.find((t) => t.function.name === 'get');

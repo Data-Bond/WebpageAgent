@@ -32,8 +32,8 @@
     { type: 'function', function: { name: 'scroll', description: '滚动字段祖先或整页。', parameters: { type: 'object', properties: { target: TARGET, direction: { type: 'string' } }, required: ['target'] } } },
     { type: 'function', function: { name: 'wait', description: '等待 idx/选择器出现，超时是观察不是崩溃。', parameters: { type: 'object', properties: { target: TARGET, timeout: { type: 'integer' } }, required: ['target'] } } },
     { type: 'function', function: { name: 'upload', description: '把已附加文件上传到文件控件，禁止弹出系统文件框。', parameters: { type: 'object', properties: { target: TARGET, key: { description: '附件 key 或 key 数组' } }, required: ['target', 'key'] } } },
-    { type: 'function', function: { name: 'ocr', description: '识别页面图片或 canvas 文字。禁止用来读在线表格。', parameters: { type: 'object', properties: { target: TARGET }, required: ['target'] } } },
-    { type: 'function', function: { name: 'ocrFill', description: '验证码：截图识别、填入、提交一步完成。', parameters: { type: 'object', properties: { image: { type: 'string' }, input: TARGET, submit: TARGET }, required: ['image', 'input'] } } },
+    { type: 'function', function: { name: 'ocr', description: '识别页面图片或 canvas 当前像素。不点击、不换图。禁止用来读在线表格。', parameters: { type: 'object', properties: { target: TARGET }, required: ['target'] } } },
+    { type: 'function', function: { name: 'ocrFill', description: '识别图片当前像素并写入输入框。不点图换新。submit 仅当传入才点。', parameters: { type: 'object', properties: { image: TARGET, input: TARGET, submit: TARGET }, required: ['image', 'input'] } } },
     { type: 'function', function: { name: 'officeRead', description: '读在线表格/文档。表格用 A1 或 range。', parameters: { type: 'object', properties: { addr: { type: 'string' }, range: { type: 'string' } } } } },
     { type: 'function', function: { name: 'officeFill', description: '写在线表格格或向文档当前选区插字。表格必须带 A1。', parameters: { type: 'object', properties: { addr: { type: 'string' }, value: { type: 'string' }, cells: { type: 'object' } } } } },
     { type: 'function', function: { name: 'print', description: '按关键词搜索控件，把本轮定位目录打进对话。idx 仅本轮有效。limit 为目录条数。不算字数，不写入记忆。', parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', description: '目录条数' } }, required: ['query'] } } },
@@ -78,7 +78,7 @@
     }
     if (name === 'upload') return [target, obj.key];
     if (name === 'ocr') return [target];
-    if (name === 'ocrFill') return [obj.image || 'captcha', obj.input, obj.submit];
+    if (name === 'ocrFill') return [obj.image != null && obj.image !== '' ? obj.image : 'captcha', obj.input, obj.submit];
     if (name === 'officeRead') {
       var ro = {};
       if (obj.addr) ro.addr = obj.addr;

@@ -256,6 +256,8 @@ const RUNTIME_PLAYBOOK =
   '多轮完不成：换 print/get/scroll。get.limit 默认 10000 字，offset 从第 N 字起；truncated 则加大 limit 或设 offset 再 get，见截断尾注，勿换 CSS 重点。print.limit 是目录条数。\n' +
   '上一轮无法解析时按观察改写；回答用户用 done（summary 为回答）或 ask。\n' +
   '缺用户才有的信息才 ask。上传用 upload(控件, 附件key)，禁止 click 上传按钮弹系统框。\n' +
+  'ocr/ocrFill 只读当前像素，不点图；换图先 click。submit 仅当传入才点。\n' +
+  'click button=right 只开菜单，不改选中。回执 selection 为当前勾选/高亮条目；确认框看 statusMessages 再点。\n' +
   '技能变量 {{name}} 须原样输出，由引擎替换本地值。\n' +
   PLAYBOOK_END;
 
@@ -5336,6 +5338,8 @@ function maskSnapshotPiiInPlace(copy) {
   for (let j = 0; j < acts.length; j++) maskObjFields(acts[j], ['text']);
   const stars = Array.isArray(copy.starFields) ? copy.starFields : [];
   for (let k = 0; k < stars.length; k++) maskObjFields(stars[k], ['label', 'hint']);
+  const sels = Array.isArray(copy.selection) ? copy.selection : [];
+  for (let se = 0; se < sels.length; se++) maskObjFields(sels[se], ['name', 'text']);
   const views = Array.isArray(copy.viewItems) ? copy.viewItems : [];
   for (let v = 0; v < views.length; v++) {
     maskObjFields(views[v], ['label', 'hint', 'near', 'text', 'value', 'html']);
@@ -5374,6 +5378,7 @@ function stringifySnapshot(snapshot, maxChars, opts) {
   const src = snapshot || {};
   const copy = { outline: typeof src.outline === 'string' ? src.outline : '' };
   if (Array.isArray(src.starFields)) copy.starFields = src.starFields.slice();
+  if (Array.isArray(src.selection)) copy.selection = src.selection.slice(0, 24);
   if (src.officeContext && typeof src.officeContext === 'object') {
     try { copy.officeContext = JSON.parse(JSON.stringify(src.officeContext)); } catch (eOc) {
       copy.officeContext = src.officeContext;
@@ -5405,7 +5410,7 @@ function stringifySnapshot(snapshot, maxChars, opts) {
   const keys = Object.keys(src);
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i];
-    if (k === 'outline' || k === 'snapshotMs' || k === 'starFields' || k === 'viewItems' || k === 'officeContext' || k === 'panes') continue;
+    if (k === 'outline' || k === 'snapshotMs' || k === 'starFields' || k === 'viewItems' || k === 'officeContext' || k === 'panes' || k === 'selection') continue;
     copy[k] = src[k];
   }
   copy.elements = Array.isArray(copy.elements) ? copy.elements.slice() : [];
@@ -5614,8 +5619,19 @@ function compactOneHelperValue(op, val) {
         o.idxRoundOnly = true;
       }
     }
+  if (Array.isArray(val.selection)) {
+    o.selection = val.selection.slice(0, 24).map(function (x) {
+      if (!x || typeof x !== 'object') return String(x || '').slice(0, 80);
+      const row = { name: String(x.name || x.text || '').slice(0, 80) };
+      if (x.idx != null && Number.isFinite(Number(x.idx))) row.idx = Math.round(Number(x.idx));
+      return row;
+    });
+  }
   if (val.yieldBatch) o.yieldBatch = true;
   if (val.via) o.via = String(val.via).slice(0, 40);
+  if (val.likelyCaptcha != null) o.likelyCaptcha = !!val.likelyCaptcha;
+  if (val.refreshed != null) o.refreshed = !!val.refreshed;
+  if (val.tag) o.tag = String(val.tag).slice(0, 16);
   if (val.resolved) o.resolved = String(val.resolved).slice(0, 24);
   if (val.idx != null && Number.isFinite(Number(val.idx))) o.idx = Math.round(Number(val.idx));
   if (val.expected != null) o.expected = String(val.expected).slice(0, 80);
@@ -6289,6 +6305,13 @@ async function cropPngDataUrl(fullPng, geom) {
 function ocrTargetToSelector(raw) {
   if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return String(Math.floor(raw));
   if (typeof raw === 'string') return raw.trim();
+  if (raw && typeof raw === 'object') {
+    if (raw.idx != null && Number.isFinite(Number(raw.idx)) && Number(raw.idx) > 0) {
+      return String(Math.floor(Number(raw.idx)));
+    }
+    if (typeof raw.selector === 'string' && raw.selector.trim()) return raw.selector.trim();
+    if (typeof raw.text === 'string' && raw.text.trim()) return raw.text.trim();
+  }
   return '';
 }
 
@@ -6301,8 +6324,11 @@ function ocrHintFromArgs(args) {
 }
 
 function looksLikeCaptchaCode(text) {
-  const s = String(text || '').replace(/\s+/g, '');
-  return s.length >= 3 && s.length <= 12;
+  const raw = String(text || '').trim();
+  const s = raw.replace(/\s+/g, '');
+  if (!s || s.length > 40 || raw.length > 48) return false;
+  if (raw.split(/\s+/).length >= 8) return false;
+  return true;
 }
 
 function sanitizePageOcrText(text, likelyCaptcha) {
@@ -6329,6 +6355,8 @@ function stripCapturePixels(cap) {
     selector: cap.selector,
     tag: cap.tag,
     likelyCaptcha: !!cap.likelyCaptcha,
+    refreshed: !!cap.refreshed,
+    idx: cap.idx,
     geom: cap.geom || null,
     error: cap.error
   };
@@ -6376,6 +6404,17 @@ async function ocrPageSelector(tabId, args, ctx) {
   if (cap && cap.__error) {
     return { ok: false, kind: 'query', error: '截取页面图片失败：' + cap.__error };
   }
+  if (cap && cap.reason === 'ambiguous') {
+    return {
+      ok: false,
+      kind: 'query',
+      reason: 'ambiguous',
+      catalog: Array.isArray(cap.catalog) ? cap.catalog : [],
+      idxRoundOnly: true,
+      count: cap.count,
+      error: '多个可见 ' + String(selector).slice(0, 40) + '，请改用本轮 idx'
+    };
+  }
   if (!cap || cap.ok === false) {
     return { ok: false, kind: 'query', error: (cap && cap.error) || '截取页面图片失败' };
   }
@@ -6413,7 +6452,10 @@ async function ocrPageSelector(tabId, args, ctx) {
       text: cleaned,
       chars: cleaned.length,
       via: cap.via || '',
-      likelyCaptcha: likelyCaptcha
+      likelyCaptcha: likelyCaptcha,
+      refreshed: false,
+      tag: cap.tag || '',
+      idx: cap.idx || undefined
     };
   } catch (e) {
     if (isUserCancelled(e, cancelRef)) {
@@ -6428,9 +6470,9 @@ async function ocrPageSelector(tabId, args, ctx) {
 function ocrFillSubmitSelector(args) {
   if (!args || args.length < 3) return '';
   const s = args[2];
-  if (typeof s === 'string' || typeof s === 'number') return ocrTargetToSelector(s);
-  if (s && typeof s === 'object' && typeof s.submit === 'string') return s.submit.trim();
-  return '';
+  if (s == null || s === '') return '';
+  if (s && typeof s === 'object' && s.submit != null) return ocrTargetToSelector(s.submit);
+  return ocrTargetToSelector(s);
 }
 
 async function ocrFillAndSubmit(tabId, args, ctx) {
@@ -6446,9 +6488,9 @@ async function ocrFillAndSubmit(tabId, args, ctx) {
   if (!inputSel) {
     return { ok: false, kind: 'query', error: 'page.ocrFill 需要验证码输入框选择器或本轮快照 idx' };
   }
-  // 前置事实核查：验证码输入框还在不在页面上。登录提交成功后页面常已切换，
-  // 模型却可能凭空断定“仍在登录页”而重复 ocrFill——那会先点验证码图“刷新”（在已登录页面乱点）、
-  // 再白调一次 OCR。输入框已消失时直接拒绝，比任何提示词都可靠。
+  // 前置事实核查：输入框还在不在页面上。登录提交后页面常已切换，
+  // 模型却可能凭空断定“仍在登录页”而重复 ocrFill。输入框已消失时直接拒绝。
+  // ocr/ocrFill 只读当前像素，不会点图换新。
   const precheck = await runPageOpsBatch(tabId, [{ op: 'waitFor', args: [inputSel.trim(), { timeout: 600 }] }]);
   if (!precheck.navigated && precheck.resp && precheck.resp.ok && !precheck.resp.__error) {
     const preParts = mergePageOpResults(precheck.resp) || [];
@@ -6462,18 +6504,20 @@ async function ocrFillAndSubmit(tabId, args, ctx) {
   }
   const ocrVal = await ocrPageSelector(tabId, [imgSel], ctx);
   if (!ocrVal || ocrVal.ok === false || ocrVal.cancelled) return ocrVal;
-  const text = sanitizePageOcrText(String(ocrVal.text || ''), true);
+  const likelyCaptcha = !!ocrVal.likelyCaptcha;
+  const text = sanitizePageOcrText(String(ocrVal.text || ''), likelyCaptcha);
   if (!text) {
     return { ok: false, kind: 'query', error: 'OCR 结果为空，未填写' };
   }
-  if (!looksLikeCaptchaCode(text)) {
+  if (likelyCaptcha && !looksLikeCaptchaCode(text)) {
     return {
       ok: false,
       kind: 'query',
-      error: 'OCR 文本未写入（长度 ' + text.length + '，不像验证码字符）。',
+      error: 'OCR 文本未写入（长度 ' + text.length + '，像长文不像短码）。',
       text: text,
       chars: text.length,
-      likelyCaptcha: true
+      likelyCaptcha: true,
+      refreshed: false
     };
   }
   if (isUserCancelled(null, cancelRef)) {
@@ -6490,7 +6534,9 @@ async function ocrFillAndSubmit(tabId, args, ctx) {
   const shared = {
     text: text,
     chars: text.length,
-    likelyCaptcha: !!ocrVal.likelyCaptcha,
+    likelyCaptcha: likelyCaptcha,
+    refreshed: false,
+    tag: ocrVal.tag || '',
     via: ocrVal.via || '',
     submitted: !!submitSel,
     navigated: !!execution.navigated,
@@ -6500,7 +6546,7 @@ async function ocrFillAndSubmit(tabId, args, ctx) {
     return {
       ok: true, kind: 'mutation', filled: true,
       text: shared.text, chars: shared.chars, likelyCaptcha: shared.likelyCaptcha,
-      via: shared.via, submitted: shared.submitted, navigated: true, probe: probe
+      refreshed: false, via: shared.via, submitted: shared.submitted, navigated: true, probe: probe
     };
   }
   const resp = execution.resp;
@@ -6509,7 +6555,7 @@ async function ocrFillAndSubmit(tabId, args, ctx) {
       ok: false, kind: 'mutation', filled: false,
       error: '填入/提交失败：' + resp.__error,
       text: shared.text, chars: shared.chars, likelyCaptcha: shared.likelyCaptcha,
-      via: shared.via, submitted: shared.submitted, navigated: false, probe: probe
+      refreshed: false, via: shared.via, submitted: shared.submitted, navigated: false, probe: probe
     };
   }
   if (!resp || resp.ok === false) {
@@ -6517,7 +6563,7 @@ async function ocrFillAndSubmit(tabId, args, ctx) {
       ok: false, kind: 'mutation', filled: false,
       error: (resp && resp.error) || '填入/提交失败',
       text: shared.text, chars: shared.chars, likelyCaptcha: shared.likelyCaptcha,
-      via: shared.via, submitted: shared.submitted, navigated: false, probe: probe
+      refreshed: false, via: shared.via, submitted: shared.submitted, navigated: false, probe: probe
     };
   }
   const parts = mergePageOpResults(resp) || [];
@@ -6546,7 +6592,7 @@ async function ocrFillAndSubmit(tabId, args, ctx) {
         ok: true, kind: 'mutation', filled: true,
         fill: parts, fieldState: nestedFs || undefined,
         text: shared.text, chars: shared.chars, likelyCaptcha: shared.likelyCaptcha,
-        via: shared.via, submitted: true, navigated: true,
+        refreshed: false, via: shared.via, submitted: true, navigated: true,
         probe: (again.resp && again.resp.probe) || probe
       };
     }
@@ -6565,6 +6611,7 @@ async function ocrFillAndSubmit(tabId, args, ctx) {
     text: shared.text,
     chars: shared.chars,
     likelyCaptcha: shared.likelyCaptcha,
+    refreshed: false,
     via: shared.via,
     submitted: shared.submitted,
     navigated: false,
