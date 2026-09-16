@@ -88,6 +88,8 @@
       font-weight: 700;
       letter-spacing: 0.5px;
       line-height: 1.2;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
     .header-build {
       font-size: 13px;
@@ -1474,7 +1476,7 @@
   // ============ DOM 构建（页面 iframe 壳 + iframe 内 closed shadow） ============
   const pageWindow = window;
   const pageDocument = document;
-  const SHELL_DEFAULT_WIDTH = '520px';
+  const SHELL_DEFAULT_WIDTH = '650px';
   const SHELL_DEFAULT_HEIGHT = '560px';
   const SHELL_DEFAULT_MAX_HEIGHT = 'calc(100vh - 40px)';
 
@@ -3001,7 +3003,7 @@
 
   function applyShellPosition(left, top) {
     const rect = shell.getBoundingClientRect();
-    const pw = rect.width || shell.offsetWidth || 520;
+    const pw = rect.width || shell.offsetWidth || 650;
     const ph = rect.height || shell.offsetHeight || 560;
     const pos = clampShellLeftTop(left, top, pw, ph);
     shell.style.right = 'auto';

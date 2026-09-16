@@ -118,6 +118,8 @@ ok(/header-action/.test(panelSrc), '标题栏文本按钮样式统一');
 ok(!/｜ 已注入/.test(panelSrc), '不再展示页面 URL｜已注入 条');
 ok(/网页智能体助手/.test(panelSrc) && /textContent: 'Webpage Agent'/.test(panelSrc),
   '面板 iframe 标题为网页智能体助手，角标英文为 Webpage Agent');
+ok(/SHELL_DEFAULT_WIDTH = '650px'/.test(panelSrc) && /\.header-title \{[\s\S]*?white-space: nowrap/.test(panelSrc),
+  '折叠面板默认宽度约加 25%，标题 Webpage Agent 单行');
 ok(/你是网页智能体助手/.test(bg),
   '系统提示词产品名为网页智能体助手');
 ok(/"name": "网页智能体助手"/.test(manifestSrc), '扩展名为网页智能体助手');
@@ -1932,7 +1934,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.10.2', '锁步版本为 5.10.2');
+ok(manifestVer === '5.10.3', '锁步版本为 5.10.3');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
