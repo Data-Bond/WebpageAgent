@@ -432,7 +432,8 @@
       var v = list[i];
       if (!v || !v.name) continue;
       var lab = v.label ? ('（' + v.label + '）') : '';
-      lines.push('- {{' + v.name + '}}' + lab);
+      var filled = v.value != null && String(v.value).trim();
+      lines.push('- {{' + v.name + '}}' + lab + (filled ? '' : '（未填写）'));
     }
     if (!lines.length) return '';
     return '【技能变量目录】本任务可用下列占位符，值由引擎在执行前注入。填表/点击匹配文本时必须原样输出 "{{变量名}}"，禁止改写成真实姓名、邮箱或手机，禁止把占位符写进 CSS 选择器。\n' +

@@ -475,14 +475,14 @@
       ocrProviders: collectProviders($('ocrProvidersList'), 'ocr'),
       systemPromptText: $('systemPromptText').value,
       systemPromptOcr: $('systemPromptOcr').value,
-      maxSteps: clampInt($('maxSteps').value, 1, 100, 60),
+      maxSteps: clampInt($('maxSteps').value, 1, 100, 100),
       llmCallGapMs: secInputToMs($('llmCallGapSec'), 0, 10000, 500),
       llmTimeoutRetry: clampInt($('llmTimeoutRetry').value, 0, 3, 2),
       llmErrorRetry: clampInt($('llmErrorRetry').value, 0, 5, 2),
-      pageQuietMs: secInputToMs($('pageQuietSec'), 1000, 15000, 3000),
-      suggestWaitMs: secInputToMs($('suggestWaitSec'), 0, 5000, 1000),
+      pageQuietMs: secInputToMs($('pageQuietSec'), 1000, 15000, 4000),
+      suggestWaitMs: secInputToMs($('suggestWaitSec'), 0, 5000, 2000),
       pdfParseMode: $('pdfParsePagesMode').checked ? 'pages' : 'all',
-      pdfParsePages: String($('pdfParsePages').value || '').trim() || '1,2,3,-2,-1',
+      pdfParsePages: String($('pdfParsePages').value || '').trim() || '1,2,3,4,-3,-2,-1',
       pdfTextMaxChars: clampInt($('pdfTextMaxChars').value, 10000, 500000, 150000),
       ocrCacheMaxChars: clampInt($('ocrCacheMaxChars').value, 50000, 2000000, 500000),
       attachContextMaxChars: clampInt($('attachContextMaxChars').value, 10000, 800000, 300000),
@@ -521,12 +521,12 @@
     $('llmCallGapSec').value = msToSecValue(cfg.llmCallGapMs, 500);
     if (cfg.llmTimeoutRetry != null) $('llmTimeoutRetry').value = cfg.llmTimeoutRetry;
     if (cfg.llmErrorRetry != null) $('llmErrorRetry').value = cfg.llmErrorRetry;
-    $('pageQuietSec').value = msToSecValue(cfg.pageQuietMs, 3000);
-    $('suggestWaitSec').value = msToSecValue(cfg.suggestWaitMs, 1000);
-    const mode = cfg.pdfParseMode === 'pages' ? 'pages' : 'all';
+    $('pageQuietSec').value = msToSecValue(cfg.pageQuietMs, 4000);
+    $('suggestWaitSec').value = msToSecValue(cfg.suggestWaitMs, 2000);
+    const mode = cfg.pdfParseMode === 'all' ? 'all' : 'pages';
     $('pdfParseAll').checked = mode === 'all';
     $('pdfParsePagesMode').checked = mode === 'pages';
-    $('pdfParsePages').value = cfg.pdfParsePages != null ? String(cfg.pdfParsePages) : '1,2,3,-2,-1';
+    $('pdfParsePages').value = cfg.pdfParsePages != null ? String(cfg.pdfParsePages) : '1,2,3,4,-3,-2,-1';
     syncPdfParseUi();
     if ($('pdfTextMaxChars')) $('pdfTextMaxChars').value = String(clampInt(cfg.pdfTextMaxChars, 10000, 500000, 150000));
     if ($('ocrCacheMaxChars')) $('ocrCacheMaxChars').value = String(clampInt(cfg.ocrCacheMaxChars, 50000, 2000000, 500000));

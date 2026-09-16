@@ -332,6 +332,10 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
     '手册：ocr/ocrFill 只读像素，换图先 click');
   ok(/button=right 只开菜单/.test(pbSrc) && /回执 selection/.test(pbSrc) && /statusMessages 再点/.test(pbSrc),
     '手册：右键不改选中，确认框看 statusMessages');
+  ok(/附近列表出现或选项变了则本批停/.test(pbSrc) && /下一轮快照再点/.test(pbSrc),
+    '手册：type 列表变化停批，下一轮再点');
+  ok(/带勾选控件的行时回执 selection/.test(pbSrc),
+    '手册：勾选行 click/check 回执带 selection');
   ok(!/预览、ESC/.test(pbSrc) && !/button=hover 只悬停，button=right 只右键；菜单项、预览/.test(pbSrc),
     '手册不写预览/ESC 任务例子');
   ok(!/abstractContent/.test(pbSrc) && !/审批按钮/.test(pbSrc), '手册不写审核字段名');
@@ -377,12 +381,12 @@ ok(!/function runResultHasDesktopHandoff/.test(bg) && !/FILE_OBTAIN_HANDOFF_NUDG
   '不再因 desktop-handoff 回执改 nudge');
 ok(!/function desktopHandoffRefuse/.test(bridge) && !/blockHandoff/.test(bridge) && !/blockHandoff/.test(bg),
   '点击不再因 handoff=desktop 拒绝');
-ok(/function desktopHandoffOf/.test(bridge) && /entry\.handoff/.test(bridge),
-  '快照仍把 FTP/客户端下载标为 handoff=desktop');
+ok(!/function desktopHandoffOf/.test(bridge) && !/handoff: desktopHandoffOf/.test(bridge),
+  '快照不再把 FTP/客户端下载标为 handoff=desktop');
 ok(/function enterSameOriginFrame/.test(bridge) && /function readableTextOf/.test(bridge),
   'getText/inspect 可进入同源 iframe');
-ok(/function preferFileActionHits/.test(bridge) && /function isPageChromeDownload/.test(bridge),
-  'preferFileActionHits 辅助仍在源码');
+ok(!/function preferFileActionHits/.test(bridge) && !/function isPageChromeDownload/.test(bridge),
+  '已删除 preferFileActionHits / isPageChromeDownload');
 ok(!/preferFileActionHits\(/.test(extractFn(bridge, 'chooseClickByText')),
   'chooseClickByText 不把下载/预览菜单优先改成唯一命中');
 ok(!/\/添加\//.test(extractFn(bridge, 'chooseClickByText')),
@@ -515,6 +519,18 @@ ok(!/过滤框字≠已选/.test(bg) && !/相关叶子任选/.test(bg), 'JSON �
 ok(!/【证据链】/.test(bg), '短手册不再要求 see/expect/evalPrev 证据链');
 ok(/committed: String\(fs\.committed/.test(bg) && /o\.fieldState = \{/.test(extractFn(bg, 'compactOneHelperValue')),
   '回执压缩仍带 fieldState.committed');
+ok(/filter: String\(fs\.filter \|\| ''\)\.slice\(0, 80\)/.test(extractFn(bg, 'compactOneHelperValue')),
+  'compact filter 与 committed 同为 80');
+ok(/x\.sel === true/.test(extractFn(bg, 'compactOneHelperValue')),
+  'compact 保留 optionsTop.sel');
+ok(/click 下拉 trigger 会切换列表/.test(bg), '手册说明 trigger click 切换列表');
+{
+  const pb0 = bg.indexOf('【运行时手册·开始】');
+  const pb1 = bg.indexOf('【运行时手册·结束】');
+  const playbook = pb0 >= 0 && pb1 > pb0 ? bg.slice(pb0, pb1) : '';
+  ok(playbook && !/芯片/.test(playbook), '手册不用芯片');
+  ok(!/读 committed 再 done/.test(playbook), '手册不把 committed 当 done 门槛');
+}
 ok(!/读 fieldState.committed 再 done/.test(bg) && !/确认 fieldState.committed 后再 done/.test(bg),
   '手册不再要求读 committed 再 done');
 ok(/function evaluateSnapshotChecks/.test(bg) && /function decideDoneByChecks/.test(bg), '核对函数仍在，done 由模型决定');
@@ -569,7 +585,7 @@ ok(/reason: 'not-checkbox'/.test(bridge), 'check 遇到级联项时诚实失败�
 ok(/via: 'already-selected'/.test(bridge), 'select 在弹层关闭且 committed 匹配时可幂等');
 ok(/function comboSelectionMatches/.test(bridge), 'combobox 已选文本与目标比对');
 ok(/via: 'multi'/.test(bridge), 'selectOption 接受多个目标文本');
-ok(/不要整段 \.el-cascader__tags/.test(bridge), '已选文本只收标签，不混入筛选框输入');
+ok(/不要整段 \.el-cascader__tags|el-cascader__tags block/.test(bridge), '已选文本只收 selection items，不混入筛选框输入');
 ok(!/学科分类等级联字段必须/.test(bg), '手册不把某一站的学科分类写成唯一级联规则');
 const checkboxStart = bridge.indexOf('var CHECKBOX_SEL');
 const checkboxEnd = bridge.indexOf('input[type="checkbox"], input[type="radio"]', checkboxStart);
@@ -601,10 +617,49 @@ ok(/\[class\*="editable-select"\]/.test(bridge) && /\[class\*="select-dropdown"\
 ok(/function looksLikeSelectHost/.test(bridge) && /function collectGenericOptionsIn/.test(bridge),
   '泛化识别 combobox 宿主并收割弹层内 li');
 ok(/user-select\|select-none/.test(bridge), '不把 user-select-none 当成下拉宿主');
-ok(/canCreate && searchAvailable && opened/.test(bridge),
-  '可新建 combobox 仅在下拉已展开时才回车创建');
-ok(/var comboHost = comboboxHostOf\(el\)[\s\S]{0,600}typed-not-committed/.test(bridge),
+ok(!/looksLikeCreateOption/.test(bridge) && !/via: 'combobox-create'/.test(bridge) &&
+  !/canCreate && searchAvailable && opened/.test(bridge),
+  'select 不自动点创建/Create，也不回车新建');
+ok(!/function isCascaderPlaceholderText/.test(bridge) && !/CASCADER_EMPTY_TEXT_RE/.test(bridge),
+  '空状态文案不当成非选项');
+ok(/var comboHost = comboboxHostOf\(el\)[\s\S]{0,2000}typed-not-committed/.test(bridge),
   '对 combobox setVal 只打字并标 typed-not-committed');
+ok(!/xfs\.committed \? undefined/.test(bridge),
+  'combobox type 总是 typed-not-committed');
+ok(/function shownTextOf/.test(bridge) && /near \|\| inpVal/.test(extractFn(bridge, 'shownTextOf')),
+  'shown 在 near===inpVal 时保留字符串');
+ok(!/near !== inpVal/.test(extractFn(bridge, 'shownTextOf')) &&
+  !/near !== inpVal/.test(extractFn(bridge, 'comboCommittedText')),
+  'shown 不因 near===inpVal 清空');
+ok(/function nativeSelectShown/.test(bridge) && /nativeSelectOf\(el\)/.test(extractFn(bridge, 'collectFieldState')),
+  'native SELECT 的 committed 为 selected label');
+ok(/hostSurfaceText/.test(extractFn(bridge, 'widgetSelectedTextNear')),
+  '只读 combobox 可从 host surface / selection items 取 shown');
+ok(/function owningSelectTriggerOf/.test(bridge) && /function optionClickLift/.test(bridge),
+  'click 选项时 fieldState 提到所属 trigger');
+ok(/fileRowOf\(el\)/.test(extractFn(bridge, 'owningSelectTriggerOf')),
+  '文件行不把 fieldState 提到 combobox');
+ok(/isPagerHost\(el\) \|\| inPagerHost\(el\)/.test(extractFn(bridge, 'owningSelectTriggerOf')),
+  '分页条不把 fieldState 提到 combobox');
+ok(/optionClickLift\(target\)/.test(bridge), '左键 click 走 optionClickLift');
+{
+  const popupSelStart = bridge.indexOf('var POPUP_SEL = [');
+  const popupSelJoin = bridge.indexOf(".join(', ');", popupSelStart);
+  const popupSelSrc = popupSelStart >= 0 && popupSelJoin > popupSelStart
+    ? bridge.slice(popupSelStart, popupSelJoin)
+    : '';
+  ok(/editable-select__inner/.test(popupSelSrc) && /select__inner/.test(popupSelSrc),
+    'POPUP_SEL 含 list container 后缀');
+  ok(!/\[class\*="editable-select"\]/.test(popupSelSrc),
+    'POPUP_SEL 不含裸 editable-select 宿主');
+  ok(!/__item/.test(popupSelSrc), 'POPUP_SEL 不含 __item');
+}
+ok(/function acceptPopupNode/.test(bridge) && /contains\(trigger\)/.test(extractFn(bridge, 'acceptPopupNode')),
+  '弹层候选若包含 trigger 则不是 list');
+ok(/function optionDomSelected/.test(bridge) && /aria-selected/.test(extractFn(bridge, 'optionDomSelected')),
+  '选项 sel 来自 DOM');
+ok(/rec\.sel = true/.test(extractFn(bridge, 'serializeOptions')),
+  'serializeOptions 复制 DOM selected 为 sel');
 ok(!/page\.selectOption\(sel, comboVal\)/.test(bridge), 'combobox setVal 不再劫持到 selectOption');
 ok(/comboboxHostOf\(el\) \? 'combobox'/.test(bridge), '快照把可输入下拉标成 combobox widget');
 ok(/function shouldStopBatch/.test(bridge) && /value\.yieldBatch/.test(extractFn(bridge, 'shouldStopBatch')),
@@ -1323,6 +1378,12 @@ ok(/else if \(combo\) committed = comboCommittedText/.test(extractFn(bridge, 'co
   '普通输入框不用下拉 committed 逻辑');
 ok(/committed = filter/.test(extractFn(bridge, 'collectFieldState')),
   '验证码等普通框把输入值记为 committed');
+ok(!/\|\| isTriggerOpen\(trigger\)/.test(extractFn(bridge, 'collectFieldState')),
+  'fieldState.open 只看 findPopupForTrigger，不以 focus 当真开');
+ok(!/collectOpenPopupOptions/.test(extractFn(bridge, 'collectFieldState')),
+  'get/fieldState 不整页收割别人的 options');
+ok(/open = !!findPopupForTrigger\(trigger\)/.test(extractFn(bridge, 'collectFieldState')),
+  'fieldState.open 源为 findPopupForTrigger');
 ok(/headerBrand\.appendChild\(buildBadge\)[\s\S]*headerBrand\.appendChild\(connLampWrap\)/.test(panelSrc), '标题栏版本号在已连接前面');
 ok(/magicCaptcha/.test(bridge), 'captureImage 支持 sel===captcha');
 ok(/STATUS_NODE_SEL/.test(bridge), 'statusMessages/domDigest 共用弹窗选择器');
@@ -1871,7 +1932,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.10.0', '锁步版本为 5.10.0');
+ok(manifestVer === '5.10.2', '锁步版本为 5.10.2');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -1950,11 +2011,11 @@ ok(/config\.attachContextMaxChars/.test(bg) && /ctx\.cfg && ctx\.cfg\.ocrCacheMa
   '运行时按配置钳制多附件合计与 OCR 缓存总字数');
 ok(/clampInt\(maxChars, 50000, 2000000/.test(extractFn(bg, 'writeOcrCache')),
   'OCR 缓存写入按配置字数淘汰');
-ok(/pdfParsePages: '1,2,3,-2,-1'/.test(bg) && /pdfTextMaxChars: 150000/.test(bg),
-  '默认页码 1,2,3,-2,-1 且文本层上限 15 万字');
+ok(/pdfParseMode: 'pages'/.test(bg) && /pdfParsePages: '1,2,3,4,-3,-2,-1'/.test(bg) && /pdfTextMaxChars: 150000/.test(bg),
+  'PDF 默认按页码 1,2,3,4,-3,-2,-1 且文本层上限 15 万字');
 ok(/解析全部 PDF 页/.test(settingsHtml) && /按页码标号来解析/.test(settingsHtml),
   '设置页可选手解析全部或按页码');
-ok(/placeholder="例如 1,2,3,-2,-1"/.test(settingsHtml), '页码填空处给出示例');
+ok(/placeholder="例如 1,2,3,4,-3,-2,-1"/.test(settingsHtml), '页码填空处给出示例');
 ok(/倒数第一页/.test(settingsHtml) && /「-1」表示最后一页/.test(settingsHtml),
   '提示 -1 表示最后一页（倒数第一页）');
 ok(/id="pdfTextMaxChars"/.test(settingsHtml) && /PDF 文本层上限（字）/.test(settingsHtml),
@@ -1965,7 +2026,7 @@ ok(/MinerU/.test(settingsHtml) && /不受上方页码配置约束/.test(settings
   '提示 MinerU 不受页码与文本层上限约束');
 ok(/pdfTextMaxChars/.test(settingsSrc) && /clampInt\(\$\('pdfTextMaxChars'\)\.value, 10000, 500000, 150000\)/.test(settingsSrc),
   '设置页收集并钳制 pdfTextMaxChars');
-ok(/placeholder = '例如 1,2,3,-2,-1'/.test(panelSrc) && /不受本页页码配置约束/.test(panelSrc) && /也不受全局配置里的「PDF 文本层上限」约束/.test(panelSrc),
+ok(/placeholder = '例如 1,2,3,4,-3,-2,-1'/.test(panelSrc) && /不受本页页码配置约束/.test(panelSrc) && /也不受全局配置里的「PDF 文本层上限」约束/.test(panelSrc),
   '本页配置同步默认页码并提示 MinerU 不受页码与文本层上限约束');
 ok(/spec\.maxChars/.test(bg) && /clampPdfTextMaxChars\(pageSpec && pageSpec.maxChars\)/.test(bg),
   '发给 offscreen 的 pageSpec 含钳制后的 maxChars');
@@ -2432,9 +2493,9 @@ if (outlineBox.formatOutlineLine) {
   ok(/required/.test(reqLine) && /minLength=100/.test(reqLine) && /hint=/.test(reqLine),
     'outline 输出 required/minLength/hint');
   const ftpLine = outlineBox.formatOutlineLine({
-    idx: 9, tag: 'DIV', text: 'FTP下载', handoff: 'desktop'
+    idx: 9, tag: 'DIV', text: 'FTP下载'
   }, false, false);
-  ok(/handoff=desktop/.test(ftpLine), 'outline 输出 handoff=desktop');
+  ok(/FTP下载/.test(ftpLine) && !/handoff=/.test(ftpLine), 'FTP 文案留在 text，不标 handoff');
   const secLine = outlineBox.formatOutlineLine({
     idx: 12, tag: 'INPUT', label: '名称', sec: '发行版信息', value: 'v5.5.0'
   }, false, false);
@@ -2774,16 +2835,16 @@ ok(/请先将必填项填写完整/.test('请先将必填项填写完整') &&
   /必填|填写完整|请先/.test('请先将必填项填写完整'), '必填弹窗正则可命中');
 ok(!/【技能·人员搜索】/.test(bg), '不再发人员搜索技能卡配方');
 ok(/starFields/.test(bg), '附近状态仍可带 starFields');
-ok(/function completePersonPicker/.test(bridge) && /search-list/.test(bridge),
-  '人员框 type 后仍收卡片目录');
+ok(/function finishTypedFilter/.test(bridge) && /search-list/.test(bridge),
+  'type 后收割附近列表目录');
 ok(/function pageSignalBlock/.test(bg) && /【页面信号】/.test(bg), '回执交原文页面信号而非判定');
 ok(/【附近状态】/.test(bg) && !/禁止未读本段就再点下一步/.test(bg), '附近状态只交 JSON，不立法');
 ok(!/【未再次执行】/.test(bg) && !/请换 get\/click\/select/.test(bg), '不再注入未再次执行回执');
 ok(/verified = !!\(marked \|\| triggerMatched\)/.test(bridge) &&
   !/triggerMatched \|\| optionClosed/.test(bridge),
   'select 不以弹层关闭当真选');
-ok(!/dispatchClick\(matchEl\)/.test(extractFn(bridge, 'completePersonPicker')),
-  '人员框 type 不代点卡片');
+ok(!/dispatchClick\(/.test(extractFn(bridge, 'finishTypedFilter')),
+  'type 收割列表不代点选项');
 ok(!/committed && error && \/请输入/.test(extractFn(bridge, 'collectFieldState')),
   'fieldState 不因已有字抹掉 error');
 ok(/reason: 'disabled'/.test(bridge) && /continueBatch/.test(bridge),
@@ -2795,8 +2856,8 @@ ok(/cfg\.snapshotPiiMask === true/.test(bg), '快照脱敏默认关（仅显式 
 ok(/llmCallGapMs: 500/.test(bg), '调用间隔默认 500ms');
 ok(/busyMaskEnabled: false/.test(bg), '操作遮罩默认关');
 ok(/llmTimeoutRetry: 2/.test(bg) && /llmErrorRetry: 2/.test(bg), '重试次数默认 2/2');
-ok(/pageQuietMs: 3000/.test(bg) && /suggestWaitMs: 1000/.test(bg), '页面等待默认 3s / 1.0s');
-ok(/maxSteps: 60/.test(bg) && /value="60"/.test(settingsHtml), '最大步数默认 60');
+ok(/pageQuietMs: 4000/.test(bg) && /suggestWaitMs: 2000/.test(bg), '页面等待默认 4s / 2s');
+ok(/maxSteps: 100/.test(bg) && /value="100"/.test(settingsHtml), '最大步数默认 100');
 ok(/function clampInt\(/.test(bg) && /function applyRuntimeKnobs\(/.test(bg), '运行参数有 clamp 与合并');
 ok(/function waitLlmCallGap\(/.test(bg) && /lastTextLlmAt/.test(bg), '文本模型调用有间隔');
 ok(/sleepCancellable/.test(bg) && /signal\.aborted/.test(bg), '调用间隔可被取消打断');
@@ -3168,6 +3229,8 @@ const runCompactBox = {
     GET_TEXT_DEFAULT: C.GET_TEXT_DEFAULT,
     GET_TEXT_HARD: C.GET_TEXT_HARD,
     GET_TEXT_DEDUP_MIN: C.GET_TEXT_DEDUP_MIN,
+    STATUS_MSG_CHARS: C.STATUS_MSG_CHARS,
+    STATUS_MSG_MAX: C.STATUS_MSG_MAX,
     hashTextBody: C.hashTextBody
   }
 };
@@ -3212,6 +3275,54 @@ if (runCompactBox.compactRunResult) {
   ok(fsOut.indexOf('typed-not-committed') >= 0 && fsOut.indexOf('计算机应用') >= 0 &&
     fsOut.indexOf('drop-me') < 0 && fsOut.indexOf('"idx":70') >= 0,
     '工具回执压缩保留 fieldState.optionsTop 的 idx/leaf');
+  const typeOptsPacked = JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'type',
+      value: {
+        ok: true, reason: 'typed-not-committed', yieldBatch: true,
+        options: [{ t: '暂无数据', idx: 88, leaf: true }, { t: '张文帅', idx: 91, leaf: true, match: true }]
+      }
+    }]
+  });
+  const typeOptsOut = runCompactBox.compactRunResult(typeOptsPacked);
+  ok(typeOptsOut.indexOf('"idx":91') >= 0 && typeOptsOut.indexOf('"match":true') >= 0 &&
+    typeOptsOut.indexOf('"yieldBatch":true') >= 0,
+    'compact 保留 type options 的 idx 与 yieldBatch');
+  const fileClickPacked = JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'click',
+      value: {
+        ok: true, retargeted: true, name: 'AMD_opt_vasp_result.txt', checked: true,
+        selection: [{ idx: 28, name: 'AMD_opt_vasp_result.txt' }]
+      }
+    }]
+  });
+  const fileClickOut = runCompactBox.compactRunResult(fileClickPacked);
+  ok(fileClickOut.indexOf('AMD_opt_vasp_result.txt') >= 0 && fileClickOut.indexOf('"selection"') >= 0 &&
+    fileClickOut.indexOf('"checked":true') >= 0,
+    '文件行 click 压缩保留 selection 与 checked');
+  const optSelPacked = JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'click',
+      value: {
+        ok: true,
+        name: 'v5.10.0',
+        fieldState: {
+          committed: 'v5.10.0',
+          filter: 'v5.10.0',
+          open: false,
+          optionsCount: 1,
+          optionsTop: [{ t: 'v5.10.0', idx: 4, sel: true }]
+        }
+      }
+    }]
+  });
+  const optSelOut = runCompactBox.compactRunResult(optSelPacked);
+  ok(optSelOut.indexOf('"sel":true') >= 0 && optSelOut.indexOf('v5.10.0') >= 0,
+    'compact 保留 optionsTop.sel 与 shown 文本');
   const truncPacked = JSON.stringify({
     kind: 'batch',
     results: [{
@@ -3251,6 +3362,22 @@ if (runCompactBox.compactRunResult) {
     ocrOut.indexOf('验证码错误') >= 0 && ocrOut.indexOf('drop-me') < 0 && ocrOut.indexOf('qU6c') >= 0 &&
     ocrOut.indexOf('请输入验证码') >= 0,
     'ocrFill 压缩保留 filled/statusMessages/placeholder，不发明 loginError');
+  const statusCapPacked = JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'click',
+      value: {
+        ok: true,
+        statusMessages: Array.from({ length: 13 }, function (_, i) {
+          return String(i) + 'x'.repeat(299);
+        })
+      }
+    }]
+  });
+  const statusCapOut = JSON.parse(runCompactBox.compactRunResult(statusCapPacked));
+  const keptMsgs = statusCapOut.results[0].statusMessages;
+  ok(keptMsgs.length === 12 && keptMsgs[0].length === 300 && keptMsgs[11].charAt(0) === '1',
+    'compact 保留 statusMessages 12 条×300 字，不收到 8/200');
   const ocrRefPacked = JSON.stringify({
     kind: 'batch',
     results: [{
@@ -3620,65 +3747,10 @@ if (secApplyBox.applyDuplicateLabelSections) {
     '仅给重复 label 补 sec，唯一标签不写');
 }
 
-const menuPreferBox = {};
-try {
-  vm.runInNewContext(
-    'function normText(s){return String(s||"").replace(/\\s+/g,"").toLowerCase();}\n' +
-      'function isOverlayEl(){return false;}\n' +
-      extractFn(bridge, 'isFileActionMenuEl') + '\n' +
-      extractFn(bridge, 'isPageChromeDownload') + '\n' +
-      extractFn(bridge, 'preferFileActionHits') + '\n' +
-      'this.preferFileActionHits = preferFileActionHits;',
-    menuPreferBox
-  );
-  ok(typeof menuPreferBox.preferFileActionHits === 'function', 'preferFileActionHits 可在测试中加载');
-} catch (e) {
-  ok(false, '加载 preferFileActionHits 失败: ' + (e && e.message));
-}
-if (menuPreferBox.preferFileActionHits) {
-  function fakeHit(text, opts) {
-    opts = opts || {};
-    const el = {
-      tagName: 'SPAN',
-      className: opts.className || '',
-      parentElement: null,
-      getAttribute: function (n) { return n === 'role' ? (opts.role || '') : ''; },
-      closest: function (sel) {
-        if (opts.menu && /role="menu"|dropdown-menu|context/.test(sel)) return el;
-        if (opts.chrome && /download_box/.test(sel)) return el;
-        return null;
-      }
-    };
-    return { el: el, text: text };
-  }
-  const menuHit = fakeHit('下载', { menu: true, className: 'menu-item' });
-  const chromeHit = fakeHit('下载', { chrome: true, className: 'download_box' });
-  const picked = menuPreferBox.preferFileActionHits([chromeHit, menuHit], '下载');
-  ok(picked.length === 1 && picked[0] === menuHit, '下载优先点菜单而非 download_box');
-  ok(menuPreferBox.preferFileActionHits([chromeHit], '下载').length === 0,
-    '只有页头下载时不点 download_box');
-  ok(menuPreferBox.preferFileActionHits([chromeHit], '确定')[0] === chromeHit,
-    '非下载/预览文案不走菜单优先');
-}
-
 ok(bg.indexOf('const DESKTOP_HANDOFF_RE') < 0 && bg.indexOf('function shouldBlockDesktopHandoff') < 0,
   'background 已删除 FTP 任务词护栏');
-
-const handoffBox = {};
-try {
-  vm.runInNewContext(
-    extractFn(bridge, 'desktopHandoffOf') + '\nthis.desktopHandoffOf = desktopHandoffOf;',
-    handoffBox
-  );
-  ok(typeof handoffBox.desktopHandoffOf === 'function', 'desktopHandoffOf 可加载');
-} catch (e) {
-  ok(false, '加载 desktopHandoffOf 失败: ' + (e && e.message));
-}
-if (handoffBox.desktopHandoffOf) {
-  ok(handoffBox.desktopHandoffOf({ text: 'FTP下载' }) === 'desktop', 'FTP下载标 desktop');
-  ok(handoffBox.desktopHandoffOf({ title: '客户端下载' }) === 'desktop', '客户端下载标 desktop');
-  ok(handoffBox.desktopHandoffOf({ text: '预览' }) === '', '普通预览不标 desktop');
-}
+ok(!/function preferFileActionHits/.test(bridge) && !/function desktopHandoffOf/.test(bridge),
+  '不再加载 preferFileActionHits / desktopHandoffOf');
 
 ok(/office\.js/.test(bg) && /pagebridge\.js/.test(bg),
   'inject 列表含 office.js 与 pagebridge.js');
@@ -3707,9 +3779,46 @@ ok(/payload\.tools = opts\.tools/.test(bg) && /tool_choice/.test(bg),
   'chatCompletionsPayload 可带 OpenAI tools');
 ok(/lastHelperDiagFromResult/.test(bg) && /optionsCount: lastTool\.optionsCount/.test(bg),
   '诊断写入最后一次工具 reason/optionsCount');
-ok(/typed-not-committed/.test(extractFn(bridge, 'completePersonPicker')) &&
+ok(/STICK_BOTTOM_PX = 48/.test(panelSrc) && /function messagesNearBottom/.test(panelSrc),
+  '对话列表用距底阈值判断 stick-to-bottom');
+ok(/function scrollDown\(force\)/.test(panelSrc) && /force \|\| stickBottom/.test(panelSrc),
+  'scrollDown 仅在贴底或强制时滚到最新');
+ok(/scrollDown\(true\)/.test(panelSrc), '恢复会话强制滚到最新');
+ok(/els\.messages\.addEventListener\('scroll'/.test(panelSrc),
+  '用户滚动时更新 stickBottom');
+ok(/typed-not-committed/.test(extractFn(bridge, 'finishTypedFilter')) &&
+  /yieldBatch: true/.test(extractFn(bridge, 'finishTypedFilter')) &&
+  !/continueBatch: true/.test(extractFn(bridge, 'finishTypedFilter')) &&
   !/不要点禁用的「选择」/.test(bridge) && !/不要点禁用的「选择」/.test(bg),
-  '作者卡：type 后给目录，不代点、不立法');
+  'type 后列表变化给目录并停批，不代点、不立法');
+ok(!/function looksLikePersonSearchInput/.test(bridge) && !/function completePersonPicker/.test(bridge),
+  '无人员词门控函数');
+ok(!/姓名\|作者\|人员\|搜索\.\*人/.test(bridge) && !/\/person\|author\//i.test(bridge),
+  'pagebridge 无 person/author 标签正则');
+ok(!/waited < 1800/.test(extractFn(bridge, 'finishTypedFilter')),
+  '无列表容器时不空等 1.8s');
+ok(/function waitListSettle/.test(bridge) && /stable >= 240/.test(extractFn(bridge, 'waitListSettle')),
+  'type 等列表文案稳定再收割');
+ok(/function owningFilterInputOf/.test(bridge) && /function applyFilePickerState/.test(bridge),
+  '选项点击抬同范围输入；勾选行回执带 selection');
+ok(/fileRowOf\(el\)/.test(extractFn(bridge, 'owningFilterInputOf')),
+  '勾选行不把 fieldState 抬到过滤框');
+ok(/!fileRowOf\(fsEl\)/.test(bridge), '勾选行不自动贴空 fieldState');
+ok(!/getElementById\('split-right'\)/.test(bridge), '选择态不绑页面 id #split-right');
+ok(/before\.selection\.slice\(\)/.test(extractFn(bridge, 'applyFilePickerState')),
+  '列表卸载时保留勾选前 selection');
+ok(/function shortPhrases/.test(extractFn(bridge, 'statusMessages')) &&
+  /text.length <= STATUS_MSG_CHARS/.test(extractFn(bridge, 'statusMessages')) &&
+  /push\(text\);/.test(extractFn(bridge, 'statusMessages')),
+  '大弹层 statusMessages 保留 STATUS_MSG_CHARS 正文并抽短句');
+ok(/STATUS_MSG_CHARS = 300/.test(bridge) && /STATUS_MSG_MAX = 12/.test(bridge),
+  'pagebridge statusMessages 预算为全局 STATUS_MSG_CHARS/MAX');
+ok(/STATUS_MSG_MAX/.test(extractFn(bg, 'compactOneHelperValue')) &&
+  /STATUS_MSG_CHARS/.test(extractFn(bg, 'compactOneHelperValue')) &&
+  !/statusMessages\.slice\(0, 8\)/.test(extractFn(bg, 'compactOneHelperValue')),
+  'compact 不把 statusMessages 收到 8 条/200 字');
+ok(/未填写/.test(extractFn(srcs['shared/webSkill.js'], 'formatSkillVarCatalog')),
+  '技能变量目录标明未填写，不泄露值');
 ok(/reason: 'not-leaf'/.test(bridge) && /typed-not-committed/.test(bridge),
   'USTC 学科分类：父级不当 verified；过滤词标 typed-not-committed');
 ok(!/function checkRepeat/.test(bg) && !/forceAsk/.test(bg),
@@ -4103,7 +4212,7 @@ ok(fs.existsSync(path.join(__dirname, 'tests/fixtures/hidden-row-actions.html'))
 ok(!fs.existsSync(path.join(__dirname, 'tests/fixtures/preview-esc.html')) &&
   !fs.existsSync(path.join(__dirname, 'tests/fixtures/ustc-esc.html')),
   '无预览/ESC 站点夹具');
-ok(/maxSteps: 60/.test(bg) && /pageMaxSteps/.test(panelSrc), '默认 maxSteps 与面板本页配置同源量级');
+ok(/maxSteps: 100/.test(bg) && /pageMaxSteps/.test(panelSrc), '默认 maxSteps 与面板本页配置同源量级');
 ok(/copyTextOffscreen/.test(bg) && /cmd === 'copyText'/.test(offscreenSrc), '复制走扩展 offscreen 而非宿主 DOM');
 ok(!/document\.body\.appendChild\(ta\)/.test(panelSrc), '面板复制不再向宿主插入 textarea');
 ok(/running: !!keepRunning/.test(bg), '中间指令 done 携带 running，避免整批被当成结束');
@@ -4150,6 +4259,12 @@ ok(/详细的使用手册见/.test(readmeSrc) && /doc\/user-guide\.md/.test(read
   ok(!/一步完成/.test(guideSrc), '使用说明不再把 ocrFill 写成一步完成');
   ok(/不先左键/.test(guideSrc) && /selection/.test(guideSrc),
     '使用说明：右键不改选中，回执带 selection');
+  ok(/附近列表出现或选项变了/.test(guideSrc) && /yieldBatch/.test(guideSrc),
+    '使用说明：type 列表变化停批');
+  ok(/带勾选控件的行/.test(guideSrc) && /selection/.test(guideSrc),
+    '使用说明：勾选行 click/check 回执带 selection');
+  ok(/创建\/新建/.test(guideSrc) && /不会/.test(guideSrc) && /自动点/.test(guideSrc),
+    '使用说明：select 不自动点创建');
 }
 ok(/max-width:100%/.test(readmeSrc), 'README 截图随页面宽度缩放');
 

@@ -276,6 +276,11 @@ describe('toolProtocol hybrid', () => {
     assert.equal(get.function.parameters.properties.limit.description, '正文字数上限');
     assert.equal(get.function.parameters.properties.offset.description, '从第 N 字起，0 起算');
     assert.match(get.function.description, /offset/);
+    assert.match(get.function.description, /committed/);
+    assert.match(get.function.description, /filter/);
+    assert.match(get.function.description, /open/);
+    assert.match(get.function.description, /shown/);
+    assert.ok(!/已确认选中|读 committed 再 done/.test(get.function.description));
     assert.equal(print.function.parameters.properties.limit.description, '目录条数');
     assert.match(get.function.parameters.properties.target.description, /不要当 handle/);
   });
@@ -355,6 +360,8 @@ describe('toolProtocol hybrid', () => {
     assert.equal(C.TEXT_ACTION_MAX_LEN, 80);
     assert.equal(C.GET_TEXT_DEFAULT, 10000);
     assert.equal(C.GET_TEXT_HARD, 500000);
+    assert.equal(C.STATUS_MSG_CHARS, 300);
+    assert.equal(C.STATUS_MSG_MAX, 12);
     assert.equal(C.GET_TEXT_DEDUP_MIN, 800);
     assert.equal(C.ATTACHMENT_CONTEXT_MAX_CHARS, 300000);
     assert.equal(C.CONTEXT_TOKEN_SOFT, 750000);
@@ -366,6 +373,8 @@ describe('toolProtocol hybrid', () => {
     assert.match(bg, /GET_TEXT_DEFAULT \|\| 10000/);
     assert.match(bg, /GET_TEXT_HARD \|\| 500000/);
     assert.match(bg, /TASK_MEMORY_VALUE_MAX = WPA_CONTRACTS\.GET_TEXT_HARD/);
+    assert.match(bg, /STATUS_MSG_CHARS = WPA_CONTRACTS\.STATUS_MSG_CHARS/);
+    assert.match(bg, /STATUS_MSG_MAX = WPA_CONTRACTS\.STATUS_MSG_MAX/);
     assert.match(bg, /packContextToTokenBudget/);
     assert.match(extractFnLike(bg, 'stampSnapshot'), /snap\.idxMax/);
     assert.doesNotMatch(extractFnLike(bg, 'stampSnapshot'), /snapshotCount/);
@@ -379,6 +388,8 @@ describe('toolProtocol hybrid', () => {
     assert.match(pb, /TEXT_ACTION_MAX_LEN = 80/);
     assert.match(pb, /GET_TEXT_DEFAULT = 10000/);
     assert.match(pb, /GET_TEXT_HARD = 500000/);
+    assert.match(pb, /STATUS_MSG_CHARS = 300/);
+    assert.match(pb, /STATUS_MSG_MAX = 12/);
     assert.match(pb, /n = GET_TEXT_DEFAULT/);
     assert.match(extractFnLike(pb, 'snapshot'), /idxMax: idx/);
     assert.match(pb, /full \? SNAPSHOT_L0_CAP_FULL : SNAPSHOT_L0_CAP/);

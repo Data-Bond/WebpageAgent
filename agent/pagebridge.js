@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '5.10.0';
+  var BRIDGE_VERSION = '5.10.2';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
   var SNAPSHOT_L0_CAP_FULL = 1500;
@@ -14,6 +14,8 @@
   var SNAPSHOT_FILE_NAME_MAX = 80;
   var GET_TEXT_DEFAULT = 10000;
   var GET_TEXT_HARD = 500000;
+  var STATUS_MSG_CHARS = 300;
+  var STATUS_MSG_MAX = 12;
 
   function install() {
     var scriptAborted = false;
@@ -1235,6 +1237,39 @@
       return out;
     }
 
+    function captureFilePicker() {
+      var rows = [];
+      try { rows = collectFileSelectRows(); } catch (e) { rows = []; }
+      var selection = [];
+      try { selection = collectCheckedNamedRows(); } catch (e2) { selection = []; }
+      return { rowCount: rows.length, selection: selection };
+    }
+
+    function applyFilePickerState(ret, el, before) {
+      if (!ret || typeof ret !== 'object') return ret;
+      var row = null;
+      try { row = fileRowOf(el); } catch (e0) { row = null; }
+      var after = captureFilePicker();
+      var had = !!(row || (before && before.rowCount) || after.rowCount
+        || (before && before.selection && before.selection.length) || (after.selection && after.selection.length));
+      if (!had) return ret;
+      if (after.selection && after.selection.length) {
+        ret.selection = after.selection;
+      } else if (before && before.selection && before.selection.length && after.rowCount === 0) {
+        ret.selection = before.selection.slice();
+      } else {
+        ret.selection = after.selection;
+      }
+      if (row) {
+        try {
+          var lab = fileRowLabel(row);
+          if (lab) ret.name = String(lab).replace(/\s+/g, ' ').trim().slice(0, 80);
+        } catch (e1) {}
+        try { ret.checked = readFileRowChecked(row); } catch (e2) {}
+      }
+      return ret;
+    }
+
     var TEXT_ACTION_MAX = 400;
     var TEXT_ACTION_DUP_MAX = 8;
     var TEXT_ACTION_MIN_LEN = 2;
@@ -1788,69 +1823,6 @@
         if (byText) return { root: byText, used: sel, missing: false, relaxed: true };
       }
       return { root: null, used: '', missing: true, relaxed: false };
-    }
-
-    function isFileActionMenuEl(el) {
-      if (!el) return false;
-      try {
-        var role = String(el.getAttribute && el.getAttribute('role') || '').toLowerCase();
-        if (role === 'menuitem' || role === 'menu') return true;
-        if (el.closest && el.closest(
-          '[role="menu"], [role="menuitem"], .el-dropdown-menu, .ivu-dropdown-menu, ' +
-          '.ant-dropdown-menu, .ant-dropdown, [class*="context-menu"], [class*="contextmenu"], ' +
-          '[class*="dropdown-menu"]'
-        )) return true;
-      } catch (e) {}
-      var n = el;
-      for (var hops = 0; n && hops < 10; hops++) {
-        var cn = '';
-        try {
-          cn = String(n.className && n.className.baseVal != null ? n.className.baseVal : (n.className || ''));
-        } catch (e1) { cn = ''; }
-        if (/(?:^|[\s_-])(?:menu|dropdown|popover|context)(?:[\s_-]|$)/i.test(cn) ||
-          /contextmenu|dropdown-menu|more-menu|file-menu|operate-menu/i.test(cn)) {
-          return true;
-        }
-        n = n.parentElement;
-      }
-      return isOverlayEl(el);
-    }
-
-    function isPageChromeDownload(el) {
-      if (!el) return false;
-      try {
-        if (el.closest && el.closest(
-          '.download_box, .download-box, [class*="download_box"], [class*="downloadBox"], ' +
-          'header, nav, .header, .navbar, [class*="top-bar"], [class*="topBar"]'
-        )) return true;
-      } catch (e) {}
-      var n = el;
-      for (var hops = 0; n && hops < 8; hops++) {
-        var cn = '';
-        try {
-          cn = String(n.className && n.className.baseVal != null ? n.className.baseVal : (n.className || ''));
-        } catch (e1) { cn = ''; }
-        if (/download_box|downloadBox/.test(cn) && !/dropdown|menu|context/i.test(cn)) return true;
-        n = n.parentElement;
-      }
-      return false;
-    }
-
-    // 「下载/预览」全页同文时优先点自定义菜单，避开页头 download_box。
-    function preferFileActionHits(tied, needle) {
-      var n = normText(needle);
-      if (!n || !/下载|预览|复制名称|download|preview|copy/.test(n)) return tied;
-      if (!tied || !tied.length) return tied;
-      var menu = [];
-      var rest = [];
-      for (var i = 0; i < tied.length; i++) {
-        var el = tied[i] && tied[i].el;
-        if (isFileActionMenuEl(el)) menu.push(tied[i]);
-        else if (!isPageChromeDownload(el)) rest.push(tied[i]);
-      }
-      if (menu.length) return menu;
-      if (rest.length) return rest;
-      return [];
     }
 
     function chooseClickByText(list, raw) {
@@ -2582,12 +2554,45 @@
     function statusMessages() {
       var nodes = queryAllDeep(STATUS_NODE_SEL);
       var out = [];
-      for (var i = 0; i < nodes.length && out.length < 12; i++) {
-        if (!isVisible(nodes[i])) continue;
-        var text = String(nodes[i].innerText || nodes[i].textContent || '').trim();
+      function push(text) {
+        var t = String(text || '').replace(/\s+/g, ' ').trim();
+        if (!t) return;
+        if (out.indexOf(t) >= 0) return;
+        if (out.length >= STATUS_MSG_MAX) return;
+        out.push(t.slice(0, STATUS_MSG_CHARS));
+      }
+      function shortPhrases(root) {
+        var leaves = [];
+        try {
+          var all = root.querySelectorAll('span, p, div, li, label, em, strong, h1, h2, h3, h4, [role="status"], [role="alert"]');
+          for (var i = 0; i < all.length && leaves.length < 40; i++) {
+            if (!isVisible(all[i])) continue;
+            var own = ownText(all[i]);
+            if (!own) {
+              try { own = String(all[i].innerText || '').replace(/\s+/g, ' ').trim(); } catch (e) { own = ''; }
+            }
+            if (own.length >= 2 && own.length <= 48) leaves.push(own);
+          }
+        } catch (e2) {}
+        return leaves;
+      }
+      for (var n = 0; n < nodes.length && out.length < STATUS_MSG_MAX; n++) {
+        if (!isVisible(nodes[n])) continue;
+        var text = '';
+        try { text = String(nodes[n].innerText || nodes[n].textContent || '').trim(); } catch (e3) { text = ''; }
         if (!text) continue;
-        if (text.length > 2000 && !/失败|错误|无效|error|failed|invalid/i.test(text.slice(0, 2000))) continue;
-        if (out.indexOf(text) < 0) out.push(text.slice(0, 300));
+        if (text.length <= STATUS_MSG_CHARS) {
+          push(text);
+          continue;
+        }
+        push(text);
+        var phrases = shortPhrases(nodes[n]);
+        if (phrases.length) {
+          var picked = phrases;
+          if (phrases.length > 8) picked = phrases.slice(0, 4).concat(phrases.slice(-4));
+          for (var p = 0; p < picked.length && out.length < STATUS_MSG_MAX; p++) push(picked[p]);
+        }
+        continue;
       }
       return out;
     }
@@ -2784,6 +2789,46 @@
       } catch (e) { return ''; }
     }
 
+    function selectionItemTexts(host) {
+      if (!host || !host.querySelectorAll) return '';
+      var tags;
+      try {
+        tags = host.querySelectorAll(
+          '.el-tag, .ivu-tag, .ant-select-selection-item, .ivu-select-selected-value, ' +
+          '.ivu-cascader-label, .el-cascader__label, .ant-cascader-picker-label, ' +
+          '[class*="selection-item"], [class*="selected-item"], [class*="selected-value"]'
+        );
+      } catch (eQ) { return ''; }
+      var parts = [];
+      var seen = {};
+      for (var i = 0; i < tags.length && parts.length < 8; i++) {
+        var node = tags[i];
+        try {
+          if (node.closest && node.closest('.el-tag__close, .el-icon-close, .ivu-icon-ios-close, .ant-tag-close-icon')) continue;
+        } catch (e0) {}
+        var t = String(node.innerText || node.textContent || node.value || '')
+          .replace(/\s+/g, ' ').trim();
+        t = t.replace(/[\s×xX]+$/, '').trim();
+        if (!t || seen[t] || isPlaceholderSelectText(t)) continue;
+        seen[t] = 1;
+        parts.push(t.slice(0, 40));
+      }
+      return parts.length ? parts.join(',') : '';
+    }
+
+    function hostSurfaceText(host, trigger) {
+      if (!host) return '';
+      var popup = null;
+      try { popup = findPopupForTrigger(trigger || host); } catch (e0) { popup = null; }
+      try {
+        if (popup && host.contains && host.contains(popup)) return '';
+      } catch (e1) {}
+      var ht = '';
+      try { ht = String(host.innerText || host.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e2) {}
+      if (isPlaceholderSelectText(ht)) return '';
+      return ht.slice(0, 80);
+    }
+
     function widgetSelectedTextNear(el) {
       try {
         if (!el || !el.closest) return '';
@@ -2791,43 +2836,29 @@
         if (!host) {
           host = widgetRoot(el);
           if (host && looksLikeSelectHost(host)) {
-            var comboInp = comboboxTriggerOf(host, el);
-            var iv = '';
-            try { iv = String((comboInp && ('value' in comboInp ? comboInp.value : '')) || '').trim(); } catch (eC) {}
-            if (iv) return iv.slice(0, 80);
+            var items = selectionItemTexts(host);
+            if (items) return items;
+            var chips0 = tagChipTexts(host);
+            if (chips0.length) return chips0.join(',');
+            var surface = hostSurfaceText(host, el);
+            if (surface) return surface;
           }
           host = el.closest(TAG_HOST_SEL);
           if (!host) return '';
           var chips = tagChipTexts(host);
           return chips.length ? chips.join(',') : '';
         }
-        // 只收集已选标签，不要整段 .el-cascader__tags（会混入筛选框里正在输入的字）。
-        var tags = host.querySelectorAll(
-          '.el-tag, .ivu-tag, .ant-select-selection-item, .ivu-select-selected-value, ' +
-          '.ivu-cascader-label, .el-cascader__label, .ant-cascader-picker-label'
-        );
-        var parts = [];
-        var seen = {};
-        for (var i = 0; i < tags.length && parts.length < 8; i++) {
-          var node = tags[i];
-          try {
-            if (node.closest && node.closest('.el-tag__close, .el-icon-close, .ivu-icon-ios-close')) continue;
-          } catch (e0) {}
-          var t = String(node.innerText || node.textContent || node.value || '')
-            .replace(/\s+/g, ' ').trim();
-          if (!t || t === '请选择' || seen[t]) continue;
-          seen[t] = 1;
-          parts.push(t.slice(0, 40));
-        }
-        if (parts.length) return parts.join(',');
+        // selection items only; do not use the whole .el-cascader__tags block (mixes in filter typing).
+        var named = selectionItemTexts(host);
+        if (named) return named;
         var rel = host.querySelector(
           '.ivu-cascader-rel, .ivu-select-selection, .ant-select-selector, .ant-cascader-picker'
         );
         if (rel) {
           var rt = String(rel.innerText || rel.value || '').replace(/\s+/g, ' ').trim().slice(0, 80);
-          if (rt && rt !== '请选择') return rt;
+          if (rt && !isPlaceholderSelectText(rt)) return rt;
         }
-        return '';
+        return hostSurfaceText(host, el);
       } catch (e) { return ''; }
     }
 
@@ -2838,35 +2869,68 @@
         /^(select|choose|pick)(\s|$)/i.test(s);
     }
 
-    // 已提交的下拉展示值。弹层打开时 input.value 多半是过滤词，不能当成已选。
-    // 弹层未检测到时（GitCode 等传送门下拉常报 notOpened）则以关闭态的 input/已选标签为准。
-    function comboCommittedText(trigger) {
-      if (!trigger) return '';
-      var open = false;
-      try { open = !!findPopupForTrigger(trigger); } catch (e0) {}
-      var near = '';
-      try { near = String(widgetSelectedTextNear(trigger) || '').replace(/\s+/g, ' ').trim(); } catch (e1) {}
-      var inpVal = '';
+    function nativeSelectOf(el) {
+      if (!el) return null;
       try {
-        var inp = null;
-        try { inp = findSearchInput(trigger); } catch (eS) { inp = null; }
-        if (!inp && trigger && String(trigger.tagName || '').toUpperCase() === 'INPUT') inp = trigger;
-        if (inp && ('value' in inp)) inpVal = String(inp.value || '').replace(/\s+/g, ' ').trim();
-      } catch (e2) {}
-      if (isPlaceholderSelectText(near)) near = '';
-      if (isPlaceholderSelectText(inpVal)) inpVal = '';
-      var t = '';
-      if (open) {
-        t = near && near !== inpVal ? near : '';
-      } else if (near && near !== inpVal) {
-        t = near;
-      } else if (near && !inpVal) {
-        t = near;
-      } else {
-        t = '';
+        if (String(el.tagName || '').toUpperCase() === 'SELECT') return el;
+        if (el.closest) {
+          var s = el.closest('select');
+          if (s) return s;
+        }
+      } catch (e) {}
+      return null;
+    }
+
+    function nativeSelectShown(sel) {
+      if (!sel || !sel.options) return '';
+      try {
+        if (sel.selectedIndex >= 0 && sel.options[sel.selectedIndex]) {
+          return String(sel.options[sel.selectedIndex].text || '').replace(/\s+/g, ' ').trim();
+        }
+      } catch (e) {}
+      return '';
+    }
+
+    function anyInputValue(trigger) {
+      var inp = null;
+      try { inp = findSearchInput(trigger); } catch (eS) { inp = null; }
+      if (!inp && trigger && String(trigger.tagName || '').toUpperCase() === 'INPUT') inp = trigger;
+      if (!inp && trigger && String(trigger.tagName || '').toUpperCase() === 'TEXTAREA') inp = trigger;
+      if (!inp) {
+        try {
+          var root = widgetRoot(trigger) || trigger;
+          if (root && root.querySelector) {
+            inp = root.querySelector('input:not([type="hidden"]), textarea');
+          }
+        } catch (e2) {}
       }
+      if (inp && ('value' in inp)) return String(inp.value || '').replace(/\s+/g, ' ').trim();
+      return '';
+    }
+
+    // shown display text: selection items / host surface / input.value (incl. readOnly).
+    // Not a selected-verdict. Do not blank when the owned popup is open or when near === inpVal.
+    function shownTextOf(el) {
+      if (!el) return '';
+      var nat = nativeSelectOf(el);
+      if (nat) {
+        var ns = nativeSelectShown(nat);
+        if (isPlaceholderSelectText(ns)) return '';
+        return String(ns || '').slice(0, 120);
+      }
+      var near = '';
+      try { near = String(widgetSelectedTextNear(el) || '').replace(/\s+/g, ' ').trim(); } catch (e1) {}
+      if (isPlaceholderSelectText(near)) near = '';
+      var inpVal = '';
+      try { inpVal = anyInputValue(el); } catch (e2) {}
+      if (isPlaceholderSelectText(inpVal)) inpVal = '';
+      var t = near || inpVal;
       if (isPlaceholderSelectText(t)) return '';
       return String(t || '').slice(0, 120);
+    }
+
+    function comboCommittedText(trigger) {
+      return shownTextOf(trigger);
     }
 
     function comboSelectionMatches(trigger, raw) {
@@ -3026,7 +3090,7 @@
       try { rowName = String(el.getAttribute && el.getAttribute('name') || '').toLowerCase(); } catch (eN) {}
       if (rowName === 'file' || rowName === 'folder' || rowName === 'dir') return true;
       if (nameEl) return true;
-      if (icon && looksLikeFileName(label)) return true;
+      if (icon && label) return true;
       return false;
     }
 
@@ -3062,11 +3126,7 @@
     function selectedPaneHasName(label, row) {
       if (!label) return false;
       var panes = [];
-      try {
-        var right = document.getElementById('split-right');
-        if (right) panes.push(right);
-      } catch (e) {}
-      var extra = queryAllDeep('[class*="selected-list"], [class*="checked-list"], [class*="choose-list"], .file-selected');
+      var extra = queryAllDeep('[class*="selected"], [class*="selected-list"], [class*="checked-list"], [class*="choose-list"], .file-selected');
       for (var i = 0; i < extra.length; i++) panes.push(extra[i]);
       for (var p = 0; p < panes.length; p++) {
         var pane = panes[p];
@@ -3473,18 +3533,6 @@
       }
     }
 
-    function desktopHandoffOf(entry) {
-      var blob = [
-        entry && entry.text,
-        entry && entry.label,
-        entry && entry.title,
-        entry && entry.ariaLabel,
-        entry && entry.name
-      ].join(' ');
-      if (/FTP|SFTP|FTPS|FileZilla|WinSCP|客户端下载|空间挂载|网盘挂载/i.test(blob)) return 'desktop';
-      return '';
-    }
-
     function probeSignals() {
       markSample();
       return JSON.parse(JSON.stringify({
@@ -3644,14 +3692,14 @@
       };
     }
 
-    var VIEW_PANEL_RE = /suggest|autocomplete|typeahead|search-list|search-result|picker-panel|select-dropdown|dropdown-menu|cascader|option-list|result-list|user-list|author-list|combo-panel|suggestion/i;
-    var VIEW_ITEM_RE = /suggest|suggestion|search-item|list-item|dropdown-item|picker-item|result-item|select-item|user-item|author-item|auto-complete|typeahead|cascader-node/i;
+    var VIEW_PANEL_RE = /suggest|autocomplete|typeahead|search-list|search-result|picker-panel|select-dropdown|dropdown-menu|cascader|option-list|result-list|combo-panel|suggestion/i;
+    var VIEW_ITEM_RE = /suggest|suggestion|search-item|list-item|dropdown-item|picker-item|result-item|select-item|auto-complete|typeahead|cascader-node/i;
     var VIEW_PANEL_SEL = [
       '[role="listbox"]', '[role="menu"]', '[role="tablist"]', '[role="list"]', '[role="tree"]',
       '[class*="suggest"]', '[class*="autocomplete"]', '[class*="typeahead"]',
       '[class*="search-list"]', '[class*="select-dropdown"]', '[class*="dropdown-menu"]',
-      '[class*="picker-panel"]', '[class*="result-list"]', '[class*="user-list"]',
-      '[class*="author-list"]', '[class*="suggestion"]'
+      '[class*="picker-panel"]', '[class*="result-list"]',
+      '[class*="suggestion"]'
     ].join(',');
 
     function classLooksViewPanel(cn) {
@@ -3694,7 +3742,7 @@
       var cn = classNameOf(el);
       if (role === 'tab' || /(?:^|[\s_-])tabs?(?:[\s_-]|$)/i.test(cn)) return 'tab';
       if (role === 'option' || /select-dropdown|select-item|el-option|ivu-select-item|ant-select-item/i.test(cn)) return 'option';
-      if (/search-item|user-item|author-item|list-item/i.test(cn)) return 'card';
+      if (/search-item|list-item/i.test(cn)) return 'card';
       if (role === 'menuitem' || role === 'treeitem') return 'option';
       return 'suggest';
     }
@@ -3989,7 +4037,7 @@
             else if (fieldType === 'file') value = el && el.files ? Array.from(el.files).map(function (f) { return f.name; }).join(', ').slice(0, 200) : '';
             else if (el && 'value' in el) value = String(el.value == null ? '' : el.value).slice(0, 200);
             if (!value) {
-              var shown = widgetSelectedTextNear(el);
+              var shown = shownTextOf(el);
               if (shown) value = shown.slice(0, 200);
             }
           } catch (eVal) { value = ''; }
@@ -4037,8 +4085,6 @@
           band: band
         };
         applyFieldMeta(entry, el);
-        var handoff = desktopHandoffOf(entry);
-        if (handoff) entry.handoff = handoff;
         if (tag === 'SELECT' && el && el.options) {
           var tot = el.options.length;
           var cap = Math.min(500, Math.max(0, optionsBudget));
@@ -5286,13 +5332,6 @@
       '.ivu-cascader-menu-item, .ant-cascader-menu-item, ' +
       'li[id^="cascader-menu-"], li[id*="-cascader-menu-"]';
 
-    var CASCADER_EMPTY_TEXT_RE = /^(暂无数据|无匹配数据|无数据|暂无匹配项?|暂无匹配数据|无匹配|No Data|No data|no data|No match)$/i;
-
-    function isCascaderPlaceholderText(t) {
-      var s = String(t || '').replace(/\s+/g, '');
-      return !s || CASCADER_EMPTY_TEXT_RE.test(s);
-    }
-
     function cascaderHostOf(el) {
       if (!el || !el.closest) return null;
       try {
@@ -5317,6 +5356,13 @@
       '.el-cascader__suggestion-panel, .el-cascader__suggestion-list, .ant-cascader-dropdown, .ant-cascader-menus, ' +
       '.ivu-cascader-dropdown, .ivu-cascader-menus';
 
+    var POPUP_INNER_SEL = 'dl, .layui-anim, [role="listbox"], .el-select-dropdown, .el-cascader__dropdown, ' +
+      '.el-cascader-panel, .el-cascader-menus, .el-cascader-menu, .el-cascader__suggestion-panel, .dropdown-menu, .combo-panel, ' +
+      '[class*="dropdown-menu"], [class*="select-dropdown"], ' +
+      '[class*="editable-select__inner"], [class*="editable-select__list"], [class*="editable-select__menu"], ' +
+      '[class*="editable-select__dropdown"], [class*="editable-select__overlay"], ' +
+      '[class*="select__inner"], [class*="select__list"], [class*="select__menu"], [class*="select__dropdown"]';
+
     var POPUP_SEL = [
       '.el-select-dropdown', '.el-popper', '.el-cascader__dropdown', '.el-cascader-menus',
       '.el-cascader__suggestion-panel', '.el-cascader__suggestion-list',
@@ -5329,7 +5375,10 @@
       '.rc-virtual-list', '.van-popup', '.van-popover',
       '[role="listbox"]', '[role="presentation"].el-select-dropdown',
       '[class*="select-dropdown"], [class*="dropdown-menu"], [class*="select-popup"], ' +
-      '[class*="picker-dropdown"], [class*="overlay-pane"], [class*="select-panel"]'
+      '[class*="picker-dropdown"], [class*="overlay-pane"], [class*="select-panel"], ' +
+      '[class*="editable-select__inner"], [class*="editable-select__list"], [class*="editable-select__menu"], ' +
+      '[class*="editable-select__dropdown"], [class*="editable-select__overlay"], ' +
+      '[class*="select__inner"], [class*="select__list"], [class*="select__menu"], [class*="select__dropdown"]'
     ].join(', ');
 
     var WIDGET_SEL = '.el-select, .el-cascader, .ant-select, .ivu-select, .ivu-cascader, .layui-form-select, ' +
@@ -5743,24 +5792,6 @@
       return null;
     }
 
-    function hostAllowsCreate(el) {
-      var n = el;
-      for (var i = 0; i < 8 && n && n.nodeType === 1; i++) {
-        try {
-          if (n.hasAttribute && n.hasAttribute('allow-create')) return true;
-        } catch (e0) {}
-        var cn = classNameOfNode(n);
-        if (/allow-create|creatable|editable-select/i.test(cn)) return true;
-        n = n.parentElement;
-      }
-      var si = null;
-      try { si = findSearchInput(el); } catch (e1) {}
-      var ph = '';
-      try { ph = String((si && (si.getAttribute && si.getAttribute('placeholder') || si.placeholder)) || ''); } catch (e2) {}
-      if (/创建|新建|or create|create a (new )?tag/i.test(ph)) return true;
-      return false;
-    }
-
     function isViewportOverlayShell(el) {
       if (!el || !el.getBoundingClientRect) return false;
       try {
@@ -5776,7 +5807,8 @@
       if (isViewportOverlayShell(el) && el.querySelector) {
         try {
           var inner = el.querySelector(
-            '[class*="dropdown-menu"], [class*="select-dropdown"], [role="listbox"], ul, ol'
+            '[class*="dropdown-menu"], [class*="select-dropdown"], [role="listbox"], ul, ol, ' +
+            '[class*="editable-select__inner"], [class*="select__inner"], [class*="select__list"]'
           );
           if (inner && !isHiddenPopup(inner)) return inner;
         } catch (e) {}
@@ -5823,27 +5855,58 @@
       } catch (e) { return Infinity; }
     }
 
+    function isPopupItemNode(el) {
+      if (!el || el.nodeType !== 1) return false;
+      var cn = classNameOfNode(el);
+      if (/__item\b/.test(cn)) return true;
+      try {
+        if (el.getAttribute && el.getAttribute('role') === 'option') return true;
+      } catch (e0) {}
+      return false;
+    }
+
+    function acceptPopupNode(el, trigger) {
+      if (!el || el.nodeType !== 1) return false;
+      if (isHiddenPopup(el)) return false;
+      var root = null;
+      try { root = widgetRoot(trigger); } catch (e0) { root = null; }
+      if (root && el === root) return false;
+      try {
+        if (trigger && el.contains && el.contains(trigger)) return false;
+      } catch (e1) {}
+      if (isPopupItemNode(el)) return false;
+      try {
+        if (el.matches && el.matches(OPTION_SEL) && !popupHasOptionNodes(el)) return false;
+      } catch (e2) {}
+      return true;
+    }
+
     function findPopupForTrigger(trigger) {
       var isCascader = !!cascaderHostOf(trigger);
       var controlled = controlledPopup(trigger);
-      if (controlled && !isHiddenPopup(controlled)) {
+      if (controlled && acceptPopupNode(controlled, trigger)) {
         if (!isCascader || popupHasOptionNodes(controlled)) return controlled;
       }
       var root = widgetRoot(trigger);
-      if (root && root.querySelector) {
-        var inner = root.querySelector(
-          'dl, .layui-anim, [role="listbox"], .el-select-dropdown, .el-cascader__dropdown, ' +
-          '.el-cascader-panel, .el-cascader-menus, .el-cascader-menu, .el-cascader__suggestion-panel, .dropdown-menu, .combo-panel, ' +
-          '[class*="dropdown-menu"], [class*="select-dropdown"]'
-        );
-        if (inner && !isHiddenPopup(inner)) return inner;
+      if (root && root.querySelectorAll) {
+        var inners = [];
+        try { inners = root.querySelectorAll(POPUP_INNER_SEL); } catch (eIn) { inners = []; }
+        var innerHit = null;
+        var innerScore = -Infinity;
+        for (var ii = 0; ii < inners.length; ii++) {
+          var inner = inners[ii];
+          if (!acceptPopupNode(inner, trigger)) continue;
+          var iScore = popupHasOptionNodes(inner) ? 1000 : 0;
+          if (iScore > innerScore) { innerScore = iScore; innerHit = inner; }
+        }
+        if (innerHit) return innerHit;
       }
       if (isCascader) {
         var spec = queryAllDeep(CASCADER_POPUP_SEL);
         var bestC = null;
         var bestCScore = -Infinity;
         for (var ci = 0; ci < spec.length; ci++) {
-          if (isHiddenPopup(spec[ci])) continue;
+          if (!acceptPopupNode(spec[ci], trigger)) continue;
           var distC = popupDistance(trigger, spec[ci]);
           if (distC > 1600) continue;
           var score = (popupHasOptionNodes(spec[ci]) ? 1000 : 0) - distC;
@@ -5859,7 +5922,7 @@
       for (var i = 0; i < pops.length; i++) {
         if (isHiddenPopup(pops[i])) continue;
         var el = popupContentRoot(pops[i]) || pops[i];
-        if (isHiddenPopup(el)) continue;
+        if (!acceptPopupNode(el, trigger)) continue;
         if (isViewportOverlayShell(el) && !popupHasOptionNodes(el)) continue;
         if (isCascader && !popupHasOptionNodes(el)) continue;
         var dist = popupDistance(trigger, el);
@@ -5930,7 +5993,6 @@
     function isSkippableOptionText(t) {
       var s = String(t || '').replace(/\s+/g, '');
       if (!s || s.length > 120) return true;
-      if (isCascaderPlaceholderText(t)) return true;
       if (/^(请选择|请选择Tag|请选择标签|Select|Choose|None)$/i.test(s)) return true;
       return false;
     }
@@ -6010,7 +6072,7 @@
         if (!isLaidOut(e)) continue;
         if (e.tagName === 'OPTION') continue;
         var t = optionTextOf(e);
-        if (!t || isCascaderPlaceholderText(t)) continue;
+        if (!t) continue;
         var v = e.getAttribute ? (e.getAttribute('data-value') || e.getAttribute('lay-value') || e.getAttribute('value') || '') : '';
         var s = '';
         if (withSelector) {
@@ -6034,7 +6096,7 @@
         if (!isLaidOut(e)) continue;
         if (trigger && popupDistance(trigger, e) > 1600) continue;
         var t = optionTextOf(e);
-        if (!t || isCascaderPlaceholderText(t)) continue;
+        if (!t) continue;
         var v = e.getAttribute ? (e.getAttribute('data-value') || e.getAttribute('lay-value') || e.getAttribute('value') || '') : '';
         var s = '';
         if (withSelector) {
@@ -6146,6 +6208,19 @@
       return normText(item && item.text) + '\0' + String((item && item.value) || '');
     }
 
+    function optionDomSelected(el) {
+      if (!el) return false;
+      try {
+        if (el.getAttribute && el.getAttribute('aria-selected') === 'true') return true;
+      } catch (e0) {}
+      var cn = classNameOfNode(el);
+      if (/--selected\b/.test(cn)) return true;
+      if (/\bis-selected\b/i.test(cn)) return true;
+      if (/(?:^|\s)selected(?:\s|$)/i.test(cn)) return true;
+      if (/\b(ant-select-item-option-selected|layui-this)\b/.test(cn)) return true;
+      return false;
+    }
+
     function serializeOptions(list, max) {
       var n = Math.max(1, Math.min(Number(max) || MAX_LIST_OPTIONS, MAX_LIST_OPTIONS));
       var out = [];
@@ -6167,6 +6242,11 @@
           } catch (eI) {}
         }
         if (ix) rec.idx = ix;
+        var sel = item.sel === true;
+        if (!sel && item.el) {
+          try { sel = optionDomSelected(item.el); } catch (eS) { sel = false; }
+        }
+        if (sel) rec.sel = true;
         out.push(rec);
       }
       return out;
@@ -6193,36 +6273,96 @@
       return payload;
     }
 
-    function personCardsCatalog(el, want) {
-      var scope = personPickerScope(el);
-      var list = findSearchList(scope) || findSearchList(document);
-      if (!list) return [];
-      var cards = [];
-      try { cards = Array.from(list.querySelectorAll('li, [class*="search-item"], [class*="user-item"], [class*="list-item"]')); }
-      catch (e) { cards = []; }
-      if (!cards.length) {
-        try { cards = Array.from(list.children || []); } catch (e2) { cards = []; }
+    var NEARBY_LIST_SEL = '[role="listbox"], .search-list, [class*="search-list"], ' +
+      '[class*="select-dropdown"], [class*="dropdown-menu"], [class*="suggestion"], [class*="suggest-list"]';
+
+    function fieldDialogScope(el) {
+      if (!el) return null;
+      try {
+        var item = formItemOf(el);
+        if (item) {
+          var modal = item.closest && item.closest('.ivu-modal, .el-dialog, .ant-modal, .n-modal, [role="dialog"]');
+          if (modal) return modal;
+          return item.parentElement || item;
+        }
+      } catch (e) {}
+      try {
+        var dlg = el.closest && el.closest('.ivu-modal, .el-dialog, .ant-modal, .n-modal, [role="dialog"], .modal');
+        if (dlg) return dlg;
+      } catch (e2) {}
+      return el.parentElement || null;
+    }
+
+    function listSignature(list) {
+      if (!list) return '';
+      try { return String(list.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 400); } catch (e) { return ''; }
+    }
+
+    function findListContainer(el) {
+      var scope = fieldDialogScope(el);
+      if (!scope || !scope.querySelector) return null;
+      var n = null;
+      try { n = scope.querySelector(NEARBY_LIST_SEL); } catch (e) { n = null; }
+      return n || null;
+    }
+
+    function findNearbyOptionList(el) {
+      if (!el) return null;
+      var n = findListContainer(el);
+      if (n && isVisible(n)) return n;
+      try {
+        n = findPopupForTrigger(el);
+        if (n && isVisible(n)) return n;
+      } catch (e2) {}
+      var all = [];
+      try { all = queryAllDeep(NEARBY_LIST_SEL); } catch (e3) { all = []; }
+      var best = null;
+      var bestD = 420;
+      for (var i = 0; i < all.length; i++) {
+        if (!isVisible(all[i])) continue;
+        var d = 9999;
+        try { d = popupDistance(el, all[i]); } catch (e4) { d = 9999; }
+        if (d < bestD) { bestD = d; best = all[i]; }
       }
+      return best;
+    }
+
+    function nearbyListCatalog(el, want) {
+      var list = findNearbyOptionList(el);
+      if (!list) return [];
+      var items = [];
+      try {
+        items = list.querySelectorAll('li, [role="option"], [role="listitem"], [class*="list-item"], [class*="search-item"]');
+      } catch (e) { items = []; }
+      if (!items.length) {
+        try { items = list.children || []; } catch (e2) { items = []; }
+      }
+      var wantNorm = String(want || '').replace(/\s+/g, '').toLowerCase();
       var out = [];
-      var needle = normText(want);
-      for (var i = 0; i < cards.length && out.length < 20; i++) {
-        var card = cards[i];
-        if (!card || !isVisible(card)) continue;
+      for (var i = 0; i < items.length && out.length < 20; i++) {
+        var item = items[i];
+        if (!item || !isVisible(item)) continue;
         var t = '';
-        try { t = String(card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e3) { t = ''; }
+        try { t = String(item.innerText || item.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e3) { t = ''; }
         if (!t) continue;
-        var root = personCardRoot(card);
         var idx = 0;
-        try {
-          var raw = root.getAttribute && root.getAttribute('data-wpa-i');
-          if (raw) idx = parseInt(raw, 10) || 0;
-        } catch (e4) {}
+        try { idx = snapIdxOf(item) || 0; } catch (e4) { idx = 0; }
         var rec = { t: t.slice(0, 80), v: '', leaf: true };
         if (idx) rec.idx = idx;
-        if (needle && (normText(t).indexOf(needle) >= 0 || needle.indexOf(normText(t).slice(0, needle.length)) >= 0)) rec.match = true;
+        if (wantNorm && t.replace(/\s+/g, '').toLowerCase().indexOf(wantNorm) >= 0) rec.hit = true;
         out.push(rec);
       }
       return out;
+    }
+
+    function snapshotTypeList(el) {
+      var vis = findNearbyOptionList(el);
+      var box = vis || findListContainer(el);
+      return {
+        sig: listSignature(vis || box),
+        count: vis ? nearbyListCatalog(el, '').length : 0,
+        hasContainer: !!box
+      };
     }
 
     function collectFieldState(el, opts) {
@@ -6235,18 +6375,21 @@
       var trigger = el;
       try { trigger = cascaderTriggerOf(host, el) || comboboxTriggerOf(host, el) || el; } catch (e2) {}
       var open = false;
-      try { open = !!(findPopupForTrigger(trigger) || isTriggerOpen(trigger)); } catch (e3) {}
+      try { open = !!findPopupForTrigger(trigger); } catch (e3) {}
       var filter = '';
       try {
         var si = findSearchInput(trigger);
-        if (!si && el && String(el.tagName || '').toUpperCase() === 'INPUT') si = el;
+        if (!si && el && isSearchTypedInput(el, el)) si = el;
         if (si && ('value' in si)) filter = String(si.value || '').replace(/\s+/g, ' ').trim();
       } catch (e4) {}
       var committed = '';
       try {
         if (casc) committed = cascaderCommittedText(host);
         else if (combo) committed = comboCommittedText(trigger);
-        else {
+        else if (nativeSelectOf(el) || nativeSelectOf(host)) {
+          committed = shownTextOf(nativeSelectOf(el) || nativeSelectOf(host) || el);
+          filter = '';
+        } else {
           committed = filter;
           filter = '';
         }
@@ -6269,7 +6412,6 @@
         if (widgetish) {
           try {
             var harvested = optionsForTrigger(trigger, limit);
-            if (!harvested.length) harvested = collectOpenPopupOptions(limit);
             optionsTop = serializeOptions(harvested, limit);
             truncated = harvested.length >= limit;
             for (var oi = 0; oi < optionsTop.length; oi++) {
@@ -6282,9 +6424,9 @@
             }
           } catch (e9) {}
         }
-        var cards = personCardsCatalog(el, filter || committed);
-        if (cards.length && !optionsTop.length) {
-          optionsTop = cards;
+        var nearby = nearbyListCatalog(el, filter || committed);
+        if (nearby.length && !optionsTop.length) {
+          optionsTop = nearby;
         }
       }
       return {
@@ -6297,6 +6439,83 @@
         optionsCount: optionsTop.length,
         truncated: truncated
       };
+    }
+
+    function owningSelectTriggerOf(el) {
+      if (!el) return null;
+      try { if (fileRowOf(el)) return null; } catch (e0) {}
+      try { if (isPagerHost(el) || inPagerHost(el)) return null; } catch (e1) {}
+      var widgets = [];
+      try { widgets = queryAllDeep(WIDGET_SEL); } catch (eW) { widgets = []; }
+      var best = null;
+      var bestDist = Infinity;
+      for (var i = 0; i < widgets.length; i++) {
+        var host = widgets[i];
+        var cascH = null;
+        var comboH = null;
+        try { cascH = cascaderHostOf(host); } catch (eC) {}
+        try { comboH = comboboxHostOf(host); } catch (eB) {}
+        if (!cascH && !comboH) continue;
+        var trig = cascH ? cascaderTriggerOf(cascH, host) : comboboxTriggerOf(comboH || host, host);
+        if (!trig) continue;
+        var popup = null;
+        try { popup = findPopupForTrigger(trig); } catch (eP) {}
+        if (!popup || !popup.contains || !popup.contains(el)) continue;
+        var d = popupDistance(trig, el);
+        if (d < bestDist) { bestDist = d; best = trig; }
+      }
+      return best;
+    }
+
+    function owningFilterInputOf(el) {
+      if (!el || !el.closest) return null;
+      try { if (typeof fileRowOf === 'function' && fileRowOf(el)) return null; } catch (e0) {}
+      var item = null;
+      try { item = el.closest('[role="option"], [role="listitem"], li, [class*="list-item"], [class*="search-item"]'); } catch (e) { item = null; }
+      if (!item) return null;
+      try { if (typeof fileRowOf === 'function' && fileRowOf(item)) return null; } catch (eF) {}
+      var list = null;
+      try {
+        list = item.closest('[role="listbox"], .search-list, [class*="search-list"], [class*="select-dropdown"], ul, [class*="dropdown"]');
+      } catch (e2) { list = null; }
+      var scope = (list && fieldDialogScope(list)) || fieldDialogScope(item) || (list && list.parentElement) || null;
+      if (!scope || !scope.querySelector) return null;
+      var nodes = [];
+      try { nodes = scope.querySelectorAll('input, textarea, [contenteditable="true"]'); } catch (e3) { nodes = []; }
+      var best = null;
+      var bestD = 1e9;
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        if (!isSearchTypedInput(n, n) || !isVisible(n)) continue;
+        try { if (typeof fileRowOf === 'function' && fileRowOf(n)) continue; } catch (eSkip) {}
+        var d = 0;
+        try { d = popupDistance(item, n); } catch (e4) { d = 999; }
+        if (d < bestD) { bestD = d; best = n; }
+      }
+      return best;
+    }
+
+    function optionClickLift(el) {
+      var owner = owningSelectTriggerOf(el);
+      if (owner) {
+        var fs = null;
+        try { fs = collectFieldState(owner, { harvest: true }); } catch (eFs) { fs = null; }
+        var name = '';
+        try { name = optionTextOf(el) || ''; } catch (eN) { name = ''; }
+        return { fieldState: fs, name: name };
+      }
+      var lifted = owningFilterInputOf(el);
+      if (!lifted || lifted === el) return null;
+      var pfs = null;
+      try { pfs = collectFieldState(lifted, { harvest: true }); } catch (eP) { pfs = null; }
+      var pname = '';
+      try { pname = String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80); } catch (eN2) { pname = ''; }
+      var payload = { fieldState: pfs, name: pname };
+      try {
+        var nearby = nearbyListCatalog(lifted, '');
+        if (nearby && nearby.length) payload.options = nearby;
+      } catch (eC) {}
+      return payload;
     }
 
     // 通用过滤词：原文 + 按空白/标点切出的片段。不针对姓名/邮箱等业务类型。
@@ -6518,14 +6737,6 @@
 
     function cascaderCommittedText(host) {
       if (!host) return '';
-      var trigger = cascaderTriggerOf(host);
-      var open = false;
-      try { open = !!findPopupForTrigger(trigger); } catch (e0) {}
-      var filter = '';
-      try {
-        var si = findSearchInput(trigger);
-        if (si && ('value' in si)) filter = String(si.value || '').replace(/\s+/g, ' ').trim();
-      } catch (e1) {}
       var parts = [];
       try {
         var nodes = host.querySelectorAll(
@@ -6535,14 +6746,14 @@
         var seen = {};
         for (var i = 0; i < nodes.length && parts.length < 8; i++) {
           var t = String(nodes[i].innerText || nodes[i].textContent || '').replace(/\s+/g, ' ').trim();
-          if (!t || t === '请选择' || t === filter || seen[t]) continue;
+          if (!t || isPlaceholderSelectText(t) || seen[t]) continue;
           seen[t] = 1;
           parts.push(t.slice(0, 40));
         }
       } catch (e2) {}
       var tags = parts.join(',');
-      if (open) return tags;
-      return tags;
+      if (tags) return tags;
+      return shownTextOf(host);
     }
 
     function cascaderSelectionText(host) {
@@ -6827,84 +7038,80 @@
       };
     }
 
-    function personSearchBlob(el) {
-      var parts = [];
-      try { parts.push(el.getAttribute && el.getAttribute('placeholder') || el.placeholder || ''); } catch (e) {}
-      try { parts.push(fieldLabelOf(el) || ''); } catch (e2) {}
-      try { parts.push(el.getAttribute && el.getAttribute('aria-label') || ''); } catch (e3) {}
-      return parts.join(' ');
-    }
-
-    function looksLikePersonSearchInput(el) {
-      if (!el) return false;
-      var tag = String(el.tagName || '').toUpperCase();
-      if (tag !== 'INPUT' && tag !== 'TEXTAREA') return false;
-      var type = String(el.type || 'text').toLowerCase();
-      if (tag === 'INPUT' && type && !/^(text|search)?$/.test(type)) return false;
-      return /姓名|作者|人员|搜索.*人|person|author/i.test(personSearchBlob(el));
-    }
-
-    function personPickerScope(el) {
-      if (!el) return document;
-      try {
-        var item = formItemOf(el);
-        if (item) {
-          var modal = item.closest && item.closest('.ivu-modal, .el-dialog, .ant-modal, [role="dialog"]');
-          if (modal) return modal;
-          return item.parentElement || item;
-        }
-      } catch (e) {}
-      return el.parentElement || document;
-    }
-
-    function findSearchList(scope) {
-      if (!scope || !scope.querySelector) return null;
-      var sel = '.search-list, [class*="search-list"], .user-list, [class*="author-list"]';
-      var n = null;
-      try { n = scope.querySelector(sel); } catch (e) { n = null; }
-      if (n && isVisible(n)) return n;
-      return null;
-    }
-
-    function personCardRoot(el) {
-      var n = el;
-      var hops = 0;
-      while (n && n.nodeType === 1 && hops < 12) {
-        var tag = (n.tagName || '').toUpperCase();
-        var cn = classNameOfNode(n);
-        if (tag === 'LI' || /search-item|user-item|author-item|list-item/i.test(cn)) return n;
-        n = n.parentElement;
-        hops++;
-      }
-      return el;
-    }
-
-    async function completePersonPicker(el, name) {
-      var want = String(name == null ? '' : name).trim();
-      if (!want) return null;
-      var expectList = looksLikePersonSearchInput(el);
-      var scope = personPickerScope(el);
-      var list = findSearchList(scope) || findSearchList(document);
-      if (!list && !expectList) return null;
+    async function waitListSettle(getList, maxMs) {
+      var cap = Math.max(400, Math.min(Number(maxMs) || 1500, 1800));
+      var last = '';
+      var stable = 0;
       var waited = 0;
-      while (!list && waited < 1800) {
+      var list = getList();
+      if (list) {
+        try { last = String(list.innerText || ''); } catch (e) { last = ''; }
+      }
+      while (waited < cap) {
         await sleepMs(80);
         waited += 80;
-        list = findSearchList(scope) || findSearchList(document);
+        list = getList();
+        var t = '';
+        try { t = list ? String(list.innerText || '') : ''; } catch (e2) { t = ''; }
+        if (t === last && t) {
+          stable += 80;
+          if (stable >= 240) return list;
+        } else {
+          stable = 0;
+          last = t;
+        }
       }
-      var catalog = personCardsCatalog(el, want);
-      if (!list && !catalog.length && !expectList) return null;
+      return getList();
+    }
+
+    async function finishTypedFilter(el, val, before) {
+      if (!el) return null;
+      var want = String(val == null ? '' : val);
+      before = before || { sig: '', count: 0, hasContainer: false };
+      var list = findNearbyOptionList(el);
+      if (!list && (before.hasContainer || before.count || before.sig)) {
+        var waited = 0;
+        while (!list && waited < 1500) {
+          await sleepMs(80);
+          waited += 80;
+          list = findNearbyOptionList(el);
+        }
+      } else if (!list) {
+        await sleepMs(80);
+        list = findNearbyOptionList(el);
+      }
+      if (!list && !before.hasContainer && !before.count) return null;
+      if (list) {
+        await waitListSettle(function () { return findNearbyOptionList(el); }, 1500);
+      }
+      var fs = null;
+      try { fs = collectFieldState(el, { harvest: true }); } catch (e) { fs = null; }
+      var catalog = nearbyListCatalog(el, want);
+      if (fs && catalog.length && !(fs.optionsTop && fs.optionsTop.length)) {
+        fs.optionsTop = catalog;
+        fs.optionsCount = catalog.length;
+      }
+      var afterSig = listSignature(findNearbyOptionList(el));
+      var afterCount = catalog.length || (fs && fs.optionsCount) || 0;
+      var listChanged = !!(afterSig && afterSig !== before.sig);
+      var appeared = before.count === 0 && afterCount > 0;
+      if (!listChanged && !appeared) return null;
+      var actual = '';
+      try {
+        actual = (fs && ((fs.filter != null && String(fs.filter) !== '') ? fs.filter : fs.committed)) ||
+          String(el.value != null ? el.value : want);
+      } catch (eA) { actual = want; }
       return {
         ok: true,
         kind: 'mutation',
         via: 'type',
         reason: 'typed-not-committed',
-        continueBatch: true,
         expected: want,
-        actual: want,
+        actual: actual,
         verified: false,
-        fieldState: collectFieldState(el, { harvest: true }),
-        options: catalog
+        yieldBatch: true,
+        fieldState: fs,
+        options: catalog.length ? catalog : ((fs && fs.optionsTop) || [])
       };
     }
 
@@ -7193,8 +7400,11 @@
               var si = findSearchInput(trigger);
               if (!si && String(el.tagName || '').toUpperCase() === 'INPUT') si = el;
               if (!si) throw new Error('级联筛选框未找到');
+              var beforeCasc = snapshotTypeList(el);
               typeInto(si, cascVal);
               await sleepMs(220);
+              var cascHarvest = await finishTypedFilter(el, cascVal, beforeCasc);
+              if (cascHarvest) return cascHarvest;
               var cfs = collectFieldState(el, { harvest: true });
               return {
                 ok: true, kind: 'mutation', via: 'type', reason: 'typed-not-committed',
@@ -7208,11 +7418,14 @@
               await ensureOpenDropdown(cTrig);
               var cSi = findSearchInput(cTrig) || (el.tagName === 'INPUT' ? el : null);
               if (!cSi) throw new Error('下拉输入框未找到');
+              var beforeCombo = snapshotTypeList(el);
               typeInto(cSi, comboVal);
               await sleepMs(220);
+              var comboHarvest = await finishTypedFilter(el, comboVal, beforeCombo);
+              if (comboHarvest) return comboHarvest;
               var xfs = collectFieldState(el, { harvest: true });
               return {
-                ok: true, kind: 'mutation', via: 'type', reason: xfs.committed ? undefined : 'typed-not-committed',
+                ok: true, kind: 'mutation', via: 'type', reason: 'typed-not-committed',
                 expected: comboVal, actual: xfs.filter || comboVal,
                 verified: false, fieldState: xfs
               };
@@ -7223,6 +7436,7 @@
               (el.getAttribute && (el.getAttribute('contenteditable') === 'true' || (el.getAttribute('role') === 'textbox' && el.isContentEditable)));
             if (el.readOnly && !isContentEditable) throw new Error('元素只读，不能直接填写: ' + sel);
             await waitElementStable(el);
+            var beforeTypeList = snapshotTypeList(el);
             var win = el.ownerDocument && el.ownerDocument.defaultView || window;
             function fireValueEvents(target, text) {
               try {
@@ -7262,6 +7476,8 @@
               fireValueEvents(el, val);
               el.blur();
               var textActual = String(el.textContent || '');
+              var ceHarvest = await finishTypedFilter(el, val, beforeTypeList);
+              if (ceHarvest) return ceHarvest;
               return { ok: true, kind: 'mutation', expected: String(val), actual: textActual, verified: textActual === String(val) };
             }
             if (el.tagName === 'TEXTAREA') {
@@ -7269,9 +7485,12 @@
               Object.getOwnPropertyDescriptor(tproto, 'value').set.call(el, val);
               fireValueEvents(el, val);
               var tv = validityOf(el);
-              return { ok: true, kind: 'mutation', expected: String(val), actual: String(el.value),
+              var taResult = { ok: true, kind: 'mutation', expected: String(val), actual: String(el.value),
                 valid: tv.valid, validationMessage: tv.validationMessage,
                 verified: String(el.value) === String(val) && tv.valid };
+              var taHarvest = await finishTypedFilter(el, val, beforeTypeList);
+              if (taHarvest) return taHarvest;
+              return taResult;
             }
             if (el.tagName === 'INPUT') {
               var inputType = String(el.type || 'text').toLowerCase();
@@ -7285,8 +7504,8 @@
               var inputResult = { ok: true, kind: 'mutation', expected: String(val), actual: String(el.value),
                 valid: iv.valid, validationMessage: iv.validationMessage,
                 verified: String(el.value) === String(val) && iv.valid };
-              var picked = await completePersonPicker(el, val);
-              if (picked) return picked;
+              var typedHarvest = await finishTypedFilter(el, val, beforeTypeList);
+              if (typedHarvest) return typedHarvest;
               return inputResult;
             }
             throw new Error('不支持对该元素赋值: ' + sel);
@@ -7333,10 +7552,14 @@
               dispatchClick(cascaderClickTarget(el));
               var optUs;
               try { optUs = uniqueSelector(el); } catch (eOu) { optUs = null; }
+              var cascLift = null;
+              try { cascLift = optionClickLift(el); } catch (eCl) { cascLift = null; }
+              var cascFsEl = cascaderHostOf(el);
               return withResolved({
                 ok: true, kind: 'action', via: 'cascader-option', verified: null,
                 selector: optUs && optUs.selector ? optUs.selector : '',
-                fieldState: collectFieldState(el, { harvest: true })
+                name: (cascLift && cascLift.name) || optionTextOf(el) || '',
+                fieldState: (cascLift && cascLift.fieldState) || collectFieldState(cascFsEl || el, { harvest: true })
               }, looked);
             }
             var cascadeClickHost = cascaderHostOf(el);
@@ -7363,19 +7586,32 @@
                 hint: '目标已禁用。'
               }, looked);
             }
+            var pickerBefore = captureFilePicker();
             var target = retargetFileSelectClick(el);
             try { if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' }); } catch (e) {}
             await waitElementStable(target);
             dispatchClick(target);
+            if (pickerBefore.rowCount || fileRowOf(el) || fileRowOf(target)) {
+              await sleepMs(80);
+            }
             var us;
             try { us = uniqueSelector(target); } catch (e2) { us = null; }
-            return withResolved({
+            var clickRet = {
               ok: true,
               kind: 'action',
               verified: null,
               selector: us && us.selector ? us.selector : '',
               retargeted: target !== el
-            }, looked);
+            };
+            var lifted = null;
+            try { lifted = optionClickLift(target); } catch (eLift) { lifted = null; }
+            if (lifted) {
+              if (lifted.fieldState) clickRet.fieldState = lifted.fieldState;
+              if (lifted.name) clickRet.name = lifted.name;
+              if (lifted.options) clickRet.options = lifted.options;
+            }
+            applyFilePickerState(clickRet, el, pickerBefore);
+            return withResolved(clickRet, looked);
           },
           select: async function (sel, valOrLabel, opts) {
             var el = page.q(sel); if (!el) throw notFoundError(sel);
@@ -7553,16 +7789,20 @@
                 : '';
               return clickNameFail('ambiguous', extra + '「' + raw + '」匹配到多处。', picked.ambiguousEls);
             }
+            var namePickerBefore = captureFilePicker();
             var el = picked.winner.el;
             el = retargetFileSelectClick(el);
             try { el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
             await waitElementStable(el);
             dispatchClick(el);
+            if (namePickerBefore.rowCount || fileRowOf(el) || fileRowOf(picked.winner.el)) {
+              await sleepMs(80);
+            }
             var us;
             try { us = uniqueSelector(el); } catch (e) { us = null; }
             var hitIdx = 0;
             try { hitIdx = snapIdxOf(el); } catch (eIdx) { hitIdx = 0; }
-            return withResolved({
+            var nameClickRet = {
               ok: true,
               kind: 'action',
               text: picked.winner.text,
@@ -7571,7 +7811,16 @@
               withinMissing: !!(within && scope.missing),
               withinRelaxed: !!scope.relaxed,
               withinUsed: scope.used || ''
-            }, { resolved: 'name', idx: hitIdx || undefined });
+            };
+            var nameLift = null;
+            try { nameLift = optionClickLift(el); } catch (eNL) { nameLift = null; }
+            if (nameLift) {
+              if (nameLift.fieldState) nameClickRet.fieldState = nameLift.fieldState;
+              if (nameLift.name) nameClickRet.name = nameLift.name;
+              if (nameLift.options) nameClickRet.options = nameLift.options;
+            }
+            applyFilePickerState(nameClickRet, el, namePickerBefore);
+            return withResolved(nameClickRet, { resolved: 'name', idx: hitIdx || undefined });
           },
           // 按容器查看可见后代短文本（去包装）。文案不在 L0 或用户给了容器时用。
           // 多层 li：默认不深入非根下的嵌套 ul/ol/[role=tree|group]，只列当前层；
@@ -7876,6 +8125,7 @@
             var searchAvailable = !!findSearchInput(trigger);
             var harvested = await harvestOptions(trigger, MAX_LIST_OPTIONS);
             if (!harvested.length) {
+              // last-resort for select only, not for get/fieldState receipts
               var loose = collectOpenPopupOptions(MAX_LIST_OPTIONS);
               if (loose.length) {
                 harvested = loose;
@@ -7883,11 +8133,6 @@
               }
             }
             var usedQuery = '';
-
-            function looksLikeCreateOption(item) {
-              var t = String(item && item.text || '');
-              return /创建|新建|Add\s|Create\s/i.test(t) && (rankMatch(t, raw) >= 0 || t.indexOf(raw) >= 0);
-            }
 
             function matchHarvest(list) {
               var ambiguous = null;
@@ -7943,41 +8188,6 @@
                     ok: false, reason: 'ambiguous', opened: opened, searchAvailable: true,
                     truncated: harvested.length >= MAX_LIST_OPTIONS, query: usedQuery
                   });
-                }
-              }
-            }
-
-            var canCreate = hostAllowsCreate(trigger) || hostAllowsCreate(comboRoot);
-            if (!canCreate) {
-              for (var cj = 0; cj < harvested.length; cj++) {
-                if (looksLikeCreateOption(harvested[cj])) { canCreate = true; break; }
-              }
-            }
-            if (canCreate && searchAvailable && opened) {
-              usedQuery = raw;
-              typeInto(findSearchInput(trigger) || trigger, raw);
-              await page.sleep(220);
-              harvested = await harvestOptions(trigger, MAX_LIST_OPTIONS);
-              matched = matchHarvest(harvested);
-              if (matched && matched.winner) return await clickWinner(matched.winner);
-              for (var ck = 0; ck < harvested.length; ck++) {
-                if (looksLikeCreateOption(harvested[ck])) return await clickWinner(harvested[ck]);
-              }
-              var createInput = findSearchInput(trigger);
-              if (createInput) {
-                fireKey(createInput, 'Enter', 13);
-                await page.sleep(180);
-                try { createInput.blur(); } catch (eC) {}
-                var createdVal = '';
-                try {
-                  createdVal = String(('value' in createInput ? createInput.value : '') || createInput.innerText || '');
-                } catch (eV) {}
-                var createdOk = rankMatch(createdVal, raw) >= 0;
-                if (createdOk) {
-                  return {
-                    ok: true, kind: 'mutation', via: 'combobox-create', text: raw,
-                    actual: createdVal, verified: true, searchUsed: true
-                  };
                 }
               }
             }
@@ -8067,9 +8277,12 @@
               catch (e) { return ''; }
             }
             var cur = readBoxChecked(el);
+            var checkPickerBefore = captureFilePicker();
             if (cur === wantB) {
-              return { ok: true, kind: 'mutation', changed: false, checked: cur, verified: true,
+              var sameRet = { ok: true, kind: 'mutation', changed: false, checked: cur, verified: true,
                 note: '已是目标状态，未点击', label: boxLabelText(el) };
+              applyFilePickerState(sameRet, el, checkPickerBefore);
+              return sameRet;
             }
             await waitElementStable(el);
             dispatchClick(boxClickTarget(el));
@@ -8078,8 +8291,10 @@
               await page.waitFor(function () { return readBoxChecked(el) === wantB; }, { timeout: 1500, poll: 100 });
             } catch (e) {}
             var now = readBoxChecked(el);
-            return { ok: true, kind: 'mutation', changed: now !== cur, checked: now, verified: now === wantB,
+            var changedRet = { ok: true, kind: 'mutation', changed: now !== cur, checked: now, verified: now === wantB,
               label: boxLabelText(el) };
+            applyFilePickerState(changedRet, el, checkPickerBefore);
+            return changedRet;
           },
           waitFor: function (test, opts) {
             var o = opts || {};
@@ -8443,7 +8658,7 @@
           if (value && typeof value === 'object' && !value.fieldState && op !== 'print' && !pageMetaTarget(args[0])) {
             try {
               var fsEl = page.q(args[0]);
-              if (fsEl) value.fieldState = collectFieldState(fsEl, { harvest: true });
+              if (fsEl && !fileRowOf(fsEl)) value.fieldState = collectFieldState(fsEl, { harvest: true });
             } catch (eFs) {}
           }
           results.push({ op: op, value: value });

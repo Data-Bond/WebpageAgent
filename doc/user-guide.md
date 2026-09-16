@@ -100,6 +100,7 @@
 
 - `target` 为 `url` 或 `title`：返回地址或标题文本，不找控件。
 - 定位到 **1** 个节点：返回 `text`、`chars`、`fieldState`、可见 `options`、`label`、`sec`（所在栏目）。
+- `fieldState.committed` 是控件上的 shown 展示字（selection items / 只读区 innerText / 框里的字），**不是**「已经选好」的判定。`filter` 是可写过滤框的 `value`；只读 combobox 没有可写框时 `filter` 为空，`committed` 仍是展示字。`open` / `optionsTop` 只描述**这个 trigger 所属的可见弹层**；选项上的 `sel` 来自 DOM 的 `aria-selected` / `--selected` 等，不是引擎拿字符串比对出来的。
 - 定位到 **0** 或 **多** 个：`ok: false`，`reason` 为 `not-found` 或 `ambiguous`，`catalog` 为本轮目录。短文走 live 反查（截断后仍可能读到未画出 outline 的控件）。
 - `truncated: true`：正文被切片截断。加大 `limit`，或设 `offset` 再 `get`，不要换 CSS 重读。
 
@@ -111,7 +112,7 @@
 
 ### `type` — 只打字，不点选项
 
-向可编辑节点或过滤框写入字符串。只负责把字打进去，**不会**自动点下拉项、人员卡片或「创建xxx」。
+向可编辑节点或过滤框写入字符串。只负责把字打进去，**不会**自动点下拉项或「创建xxx」。
 
 **参数**
 
@@ -126,6 +127,7 @@
 
 - 普通输入 / 多行 / 可编辑区：写入后回传实际值与是否校验通过。
 - 过滤型下拉：只打过滤字，标「未提交选项」一类状态，等你或下一轮再 `click` / `select`。
+- 打字后附近列表出现或选项变了：标 `typed-not-committed`，**本批停**（`yieldBatch`）。选项目录在回执 `options` / `fieldState.optionsTop`；新出现的项用下一轮快照 idx 再 `click`。
 - 目标禁用或找不到：失败并带 catalog，本批后续操作会停（除非引擎标明可继续）。
 
 指令里写「把××填进名为××的框」即可；不要写「输入后自动选第一个」。
@@ -153,7 +155,7 @@
 
 | 值          | 行为                      | 之后能不能同批再点新出现的项                                          |
 | ---------- | ----------------------- | ------------------------------------------------------- |
-| `left` 或省略 | 左键。可见建议项、级联叶子、人员卡片根都可以点 | 左键一般不停批（失败除外）                                           |
+| `left` 或省略 | 左键。可见建议项、级联叶子都可以点。带勾选控件的行左键回执 `selection` 为当前勾选条目 | 左键一般不停批（失败除外）。`type` 停批后请在下一轮再点新出现的选项 |
 | `hover`    | 只把指针移上去，**不点击、不代点菜单项**  | **本批停**（`yieldBatch`）。新节点见回执 catalog 或下一轮快照，再单独 `click` |
 | `right`    | 只发上下文菜单，**不先左键、不改当前选中集** | 同上，本批停。回执 `selection` 为当前勾选/高亮的条目名；确认弹窗原文在 `statusMessages` |
 | `dblclick` | 双击                      | 按普通动作回执，不自动停批                                           |
@@ -176,7 +178,7 @@
 
 ### `check` — 勾选或取消真正的复选/单选
 
-只用于 checkbox / radio 这类控件，幂等：已经是目标状态则不再点。
+只用于 checkbox / radio 这类控件，幂等：已经是目标状态则不再点。点带勾选控件的行时回执同样带当前 `selection`。
 
 **参数**
 
@@ -211,6 +213,8 @@
 
 - 唯一命中：选中并回传实际文案。
 - 多个不同候选 / 未打开 / 未找到：`ok: false`，带 `options` 或 catalog，由模型改词或先 `get(..., open: true)`。
+- 列表里的「创建/新建」只作为选项出现，**不会**自动点。
+- 空状态文案（如「暂无数据」）仍出现在 `options` 里，不当成「没有选项」。
 - `type` 打进过滤框 **不会** 自动走到本工具。
 
 指令写「在××下拉里选『上海市』」；选项会变少时可以写「可先按市名过滤」。
@@ -475,7 +479,7 @@
 | `idxRoundOnly`                 | 这些编号只在本轮有效                                                  |
 | `yieldBatch`                   | 悬停或右键后本批已停，后面的调用没有执行                                        |
 | `text` / `chars` / `truncated` | 读到的正文与是否被切片                                                 |
-| `fieldState`                   | 框里实际有什么、是否勾选、校验                                             |
+| `fieldState`                   | `committed` 为 shown 展示字，`filter` 为可写框，`open`/`optionsTop` 为所属可见弹层；不是「已选中」判定 |
 | `resolved`                     | 实际按 `idx` / `name` / `selector` 的哪一种对上                      |
 | `filled` / `submitted`         | `ocrFill`：字是否写入、是否点了传入的 submit                              |
 | `refreshed` / `likelyCaptcha`  | 截图前是否点过图（现为 false）；引擎是否按验证码清洗了识别结果                       |

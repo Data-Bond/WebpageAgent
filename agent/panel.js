@@ -50,7 +50,7 @@
       overflow: hidden;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
       color: #23283a;
-      font-size: 13px;
+      font-size: 16px;
       line-height: 1.5;
     }
     :host.expanded {
@@ -84,13 +84,13 @@
       cursor: grabbing;
     }
     .header-title {
-      font-size: 15px;
+      font-size: 18px;
       font-weight: 700;
       letter-spacing: 0.5px;
       line-height: 1.2;
     }
     .header-build {
-      font-size: 10px;
+      font-size: 13px;
       font-weight: 600;
       letter-spacing: 0.3px;
       background: rgba(255, 255, 255, 0.18);
@@ -107,7 +107,7 @@
       width: 30px;
       height: 30px;
       border-radius: 8px;
-      font-size: 15px;
+      font-size: 18px;
       cursor: pointer;
       line-height: 1;
       display: inline-flex;
@@ -174,7 +174,7 @@
       animation: conn-pulse 1s ease-in-out infinite;
     }
     .conn-lamp-label {
-      font-size: 11px;
+      font-size: 14px;
       font-weight: 600;
       color: rgba(255, 255, 255, 0.95);
       white-space: nowrap;
@@ -198,7 +198,7 @@
       width: 30px;
       height: 30px;
       border-radius: 8px;
-      font-size: 15px;
+      font-size: 18px;
       cursor: pointer;
       transition: background 0.2s, transform 0.15s;
       line-height: 1;
@@ -216,7 +216,7 @@
       background: none;
       border: none;
       color: rgba(255,255,255,0.95);
-      font-size: 12px;
+      font-size: 15px;
       font-weight: 600;
       font-family: inherit;
       cursor: pointer;
@@ -266,7 +266,7 @@
       display: flex;
       flex-direction: column;
       gap: 4px;
-      font-size: 12px;
+      font-size: 15px;
       color: #5a6072;
     }
     .settings-check-row {
@@ -280,7 +280,7 @@
       margin: 0;
     }
     .pdf-parse-label {
-      font-size: 12px;
+      font-size: 15px;
       color: #5a6072;
       margin-top: 4px;
     }
@@ -290,7 +290,7 @@
       gap: 4px;
     }
     .pdf-parse-hint {
-      font-size: 11px;
+      font-size: 14px;
       color: #8a90a0;
       line-height: 1.45;
     }
@@ -316,7 +316,7 @@
     .page-config-tab-head {
       background: linear-gradient(135deg, #4f7cff 0%, #6a5cff 100%);
       color: #fff;
-      font-size: 13px;
+      font-size: 16px;
       font-weight: 600;
       padding: 7px 14px;
       line-height: 1.4;
@@ -341,7 +341,7 @@
       border-radius: 3px;
     }
     .page-config-scope {
-      font-size: 11px;
+      font-size: 14px;
       color: #5a6072;
       line-height: 1.45;
       background: #f4f7ff;
@@ -349,7 +349,7 @@
       padding: 6px 8px;
     }
     .settings-card-heading {
-      font-size: 12px;
+      font-size: 15px;
       font-weight: 650;
       color: #2b2f3a;
     }
@@ -365,7 +365,7 @@
       flex-wrap: wrap;
     }
     .settings-status {
-      font-size: 12px;
+      font-size: 15px;
       color: #5a6072;
       min-height: 16px;
     }
@@ -379,7 +379,7 @@
       border: 1px solid #d8dbe7;
       border-radius: 8px;
       padding: 8px 10px;
-      font-size: 13px;
+      font-size: 16px;
       outline: none;
       transition: border-color 0.2s, box-shadow 0.2s;
       background: #fbfcfe;
@@ -393,7 +393,7 @@
       border: 1px solid #d8dbe7;
       border-radius: 8px;
       padding: 8px 10px;
-      font-size: 12px;
+      font-size: 15px;
       outline: none;
       transition: border-color 0.2s, box-shadow 0.2s;
       background: #fbfcfe;
@@ -417,7 +417,7 @@
       background: #fafbff;
     }
     .provider-heading {
-      font-size: 12px;
+      font-size: 15px;
       font-weight: 700;
       color: #4a5270;
     }
@@ -439,7 +439,7 @@
       display: flex;
       flex-direction: column;
       gap: 2px;
-      font-size: 11px;
+      font-size: 14px;
       color: #5a6072;
     }
     .provider-row input,
@@ -447,7 +447,7 @@
       border: 1px solid #d8dbe7;
       border-radius: 7px;
       padding: 6px 8px;
-      font-size: 12px;
+      font-size: 15px;
       outline: none;
       background: #fff;
       font-family: inherit;
@@ -460,13 +460,13 @@
     .provider-del {
       align-self: flex-end;
       padding: 5px 12px;
-      font-size: 12px;
+      font-size: 15px;
       border-radius: 7px;
     }
     .add-provider {
       align-self: flex-start;
       padding: 5px 10px;
-      font-size: 12px;
+      font-size: 15px;
     }
     .config-io {
       display: flex;
@@ -477,7 +477,7 @@
     }
     .config-io .io-hint {
       width: 100%;
-      font-size: 11px;
+      font-size: 14px;
       color: #8a90a6;
       line-height: 1.4;
     }
@@ -487,7 +487,7 @@
       margin-top: 2px;
     }
     .settings-status {
-      font-size: 12px;
+      font-size: 15px;
       color: #6a5cff;
       min-height: 16px;
       word-break: break-word;
@@ -499,7 +499,7 @@
       color: #2b2f3a;
       border-radius: 8px;
       padding: 7px 14px;
-      font-size: 13px;
+      font-size: 16px;
       cursor: pointer;
       transition: transform 0.15s, box-shadow 0.2s, background 0.2s;
       font-family: inherit;
@@ -538,7 +538,7 @@
       margin: 8px 12px 0;
       padding: 8px 12px;
       border-radius: 8px;
-      font-size: 12px;
+      font-size: 15px;
       background: #eef2ff;
       color: #4a5270;
       word-break: break-all;
@@ -581,7 +581,7 @@
       color: #3b4b8f;
       border-radius: 999px;
       padding: 4px 6px 4px 10px;
-      font-size: 12px;
+      font-size: 15px;
       max-width: 180px;
       line-height: 1.3;
     }
@@ -601,7 +601,7 @@
       width: 18px;
       height: 18px;
       border-radius: 50%;
-      font-size: 12px;
+      font-size: 15px;
       cursor: pointer;
       line-height: 1;
       flex-shrink: 0;
@@ -611,7 +611,7 @@
       color: #c0392b;
     }
     .chip .chip-badge {
-      font-size: 10px;
+      font-size: 13px;
       font-weight: 700;
       padding: 1px 5px;
       border-radius: 999px;
@@ -653,7 +653,7 @@
       max-width: 82%;
       padding: 9px 12px;
       border-radius: 14px;
-      font-size: 13px;
+      font-size: 16px;
       line-height: 1.5;
       word-break: break-word;
       white-space: pre-wrap;
@@ -682,7 +682,7 @@
       border-radius: 6px;
       background: rgba(255, 255, 255, 0.22);
       color: #fff;
-      font-size: 13px;
+      font-size: 16px;
       line-height: 1;
       cursor: pointer;
       display: inline-flex;
@@ -712,7 +712,7 @@
       align-self: center;
       background: #eef0f6;
       color: #6a7080;
-      font-size: 12px;
+      font-size: 15px;
       border-radius: 999px;
       padding: 5px 12px;
       max-width: 92%;
@@ -738,10 +738,10 @@
       gap: 8px;
       margin-bottom: 6px;
     }
-    .print-catalog-title { font-weight: 600; font-size: 12px; }
+    .print-catalog-title { font-weight: 600; font-size: 15px; }
     .print-catalog-copy {
       flex: 0 0 auto;
-      font-size: 11px;
+      font-size: 14px;
       padding: 2px 8px;
       border: 1px solid #c5d0de;
       border-radius: 6px;
@@ -754,7 +754,7 @@
       white-space: pre-wrap;
       word-break: break-word;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 11px;
+      font-size: 14px;
       line-height: 1.45;
       max-height: 220px;
       overflow: auto;
@@ -781,7 +781,7 @@
     }
     .llm-call-badge {
       flex: 0 0 auto;
-      font-size: 11px;
+      font-size: 14px;
       font-weight: 600;
       border-radius: 999px;
       padding: 2px 8px;
@@ -793,7 +793,7 @@
     .llm-call-badge.fail { background: #ffecec; color: #c0392b; }
     .llm-call-meta {
       flex: 1 1 160px;
-      font-size: 12px;
+      font-size: 15px;
       color: #4a5160;
       min-width: 0;
     }
@@ -811,7 +811,7 @@
       background: #fff;
       border-radius: 8px;
       padding: 4px 8px;
-      font-size: 12px;
+      font-size: 15px;
       cursor: pointer;
       color: #2b2f3a;
       font-family: inherit;
@@ -837,7 +837,7 @@
       border: none;
       background: transparent;
       color: #8a90a0;
-      font-size: 11px;
+      font-size: 14px;
       cursor: pointer;
       padding: 1px 6px;
       font-family: inherit;
@@ -866,7 +866,7 @@
       background: #fff;
       border-radius: 6px;
       padding: 2px 8px;
-      font-size: 11px;
+      font-size: 14px;
       cursor: pointer;
       color: #2b2f3a;
       font-family: inherit;
@@ -877,7 +877,7 @@
       max-height: 280px;
       overflow: auto;
       padding: 28px 10px 10px;
-      font-size: 11px;
+      font-size: 14px;
       line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
@@ -914,7 +914,7 @@
       border: 1px solid #e6c35c;
       background: #ffecb3;
       border-radius: 10px;
-      font-size: 18px;
+      font-size: 22px;
       line-height: 1;
       cursor: pointer;
       display: flex;
@@ -949,7 +949,7 @@
       min-width: 140px;
     }
     .tag-field label {
-      font-size: 11px;
+      font-size: 14px;
       color: #6a7080;
       white-space: nowrap;
       flex-shrink: 0;
@@ -960,7 +960,7 @@
       border: 1px solid #d8dbe7;
       border-radius: 6px;
       padding: 0 6px;
-      font-size: 12px;
+      font-size: 15px;
       line-height: 1.2;
       height: 22px;
       font-family: inherit;
@@ -981,7 +981,7 @@
       border: 1px solid #d8dbe7;
       border-radius: 10px;
       padding: 9px 12px;
-      font-size: 13px;
+      font-size: 16px;
       font-family: inherit;
       outline: none;
       line-height: 1.4;
@@ -1029,7 +1029,7 @@
       width: 100%;
     }
     .page-settings-hint {
-      font-size: 11px;
+      font-size: 14px;
       color: #8a90a0;
       line-height: 1.45;
     }
@@ -1048,7 +1048,7 @@
     }
     .filter-btn {
       padding: 4px 10px;
-      font-size: 12px;
+      font-size: 15px;
     }
     .filter-btn.active {
       background: linear-gradient(135deg, #4f7cff 0%, #6a5cff 100%);
@@ -1061,7 +1061,7 @@
       border: 1px solid #d8dbe7;
       border-radius: 8px;
       padding: 6px 10px;
-      font-size: 12px;
+      font-size: 15px;
       font-family: inherit;
       outline: none;
       background: #fbfcfe;
@@ -1087,7 +1087,7 @@
       border-radius: 3px;
     }
     .skill-empty {
-      font-size: 12px;
+      font-size: 15px;
       color: #8a90a6;
       text-align: center;
       padding: 16px 8px;
@@ -1111,7 +1111,7 @@
       gap: 6px;
     }
     .skill-card-name {
-      font-size: 12px;
+      font-size: 15px;
       font-weight: 700;
       color: #2b2f3a;
       flex: 1;
@@ -1119,7 +1119,7 @@
       word-break: break-word;
     }
     .skill-card-url {
-      font-size: 11px;
+      font-size: 14px;
       color: #6a7080;
       word-break: break-all;
     }
@@ -1130,10 +1130,10 @@
     }
     .skill-card-actions .btn {
       padding: 4px 8px;
-      font-size: 11px;
+      font-size: 14px;
     }
     .skill-badge {
-      font-size: 10px;
+      font-size: 13px;
       font-weight: 700;
       padding: 1px 6px;
       border-radius: 999px;
@@ -1157,7 +1157,7 @@
     }
     .skill-lib-status {
       width: 100%;
-      font-size: 11px;
+      font-size: 14px;
       color: #6a5cff;
       min-height: 14px;
       word-break: break-word;
@@ -1167,7 +1167,7 @@
       flex-direction: row;
       align-items: center;
       gap: 6px;
-      font-size: 11px;
+      font-size: 14px;
       color: #5a6072;
       width: 100%;
     }
@@ -1180,7 +1180,7 @@
     }
     .skill-tab {
       padding: 4px 10px;
-      font-size: 12px;
+      font-size: 15px;
     }
     .skill-tab.active {
       background: linear-gradient(135deg, #4f7cff 0%, #6a5cff 100%);
@@ -1212,12 +1212,12 @@
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      font-size: 11px;
+      font-size: 14px;
       font-weight: 650;
       color: #5a6072;
     }
     .skill-preview {
-      font-size: 11px;
+      font-size: 14px;
       color: #3a4050;
       background: #f4f6fb;
       border: 1px dashed #d8dbe7;
@@ -1230,7 +1230,7 @@
       line-height: 1.45;
     }
     .skill-build-hint {
-      font-size: 11px;
+      font-size: 14px;
       color: #6a7080;
       line-height: 1.45;
     }
@@ -1258,7 +1258,7 @@
     }
     .modal h3 {
       display: block;
-      font-size: 14px;
+      font-size: 17px;
       font-weight: 700;
       color: #2b2f3a;
     }
@@ -1266,7 +1266,7 @@
       display: flex;
       flex-direction: column;
       gap: 4px;
-      font-size: 12px;
+      font-size: 15px;
       color: #5a6072;
     }
     .modal input,
@@ -1275,7 +1275,7 @@
       border: 1px solid #d8dbe7;
       border-radius: 8px;
       padding: 7px 9px;
-      font-size: 12px;
+      font-size: 15px;
       font-family: inherit;
       outline: none;
       background: #fbfcfe;
@@ -1297,7 +1297,7 @@
       flex-direction: row;
       align-items: center;
       gap: 8px;
-      font-size: 12px;
+      font-size: 15px;
       color: #5a6072;
     }
     .modal label.modal-check input {
@@ -1312,7 +1312,7 @@
       margin-top: 4px;
     }
     .modal-warn {
-      font-size: 12px;
+      font-size: 15px;
       color: #8a6d1a;
       background: #fff8e6;
       border: 1px solid #f3e3b0;
@@ -1323,12 +1323,12 @@
       line-height: 1.45;
     }
     .modal-error {
-      font-size: 12px;
+      font-size: 15px;
       color: #c0392b;
       min-height: 14px;
     }
     .archive-lead {
-      font-size: 12px;
+      font-size: 15px;
       color: #5a6072;
       line-height: 1.45;
     }
@@ -1358,12 +1358,12 @@
       pointer-events: none;
     }
     .archive-redact-hint {
-      font-size: 11px;
+      font-size: 14px;
       color: #8a90a0;
       line-height: 1.45;
     }
     .archive-status {
-      font-size: 12px;
+      font-size: 15px;
       color: #5a6072;
       min-height: 16px;
       line-height: 1.4;
@@ -1389,20 +1389,20 @@
       flex-wrap: wrap;
       align-items: center;
       gap: 4px 8px;
-      font-size: 12px;
+      font-size: 15px;
       color: #5a6072;
       line-height: 1.4;
     }
     .archive-char-count,
     .archive-char-tail {
-      font-size: 12px;
+      font-size: 15px;
       color: #5a6072;
       line-height: 1.4;
     }
     .archive-chunk-input {
       width: 7.5em;
       font-family: inherit;
-      font-size: 13px;
+      font-size: 16px;
       padding: 4px 8px;
       border: 1px solid #d8dbe7;
       border-radius: 6px;
@@ -1416,13 +1416,13 @@
       border-color: #c0392b;
     }
     .archive-action-title {
-      font-size: 13px;
+      font-size: 16px;
       font-weight: 650;
       color: #2b2f3a;
       line-height: 1.4;
     }
     .archive-action-hint {
-      font-size: 11px;
+      font-size: 14px;
       color: #6a7080;
       font-weight: 400;
       line-height: 1.4;
@@ -1775,12 +1775,12 @@
     const pageRunCard = mk('div', 'run-settings');
     pageRunCard.appendChild(mk('div', 'settings-card-heading', { textContent: '运行参数' }));
     const pageRunRow = mk('div', 'settings-row-2');
-    const pageMaxSteps = mkNumInput('pageMaxSteps', 1, 100, 1, 60);
+    const pageMaxSteps = mkNumInput('pageMaxSteps', 1, 100, 1, 100);
     const pageLlmCallGapSec = mkNumInput('pageLlmCallGapSec', 0, 10, 0.1, 0.5, '两次文本模型调用之间的最短间隔，避免连续请求被接口限流');
     const pageLlmTimeoutRetry = mkNumInput('pageLlmTimeoutRetry', 0, 3, 1, 2);
     const pageLlmErrorRetry = mkNumInput('pageLlmErrorRetry', 0, 5, 1, 2);
-    const pagePageQuietSec = mkNumInput('pagePageQuietSec', 1, 15, 0.5, 3, '操作后等待页面 DOM 稳定的上限');
-    const pageSuggestWaitSec = mkNumInput('pageSuggestWaitSec', 0, 5, 0.1, 1, '填写后等待搜索建议/选项卡片出现的上限');
+    const pagePageQuietSec = mkNumInput('pagePageQuietSec', 1, 15, 0.5, 4, '操作后等待页面 DOM 稳定的上限');
+    const pageSuggestWaitSec = mkNumInput('pageSuggestWaitSec', 0, 5, 0.1, 2, '填写后等待搜索建议/选项卡片出现的上限');
     pageRunRow.appendChild(mkFieldLabel('最大步数', pageMaxSteps));
     pageRunRow.appendChild(mkFieldLabel('模型调用间隔（秒）', pageLlmCallGapSec));
     pageRunRow.appendChild(mkFieldLabel('超时重试次数', pageLlmTimeoutRetry));
@@ -1794,7 +1794,7 @@
     pagePdfParseAll.type = 'radio';
     pagePdfParseAll.name = 'pageWpaPdfParseMode';
     pagePdfParseAll.value = 'all';
-    pagePdfParseAll.checked = true;
+    pagePdfParseAll.checked = false;
     const pagePdfParseAllRow = mk('label', 'settings-check-row');
     pagePdfParseAllRow.appendChild(pagePdfParseAll);
     pagePdfParseAllRow.appendChild(panelDoc.createTextNode('解析全部 PDF 页'));
@@ -1804,25 +1804,28 @@
     pagePdfParsePagesMode.type = 'radio';
     pagePdfParsePagesMode.name = 'pageWpaPdfParseMode';
     pagePdfParsePagesMode.value = 'pages';
+    pagePdfParsePagesMode.checked = true;
     const pagePdfParsePagesModeRow = mk('label', 'settings-check-row');
     pagePdfParsePagesModeRow.appendChild(pagePdfParsePagesMode);
     pagePdfParsePagesModeRow.appendChild(panelDoc.createTextNode('按页码标号来解析'));
     pageRunCard.appendChild(pagePdfParsePagesModeRow);
     const pagePdfParsePagesWrap = mk('div', 'pdf-parse-pages-wrap');
-    pagePdfParsePagesWrap.hidden = true;
+    pagePdfParsePagesWrap.hidden = false;
     const pagePdfParsePages = mk('input');
     pagePdfParsePages.id = 'pagePdfParsePages';
     pagePdfParsePages.type = 'text';
-    pagePdfParsePages.placeholder = '例如 1,2,3,-2,-1';
+    pagePdfParsePages.value = '1,2,3,4,-3,-2,-1';
+    pagePdfParsePages.placeholder = '例如 1,2,3,4,-3,-2,-1';
     pagePdfParsePages.title = '多个页码用逗号分隔；负数表示从末尾倒数，-1 为最后一页（倒数第一页）';
     pagePdfParsePagesWrap.appendChild(mkFieldLabel('页码', pagePdfParsePages));
     pagePdfParsePagesWrap.appendChild(mk('div', 'pdf-parse-hint', {
-      textContent: '「-1」表示最后一页。默认 1,2,3,-2,-1；正数与负数若指向同一页，只解析一次、不重复 OCR。'
+      textContent: '「-1」表示最后一页。默认 1,2,3,4,-3,-2,-1；正数与负数若指向同一页，只解析一次、不重复 OCR。'
     }));
     pageRunCard.appendChild(pagePdfParsePagesWrap);
     const pagePdfParseAllHint = mk('div', 'pdf-parse-hint');
     pagePdfParseAllHint.id = 'pagePdfParseAllHint';
     pagePdfParseAllHint.textContent = '解析全部页会对每一页做文本提取，无文本层的页会渲染后 OCR，大文件可能较慢。';
+    pagePdfParseAllHint.hidden = true;
     pageRunCard.appendChild(pagePdfParseAllHint);
     pageRunCard.appendChild(mk('div', 'pdf-parse-hint', {
       textContent: 'OCR 的 providerType 为 MinerU 时，始终把整份 PDF 交给 MinerU 做 OCR：不受本页页码配置约束，也不受全局配置里的「PDF 文本层上限」约束。本地 PDFium（文本层抽取与按页渲染 OCR）仍同时受这两项约束。文本层上限只在全局配置页调节。'
@@ -2185,6 +2188,14 @@
   }
 
   const els = buildDOM();
+  const STICK_BOTTOM_PX = 48;
+  let stickBottom = true;
+
+  function messagesNearBottom() {
+    const el = els.messages;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_BOTTOM_PX;
+  }
 
   // ============ 存储 helpers ============
   let storeSeq = 1;
@@ -2663,8 +2674,12 @@
     return card;
   }
 
-  function scrollDown() {
-    els.messages.scrollTop = els.messages.scrollHeight;
+  function scrollDown(force) {
+    if (!els.messages) return;
+    if (force || stickBottom) {
+      els.messages.scrollTop = els.messages.scrollHeight;
+      stickBottom = true;
+    }
   }
 
   function clearMessagesDOM() {
@@ -2717,7 +2732,7 @@
       }
       if (stripped) persistTranscript();
     }
-    scrollDown();
+    scrollDown(true);
 
     attachedFiles.length = 0;
     let maxSeq = 0;
@@ -3552,14 +3567,14 @@
   function globalRuntimeFromConfig(cfg) {
     const src = cfg || {};
     return {
-      maxSteps: clampInt(src.maxSteps, 1, 100, 60),
+      maxSteps: clampInt(src.maxSteps, 1, 100, 100),
       llmCallGapMs: clampInt(src.llmCallGapMs, 0, 10000, 500),
       llmTimeoutRetry: clampInt(src.llmTimeoutRetry, 0, 3, 2),
       llmErrorRetry: clampInt(src.llmErrorRetry, 0, 5, 2),
-      pageQuietMs: clampInt(src.pageQuietMs, 1000, 15000, 3000),
-      suggestWaitMs: clampInt(src.suggestWaitMs, 0, 5000, 1000),
-      pdfParseMode: src.pdfParseMode === 'pages' ? 'pages' : 'all',
-      pdfParsePages: String(src.pdfParsePages == null ? '1,2,3,-2,-1' : src.pdfParsePages),
+      pageQuietMs: clampInt(src.pageQuietMs, 1000, 15000, 4000),
+      suggestWaitMs: clampInt(src.suggestWaitMs, 0, 5000, 2000),
+      pdfParseMode: src.pdfParseMode === 'all' ? 'all' : 'pages',
+      pdfParsePages: String(src.pdfParsePages == null ? '1,2,3,4,-3,-2,-1' : src.pdfParsePages),
       busyMaskEnabled: src.busyMaskEnabled === true,
       snapshotPiiMask: src.snapshotPiiMask === true,
       compatMode: src.compatMode === true
@@ -3572,12 +3587,12 @@
     if (els.pageLlmCallGapSec) els.pageLlmCallGapSec.value = msToSecValue(src.llmCallGapMs, 500);
     if (els.pageLlmTimeoutRetry) els.pageLlmTimeoutRetry.value = String(src.llmTimeoutRetry);
     if (els.pageLlmErrorRetry) els.pageLlmErrorRetry.value = String(src.llmErrorRetry);
-    if (els.pagePageQuietSec) els.pagePageQuietSec.value = msToSecValue(src.pageQuietMs, 3000);
-    if (els.pageSuggestWaitSec) els.pageSuggestWaitSec.value = msToSecValue(src.suggestWaitMs, 1000);
-    const mode = src.pdfParseMode === 'pages' ? 'pages' : 'all';
+    if (els.pagePageQuietSec) els.pagePageQuietSec.value = msToSecValue(src.pageQuietMs, 4000);
+    if (els.pageSuggestWaitSec) els.pageSuggestWaitSec.value = msToSecValue(src.suggestWaitMs, 2000);
+    const mode = src.pdfParseMode === 'all' ? 'all' : 'pages';
     if (els.pagePdfParseAll) els.pagePdfParseAll.checked = mode === 'all';
     if (els.pagePdfParsePagesMode) els.pagePdfParsePagesMode.checked = mode === 'pages';
-    if (els.pagePdfParsePages) els.pagePdfParsePages.value = src.pdfParsePages != null ? String(src.pdfParsePages) : '1,2,3,-2,-1';
+    if (els.pagePdfParsePages) els.pagePdfParsePages.value = src.pdfParsePages != null ? String(src.pdfParsePages) : '1,2,3,4,-3,-2,-1';
     syncPagePdfParseUi();
     if (els.pageBusyMaskEnabled) els.pageBusyMaskEnabled.checked = src.busyMaskEnabled === true;
     if (els.pageSnapshotPiiMask) els.pageSnapshotPiiMask.checked = src.snapshotPiiMask === true;
@@ -3586,14 +3601,14 @@
 
   function collectPageRuntimeConfig() {
     return {
-      maxSteps: clampInt(els.pageMaxSteps && els.pageMaxSteps.value, 1, 100, 60),
+      maxSteps: clampInt(els.pageMaxSteps && els.pageMaxSteps.value, 1, 100, 100),
       llmCallGapMs: secInputToMs(els.pageLlmCallGapSec, 0, 10000, 500),
       llmTimeoutRetry: clampInt(els.pageLlmTimeoutRetry && els.pageLlmTimeoutRetry.value, 0, 3, 2),
       llmErrorRetry: clampInt(els.pageLlmErrorRetry && els.pageLlmErrorRetry.value, 0, 5, 2),
-      pageQuietMs: secInputToMs(els.pagePageQuietSec, 1000, 15000, 3000),
-      suggestWaitMs: secInputToMs(els.pageSuggestWaitSec, 0, 5000, 1000),
+      pageQuietMs: secInputToMs(els.pagePageQuietSec, 1000, 15000, 4000),
+      suggestWaitMs: secInputToMs(els.pageSuggestWaitSec, 0, 5000, 2000),
       pdfParseMode: (els.pagePdfParsePagesMode && els.pagePdfParsePagesMode.checked) ? 'pages' : 'all',
-      pdfParsePages: String(els.pagePdfParsePages && els.pagePdfParsePages.value || '').trim() || '1,2,3,-2,-1',
+      pdfParsePages: String(els.pagePdfParsePages && els.pagePdfParsePages.value || '').trim() || '1,2,3,4,-3,-2,-1',
       busyMaskEnabled: !!(els.pageBusyMaskEnabled && els.pageBusyMaskEnabled.checked),
       snapshotPiiMask: !!(els.pageSnapshotPiiMask && els.pageSnapshotPiiMask.checked),
       compatMode: !!(els.pageCompatMode && els.pageCompatMode.checked)
@@ -4979,6 +4994,9 @@
       if (currentConfig) currentConfig.selectedOcrTag = tag;
       try { port.postMessage({ cmd: 'selectTag', kind: 'ocr', provider: tag.provider, model: tag.model }); } catch (e) {}
     });
+    els.messages.addEventListener('scroll', function () {
+      stickBottom = messagesNearBottom();
+    }, { passive: true });
     els.sendBtn.addEventListener('click', () => {
       if (running) {
         requestStop();

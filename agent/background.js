@@ -17,6 +17,8 @@ const DEFAULT_ARCHIVE_REDACT_HINT =
 const SNAPSHOT_MAX_CHARS = WPA_CONTRACTS.SNAPSHOT_MAX_CHARS;
 const LAST_CHANCE_SNAPSHOT_MAX = WPA_CONTRACTS.SNAPSHOT_LAST_CHANCE_CHARS;
 const ATTACHMENT_CONTEXT_MAX_CHARS = WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS;
+const STATUS_MSG_CHARS = WPA_CONTRACTS.STATUS_MSG_CHARS;
+const STATUS_MSG_MAX = WPA_CONTRACTS.STATUS_MSG_MAX;
 const LLM_TEXT_TIMEOUT_BASE_MS = 120000;
 const LLM_TEXT_TIMEOUT_MAX_MS = 300000;
 const LLM_TEXT_TIMEOUT_RETRY = 2;
@@ -31,16 +33,16 @@ const DEFAULT_CONFIG = {
   systemPromptText:
     "你是网页智能体助手。根据用户当前指令，在已打开的网页上自主完成操作。只通过工具读写页面，禁止编造 CSS，禁止输出可执行 JavaScript。缺用户才有的信息时 ask。",
   systemPromptOcr: DEFAULT_SYSTEM_PROMPT_OCR,
-  maxSteps: 60,
+  maxSteps: 100,
   snapshotPiiMask: false,
   llmCallGapMs: 500,
   busyMaskEnabled: false,
   llmTimeoutRetry: 2,
   llmErrorRetry: 2,
-  pageQuietMs: 3000,
-  suggestWaitMs: 1000,
-  pdfParseMode: 'all',
-  pdfParsePages: '1,2,3,-2,-1',
+  pageQuietMs: 4000,
+  suggestWaitMs: 2000,
+  pdfParseMode: 'pages',
+  pdfParsePages: '1,2,3,4,-3,-2,-1',
   pdfTextMaxChars: 150000,
   ocrCacheMaxChars: 500000,
   attachContextMaxChars: WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS,
@@ -154,7 +156,8 @@ const PROVIDER_TYPE_ALIASES = {
 
 function normalizePdfParseConfig(cfg) {
   const src = cfg || {};
-  const mode = String(src.pdfParseMode || '') === 'pages' ? 'pages' : 'all';
+  const raw = src.pdfParseMode;
+  const mode = String(raw == null || raw === '' ? DEFAULT_CONFIG.pdfParseMode : raw) === 'all' ? 'all' : 'pages';
   let pages = String(src.pdfParsePages == null ? DEFAULT_CONFIG.pdfParsePages : src.pdfParsePages).trim();
   if (mode === 'pages') {
     const refs = parsePdfPageRefs(pages);
@@ -250,14 +253,15 @@ const RUNTIME_PLAYBOOK =
   'outline 的 role/name 为无障碍名；同串不重复堆字段。click 短文按 name 得 0/1/多：先查本轮 idx（含 hidden），失败回执带本轮 catalog；get 短文仍 live 反查，不是同一张表。\n' +
   '无因果依赖，或页面已清楚、因果序列极大概率能顺完：可一轮多个工具；否则一次一个，后一步看前一步回执。\n' +
   '页面正文用 get。跨步保留用 memorize；{} 或缺 value 从本批成功 get/print 或上一拍 lastRead 回填，快照 panes 不算。每轮【记忆】只给目录（name/chars/same/短头），不倒全文。取槽里全文或续读用 recall；若本段历史【执行结果】或先前 get 已有同 same、未 truncated、字段已够当前判断，不必再 recall。看回执 chars。forget 删槽。goto 打开记住的页。读 URL 用 get(target=url) 再 memorize。\n' +
-  'print 搜控件打目录进对话，不算字数。type 只打字，不自动点选项。check 只用于真正复选/单选。\n' +
+  'print 搜控件打目录进对话，不算字数。type 只打字，不自动点选项。若附近列表出现或选项变了则本批停，按回执 catalog 或下一轮快照再点。check 只用于真正复选/单选。\n' +
   'click 的 button：省略或 left 为左键；hover 只移指针不点击；right 只发右键菜单；dblclick 为双击。移上去才出现的控件：本轮快照已有（常 hidden）用本轮 idx 点；没有则 hover，本批停，按回执 catalog 或下一轮快照再点。不要同批点刚出现的项。覆盖层/iframe 正文在快照 panes 或 <PANE>，用其 idx get/scroll。\n' +
   '快照优先当前覆盖层、文件名、隐藏操作与大块正文；truncated 则 get/print/scroll。\n' +
   '多轮完不成：换 print/get/scroll。get.limit 默认 10000 字，offset 从第 N 字起；truncated 则加大 limit 或设 offset 再 get，见截断尾注，勿换 CSS 重点。print.limit 是目录条数。\n' +
   '上一轮无法解析时按观察改写；回答用户用 done（summary 为回答）或 ask。\n' +
   '缺用户才有的信息才 ask。上传用 upload(控件, 附件key)，禁止 click 上传按钮弹系统框。\n' +
   'ocr/ocrFill 只读当前像素，不点图；换图先 click。submit 仅当传入才点。\n' +
-  'click button=right 只开菜单，不改选中。回执 selection 为当前勾选/高亮条目；确认框看 statusMessages 再点。\n' +
+  'click button=right 只开菜单，不改选中。click / check 点带勾选控件的行时回执 selection 为当前勾选/高亮条目；确认框看 statusMessages 再点。\n' +
+  'click 下拉 trigger 会切换列表。committed 为 shown 展示字，filter 为可写框，open/optionsTop 为当前所属可见弹层。\n' +
   '技能变量 {{name}} 须原样输出，由引擎替换本地值。\n' +
   PLAYBOOK_END;
 
@@ -956,7 +960,7 @@ function configPayload(cfg) {
     llmErrorRetry: cfg.llmErrorRetry,
     pageQuietMs: cfg.pageQuietMs,
     suggestWaitMs: cfg.suggestWaitMs,
-    pdfParseMode: cfg.pdfParseMode === 'pages' ? 'pages' : 'all',
+    pdfParseMode: cfg.pdfParseMode === 'all' ? 'all' : 'pages',
     pdfParsePages: String(cfg.pdfParsePages == null ? DEFAULT_CONFIG.pdfParsePages : cfg.pdfParsePages),
     pdfTextMaxChars: clampPdfTextMaxChars(cfg.pdfTextMaxChars),
     ocrCacheMaxChars: clampInt(cfg.ocrCacheMaxChars, 50000, 2000000, DEFAULT_CONFIG.ocrCacheMaxChars),
@@ -1132,7 +1136,7 @@ function validateImportConfig(obj, current) {
     llmErrorRetry: cur.llmErrorRetry != null ? cur.llmErrorRetry : DEFAULT_CONFIG.llmErrorRetry,
     pageQuietMs: cur.pageQuietMs != null ? cur.pageQuietMs : DEFAULT_CONFIG.pageQuietMs,
     suggestWaitMs: cur.suggestWaitMs != null ? cur.suggestWaitMs : DEFAULT_CONFIG.suggestWaitMs,
-    pdfParseMode: cur.pdfParseMode === 'pages' ? 'pages' : 'all',
+    pdfParseMode: cur.pdfParseMode === 'all' ? 'all' : 'pages',
     pdfParsePages: cur.pdfParsePages != null ? String(cur.pdfParsePages) : DEFAULT_CONFIG.pdfParsePages,
     pdfTextMaxChars: cur.pdfTextMaxChars != null ? cur.pdfTextMaxChars : DEFAULT_CONFIG.pdfTextMaxChars,
     ocrCacheMaxChars: cur.ocrCacheMaxChars != null ? cur.ocrCacheMaxChars : DEFAULT_CONFIG.ocrCacheMaxChars,
@@ -1193,7 +1197,7 @@ function validateImportConfig(obj, current) {
   if ('pdfParseMode' in obj) {
     const mode = obj.pdfParseMode;
     if (typeof mode === 'string' || typeof mode === 'number') {
-      merged.pdfParseMode = String(mode) === 'pages' ? 'pages' : 'all';
+      merged.pdfParseMode = String(mode) === 'all' ? 'all' : 'pages';
     }
   }
   if ('pdfParsePages' in obj) {
@@ -5599,7 +5603,8 @@ function compactOneHelperValue(op, val) {
   else if (val.inputPresent === true) o.inputPresent = true;
   if (val.reason) o.reason = String(val.reason).slice(0, 40);
   if (val.url) o.url = String(val.url).slice(0, 300);
-  if (val.name && (op === 'memorize' || op === 'recall' || op === 'forget' || op === 'goto')) o.name = String(val.name).slice(0, 40);
+  if (val.name && (op === 'memorize' || op === 'recall' || op === 'forget' || op === 'goto' || op === 'click' || op === 'check' || op === 'setChecked')) o.name = String(val.name).slice(0, 40);
+  if (val.checked != null && (op === 'click' || op === 'check' || op === 'setChecked')) o.checked = !!val.checked;
     if (Array.isArray(val.catalog)) {
       if (val.catalog.length) {
         let catCap = 24;
@@ -5681,8 +5686,10 @@ function compactOneHelperValue(op, val) {
   if (val.searchAvailable != null) o.searchAvailable = val.searchAvailable;
   if (val.selector) o.selector = String(val.selector).slice(0, 120);
   if (Array.isArray(val.statusMessages) && val.statusMessages.length) {
-    o.statusMessages = val.statusMessages.slice(0, 8).map(function (s) {
-      return String(s || '').slice(0, 200);
+    var msgMax = (WPA_CONTRACTS && WPA_CONTRACTS.STATUS_MSG_MAX) || 12;
+    var msgChars = (WPA_CONTRACTS && WPA_CONTRACTS.STATUS_MSG_CHARS) || 300;
+    o.statusMessages = val.statusMessages.slice(0, msgMax).map(function (s) {
+      return String(s || '').slice(0, msgChars);
     });
   }
   if (Array.isArray(val.options) && val.options.length) {
@@ -5691,6 +5698,10 @@ function compactOneHelperValue(op, val) {
       const row = { t: String(x.t || x.text || '').slice(0, 80) };
       const vv = String(x.v || x.value || '');
       if (vv) row.v = vv.slice(0, 40);
+      if (x.idx) row.idx = x.idx;
+      if (x.leaf === true || x.leaf === false) row.leaf = x.leaf;
+      if (x.sel === true) row.sel = true;
+      if (x.match === true) row.match = true;
       return row;
     });
     if (val.options.length > 24) {
@@ -5721,7 +5732,7 @@ function compactOneHelperValue(op, val) {
   if (fs && typeof fs === 'object') {
     o.fieldState = {
       committed: String(fs.committed || '').slice(0, 80),
-      filter: String(fs.filter || '').slice(0, 40),
+      filter: String(fs.filter || '').slice(0, 80),
       open: !!fs.open,
       optionsCount: fs.optionsCount || (Array.isArray(fs.optionsTop) ? fs.optionsTop.length : 0)
     };
@@ -5733,6 +5744,7 @@ function compactOneHelperValue(op, val) {
         const row = { t: String(x.t || x.text || '').slice(0, 80) };
         if (x.idx) row.idx = x.idx;
         if (x.leaf === true || x.leaf === false) row.leaf = x.leaf;
+        if (x.sel === true) row.sel = true;
         return row;
       });
       if (fs.optionsTop.length > 16) o.fieldState.truncated = true;
@@ -7044,8 +7056,8 @@ function pageSignalBlock(report) {
   const msgs = Array.isArray(report.newStatusMessages) ? report.newStatusMessages : [];
   if (msgs.length) {
     s += '\nstatusMessages: ' + JSON.stringify(msgs.map(function (m) {
-      return String(m).slice(0, 300);
-    }).slice(0, 8));
+      return String(m).slice(0, STATUS_MSG_CHARS);
+    }).slice(0, STATUS_MSG_MAX));
   }
   return s;
 }
