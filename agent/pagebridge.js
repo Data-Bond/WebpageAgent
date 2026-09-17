@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '5.10.3';
+  var BRIDGE_VERSION = '6.0.0';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
   var SNAPSHOT_L0_CAP_FULL = 1500;
@@ -2437,17 +2437,9 @@
       'summary', '[tabindex]:not([tabindex="-1"])',
       '[onclick]', '[data-file-act]', '[data-act]', '[data-action]', '[data-op]',
       '[data-toggle]', '[data-dismiss]', '[data-bs-toggle]', '.file-action',
-      'i[class*="el-icon-"]', 'i[class*="icon-"]', 'span[class*="el-icon-"]',
+      'i[class*="icon-"]', 'span[class*="icon-"]',
       OVERFLOW_ACT_SEL,
-      // 常见自定义下拉框/选择器的选项元素（layui/element-ui/ant-design/vant 等）
-      'dd[lay-value]', 'li[lay-value]', '.layui-this', '.layui-select-option',
-      '.el-select-dropdown__item', '.el-option', '.el-cascader-node', '.el-cascader-menu__item',
-      '.el-cascader__suggestion-item', '.el-cascader__suggestion-list li', '.el-cascader__suggestion-panel li',
-      '.ant-select-item-option', '.ant-select-item',
-      '.ivu-cascader-menu-item', '.ant-cascader-menu-item',
-      'li[id^="cascader-menu-"]', 'li[id*="-cascader-menu-"]',
-      '.van-option', '.dropdown-item', '[data-value]',
-      '[class*="dropdown-item"], [class*="select-item"], [class*="select-option"]',
+      '[role="option"]', '[aria-selected]',
       PAGER_ITEM_SELECTOR,
       // 复选/单选框：框架包装器（iView/element/ant/layui/vant/nut）、ARIA 角色与原生 label 包裹。
       // 真实 input 被框架用 opacity:0 隐藏，可见可点的是包装器——不收录包装器，快照里就看不到复选框。
@@ -2724,17 +2716,42 @@
       return null;
     }
 
+    function shownLeafNodes(host, nodes) {
+      var cands = [];
+      var list = nodes || [];
+      for (var i = 0; i < list.length; i++) {
+        var node = list[i];
+        if (!node || node === host) continue;
+        try {
+          if (node.closest && node.closest('[class*="close"], [class*="delete"]')) continue;
+        } catch (e0) {}
+        try {
+          if (node.querySelector && node.querySelector('input, textarea')) continue;
+        } catch (e1) {}
+        cands.push(node);
+      }
+      var leaves = [];
+      for (var a = 0; a < cands.length; a++) {
+        var wrapped = false;
+        for (var b = 0; b < cands.length; b++) {
+          if (a === b) continue;
+          try {
+            if (cands[a].contains && cands[a].contains(cands[b])) { wrapped = true; break; }
+          } catch (e2) {}
+        }
+        if (!wrapped) leaves.push(cands[a]);
+      }
+      return leaves;
+    }
+
     function tagChipTexts(host) {
       var parts = [];
       var seen = {};
       if (!host || !host.querySelectorAll) return parts;
       try {
-        var tags = host.querySelectorAll('.ivu-tag, .el-tag, .ant-tag, .n-tag, [class*="tag-text"]');
+        var tags = shownLeafNodes(host, host.querySelectorAll('[class*="tag"]'));
         for (var i = 0; i < tags.length; i++) {
           var node = tags[i];
-          try {
-            if (node.closest && node.closest('.el-tag__close, .ivu-icon-ios-close, .ant-tag-close-icon')) continue;
-          } catch (e0) {}
           var t = String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
           t = t.replace(/[\s×xX]+$/, '').trim();
           if (!t || t === '标签' || t === '添加' || seen[t]) continue;
@@ -2776,9 +2793,7 @@
       try {
         var scope = root && root.querySelectorAll ? root : document;
         var hosts = scope.querySelectorAll(
-          '.ivu-cascader, .el-cascader, .ant-cascader, .ivu-select, .el-select, .ant-select, ' +
-          '[class*="editable-select"], ' +
-          TAG_HOST_SEL
+          WIDGET_SEL + ', [class*="editable-select"], ' + TAG_HOST_SEL
         );
         var parts = [];
         for (var i = 0; i < hosts.length && parts.length < 12; i++) {
@@ -2794,18 +2809,15 @@
       var tags;
       try {
         tags = host.querySelectorAll(
-          '.el-tag, .ivu-tag, .ant-select-selection-item, .ivu-select-selected-value, ' +
-          '.ivu-cascader-label, .el-cascader__label, .ant-cascader-picker-label, ' +
-          '[class*="selection-item"], [class*="selected-item"], [class*="selected-value"]'
+          '[class*="selection-item"], [class*="selected-item"], [class*="selected-value"], ' +
+          '[class*="picker-label"], [class*="tag"]'
         );
       } catch (eQ) { return ''; }
       var parts = [];
       var seen = {};
-      for (var i = 0; i < tags.length && parts.length < 8; i++) {
-        var node = tags[i];
-        try {
-          if (node.closest && node.closest('.el-tag__close, .el-icon-close, .ivu-icon-ios-close, .ant-tag-close-icon')) continue;
-        } catch (e0) {}
+      var leaves = shownLeafNodes(host, tags);
+      for (var i = 0; i < leaves.length && parts.length < 8; i++) {
+        var node = leaves[i];
         var t = String(node.innerText || node.textContent || node.value || '')
           .replace(/\s+/g, ' ').trim();
         t = t.replace(/[\s×xX]+$/, '').trim();
@@ -2832,33 +2844,20 @@
     function widgetSelectedTextNear(el) {
       try {
         if (!el || !el.closest) return '';
-        var host = el.closest('.ivu-cascader, .el-cascader, .ant-cascader, .ivu-select, .el-select, .ant-select');
-        if (!host) {
-          host = widgetRoot(el);
-          if (host && looksLikeSelectHost(host)) {
-            var items = selectionItemTexts(host);
-            if (items) return items;
-            var chips0 = tagChipTexts(host);
-            if (chips0.length) return chips0.join(',');
-            var surface = hostSurfaceText(host, el);
-            if (surface) return surface;
-          }
-          host = el.closest(TAG_HOST_SEL);
-          if (!host) return '';
-          var chips = tagChipTexts(host);
-          return chips.length ? chips.join(',') : '';
+        var host = widgetRoot(el);
+        if (host && (looksLikeSelectHost(host) || cascaderHostOf(el) || comboboxHostOf(el))) {
+          // selection items only; do not use a whole tags container (mixes in filter typing).
+          var items = selectionItemTexts(host);
+          if (items) return items;
+          var chips0 = tagChipTexts(host);
+          if (chips0.length) return chips0.join(',');
+          var surface = hostSurfaceText(host, el);
+          if (surface) return surface;
         }
-        // selection items only; do not use the whole .el-cascader__tags block (mixes in filter typing).
-        var named = selectionItemTexts(host);
-        if (named) return named;
-        var rel = host.querySelector(
-          '.ivu-cascader-rel, .ivu-select-selection, .ant-select-selector, .ant-cascader-picker'
-        );
-        if (rel) {
-          var rt = String(rel.innerText || rel.value || '').replace(/\s+/g, ' ').trim().slice(0, 80);
-          if (rt && !isPlaceholderSelectText(rt)) return rt;
-        }
-        return hostSurfaceText(host, el);
+        host = el.closest(TAG_HOST_SEL);
+        if (!host) return '';
+        var chips = tagChipTexts(host);
+        return chips.length ? chips.join(',') : '';
       } catch (e) { return ''; }
     }
 
@@ -3741,9 +3740,8 @@
       var role = viewRoleOf(el);
       var cn = classNameOf(el);
       if (role === 'tab' || /(?:^|[\s_-])tabs?(?:[\s_-]|$)/i.test(cn)) return 'tab';
-      if (role === 'option' || /select-dropdown|select-item|el-option|ivu-select-item|ant-select-item/i.test(cn)) return 'option';
+      if (role === 'option' || role === 'menuitem' || role === 'treeitem') return 'option';
       if (/search-item|list-item/i.test(cn)) return 'card';
-      if (role === 'menuitem' || role === 'treeitem') return 'option';
       return 'suggest';
     }
     function viewClsToken(el) {
@@ -3918,10 +3916,7 @@
         if (!isViewPanel(panel) && !classLooksViewPanel(classNameOf(panel))) continue;
         var kids = [];
         try {
-          kids = panel.querySelectorAll(
-            '[role="option"], [role="tab"], [role="menuitem"], li, dd, ' +
-            '.el-select-dropdown__item, .el-option, .ant-select-item, .ivu-select-item'
-          );
+          kids = panel.querySelectorAll('[role="option"], [role="tab"], [role="menuitem"], [role="treeitem"], li, dd');
         } catch (eK) { kids = []; }
         var kidCount = 0;
         for (var k = 0; k < kids.length && items.length < maxItems; k++) {
@@ -5309,83 +5304,100 @@
     }
 
     // ============ 下拉框共用工具 ============
-    // 选项候选：具名库 + 泛化 class 子串（devui-dropdown-item / t-select-option 等）
-    var OPTION_SEL = '[role="option"], [role="listbox"] li, li[aria-selected], ' +
-      'dd[lay-value], li[lay-value], .layui-select-option, ' +
-      '.el-select-dropdown__item, .el-option, .el-cascader-node, .el-cascader-menu__item, ' +
-      '.el-cascader__suggestion-item, .el-cascader__suggestion-list li, .el-cascader__suggestion-panel li, ' +
-      '.ivu-select-item, .ivu-select-dropdown-list li, ' +
-      '.ivu-cascader-menu-item, .ant-cascader-menu-item, ' +
-      'li[id^="cascader-menu-"], li[id*="-cascader-menu-"], ' +
-      '.ant-select-item-option, .ant-select-item, .van-option, ' +
-      '.dropdown-item, .dropdown-menu li a, ' +
-      '.select2-results__option, .chosen-results li, .active-result, ' +
-      '.ui-menu-item, .ui-menu-item-wrapper, .combobox-item, .combo-p li, ' +
-      'li[data-value], dd[data-value], div[role="option"], ' +
-      '[class*="dropdown-item"], [class*="select-item"], [class*="select-option"], [class*="option-item"]';
+    // 选项/弹层按角色与结构收，不按组件库 class 枚举。
+    var LIST_ROLE_SEL = '[role="listbox"], [role="menu"], [role="tree"], [role="list"], datalist';
+    var OPTION_LEAF_SEL = '[role="option"], [role="menuitem"], [role="treeitem"], [role="listitem"], li, dd, [aria-selected]';
+    var INNER_LIST_SEL = '[role="listbox"], [role="menu"], [role="tree"], [role="list"], datalist, dl';
+    var OPTION_SEL = OPTION_LEAF_SEL;
+    var WIDGET_SEL = '[role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="menu"], [aria-haspopup="dialog"], [aria-haspopup="true"]';
 
-    var GENERIC_OPTION_SEL = '[class*="dropdown-item"], [class*="select-item"], [class*="select-option"], ' +
-      '[class*="option-item"], [class*="option-content"], [role="option"]';
+    function listRoleOf(el) {
+      try { return String(el && el.getAttribute && el.getAttribute('role') || '').toLowerCase(); } catch (e) { return ''; }
+    }
 
-    var CASCADER_OPTION_SEL = '.el-cascader-node, .el-cascader-menu__item, .el-cascader__suggestion-item, ' +
-      '.el-cascader__suggestion-list li, .el-cascader__suggestion-panel li, ' +
-      '.ivu-cascader-menu-item, .ant-cascader-menu-item, ' +
-      'li[id^="cascader-menu-"], li[id*="-cascader-menu-"]';
+    function isListRoleNode(el) {
+      if (!el || el.nodeType !== 1) return false;
+      var r = listRoleOf(el);
+      if (r === 'listbox' || r === 'menu' || r === 'tree' || r === 'list') return true;
+      var tag = String(el.tagName || '').toUpperCase();
+      return tag === 'DATALIST' || tag === 'DL';
+    }
 
-    function cascaderHostOf(el) {
-      if (!el || !el.closest) return null;
+    function isOptionNode(el) {
+      if (!el || el.nodeType !== 1) return false;
+      var tag = String(el.tagName || '').toUpperCase();
+      if (tag === 'OPTION') return false;
+      var role = listRoleOf(el);
+      if (role === 'option' || role === 'menuitem' || role === 'treeitem' || role === 'listitem') return true;
+      if (tag === 'LI' || tag === 'DD') return true;
       try {
-        if (el.matches && el.matches('.el-cascader, .ivu-cascader, .ant-cascader')) return el;
-        return el.closest('.el-cascader, .ivu-cascader, .ant-cascader');
-      } catch (e) { return null; }
+        var sel = el.getAttribute && el.getAttribute('aria-selected');
+        if (sel === 'true' || sel === 'false') return true;
+      } catch (e) {}
+      return false;
+    }
+
+    function floatingPosition(el) {
+      if (!el) return false;
+      try {
+        var view = el.ownerDocument && el.ownerDocument.defaultView;
+        var st = view && view.getComputedStyle ? view.getComputedStyle(el) : null;
+        var pos = String(st && st.position || '');
+        return pos === 'absolute' || pos === 'fixed' || pos === 'sticky';
+      } catch (e) { return false; }
     }
 
     function popupHasOptionNodes(popup) {
       if (!popup || !popup.querySelector) return false;
       try {
-        if (popup.querySelector(CASCADER_OPTION_SEL) || popup.querySelector(OPTION_SEL)) return true;
-        if (popup.querySelector(GENERIC_OPTION_SEL)) return true;
-        var lis = popup.querySelectorAll('li');
-        return !!(lis && lis.length);
+        if (popup.querySelector(OPTION_LEAF_SEL)) return true;
+        return false;
       } catch (e) {
         return false;
       }
     }
 
-    var CASCADER_POPUP_SEL = '.el-cascader__dropdown, .el-cascader-panel, .el-cascader-menus, .el-cascader-menu, ' +
-      '.el-cascader__suggestion-panel, .el-cascader__suggestion-list, .ant-cascader-dropdown, .ant-cascader-menus, ' +
-      '.ivu-cascader-dropdown, .ivu-cascader-menus';
+    function countOptionColumns(popup) {
+      if (!popup || !popup.querySelector) return 0;
+      var cols = 0;
+      var kids = popup.children;
+      if (kids) {
+        for (var i = 0; i < kids.length; i++) {
+          if (isHiddenPopup(kids[i])) continue;
+          if (popupHasOptionNodes(kids[i]) || isListRoleNode(kids[i])) cols++;
+        }
+      }
+      if (cols >= 2) return cols;
+      var lists = [];
+      try {
+        lists = popup.querySelectorAll('[role="menu"], [role="listbox"], [role="group"], ul, ol, dl');
+      } catch (e) { return cols; }
+      var top = 0;
+      for (var j = 0; j < lists.length; j++) {
+        if (isHiddenPopup(lists[j])) continue;
+        if (!popupHasOptionNodes(lists[j]) && !isListRoleNode(lists[j])) continue;
+        var nested = false;
+        for (var k = 0; k < lists.length; k++) {
+          if (j === k) continue;
+          try {
+            if (lists[k].contains && lists[k].contains(lists[j])) { nested = true; break; }
+          } catch (e2) {}
+        }
+        if (!nested) top++;
+      }
+      return Math.max(cols, top);
+    }
 
-    var POPUP_INNER_SEL = 'dl, .layui-anim, [role="listbox"], .el-select-dropdown, .el-cascader__dropdown, ' +
-      '.el-cascader-panel, .el-cascader-menus, .el-cascader-menu, .el-cascader__suggestion-panel, .dropdown-menu, .combo-panel, ' +
-      '[class*="dropdown-menu"], [class*="select-dropdown"], ' +
-      '[class*="editable-select__inner"], [class*="editable-select__list"], [class*="editable-select__menu"], ' +
-      '[class*="editable-select__dropdown"], [class*="editable-select__overlay"], ' +
-      '[class*="select__inner"], [class*="select__list"], [class*="select__menu"], [class*="select__dropdown"]';
-
-    var POPUP_SEL = [
-      '.el-select-dropdown', '.el-popper', '.el-cascader__dropdown', '.el-cascader-menus',
-      '.el-cascader__suggestion-panel', '.el-cascader__suggestion-list',
-      '.ant-select-dropdown', '.ant-cascader-dropdown', '.ant-cascader-menus',
-      '.ivu-select-dropdown', '.ivu-cascader-dropdown', '.ivu-cascader-menus', '.layui-form-select .layui-anim',
-      '.select2-dropdown', '.chosen-drop',
-      '.dropdown-menu.show', '.dropdown-menu[style*="display: block"]',
-      '.combo-p', '.combo-panel', '.combobox-item-wrapper',
-      '.n-select-menu', '.n-base-select-menu',
-      '.rc-virtual-list', '.van-popup', '.van-popover',
-      '[role="listbox"]', '[role="presentation"].el-select-dropdown',
-      '[class*="select-dropdown"], [class*="dropdown-menu"], [class*="select-popup"], ' +
-      '[class*="picker-dropdown"], [class*="overlay-pane"], [class*="select-panel"], ' +
-      '[class*="editable-select__inner"], [class*="editable-select__list"], [class*="editable-select__menu"], ' +
-      '[class*="editable-select__dropdown"], [class*="editable-select__overlay"], ' +
-      '[class*="select__inner"], [class*="select__list"], [class*="select__menu"], [class*="select__dropdown"]'
-    ].join(', ');
-
-    var WIDGET_SEL = '.el-select, .el-cascader, .ant-select, .ivu-select, .ivu-cascader, .layui-form-select, ' +
-      '.select2-container, .chosen-container, .n-select, .van-dropdown-menu, .combo, ' +
-      '.bootstrap-select, [role="combobox"], [class*="editable-select"], [class*="select-input"], ' +
-      '.t-select, .arco-select, .semi-select, .p-dropdown, .p-autocomplete, .v-select, .v-autocomplete, ' +
-      '.q-select, .devui-select, [allow-create]';
+    function cascaderHostOf(el) {
+      if (!el) return null;
+      var root = widgetRoot(el);
+      var trig = comboboxTriggerOf(root || el, el);
+      var owned = null;
+      try { owned = findPopupForTrigger(trig || el); } catch (e0) { owned = null; }
+      if (!owned) return null;
+      if (countOptionColumns(owned) >= 2) return root || el;
+      return null;
+    }
 
     // 规范化文本：去全部空白并小写——消除选项换行/全半角空格/大小写差异造成的误匹配
     function normText(s) {
@@ -5739,11 +5751,14 @@
       if (/^(INPUT|TEXTAREA|SELECT|OPTION|BUTTON|SVG|PATH|HTML|BODY|FORM)$/.test(tag)) return false;
       var cn = classNameOfNode(el);
       if (/user-select|select-none|select-text|select-all|select-auto/i.test(cn)) return false;
-      if (/editable-select|combobox|autocomplete|typeahead|selectize/i.test(cn)) return true;
-      if (/\b(t-select|arco-select|semi-select|p-dropdown|p-autocomplete|v-select|v-autocomplete|q-select|devui-select|n-select)\b/i.test(cn)) return true;
       try {
-        if (el.getAttribute && (el.getAttribute('allow-create') != null || el.getAttribute('role') === 'combobox')) return true;
+        var role = el.getAttribute && el.getAttribute('role');
+        var popup = el.getAttribute && el.getAttribute('aria-haspopup');
+        if (role === 'combobox') return true;
+        if (popup && popup !== 'false') return true;
+        if (el.getAttribute('allow-create') != null) return true;
       } catch (e0) {}
+      if (/combobox|autocomplete|typeahead|selectize|editable-select/i.test(cn)) return true;
       if (/\b[\w-]+-select(?:-[\w]+)*\b/i.test(cn) || /\b[\w-]+Select\b/.test(cn)) {
         try {
           if (el.querySelector && el.querySelector('input:not([type="hidden"]), [role="combobox"]')) return true;
@@ -5806,11 +5821,12 @@
       if (!el) return null;
       if (isViewportOverlayShell(el) && el.querySelector) {
         try {
-          var inner = el.querySelector(
-            '[class*="dropdown-menu"], [class*="select-dropdown"], [role="listbox"], ul, ol, ' +
-            '[class*="editable-select__inner"], [class*="select__inner"], [class*="select__list"]'
-          );
+          var inner = el.querySelector(LIST_ROLE_SEL);
           if (inner && !isHiddenPopup(inner)) return inner;
+          var lists = el.querySelectorAll('ul, ol, dl');
+          for (var i = 0; i < lists.length; i++) {
+            if (!isHiddenPopup(lists[i]) && popupHasOptionNodes(lists[i])) return lists[i];
+          }
         } catch (e) {}
       }
       return el;
@@ -5818,11 +5834,35 @@
 
     function isHiddenPopup(el) {
       if (!el) return true;
-      var cn = String(el.className || '');
-      if (/\b(is-hidden|hidden|el-select-dropdown-hidden|ant-select-dropdown-hidden|ivu-select-dropdown-hidden)\b/.test(cn)) return true;
-      // 不用 aria-hidden：Element UI 级联弹层显示时仍常标 aria-hidden=true。
+      // 不用 aria-hidden：部分级联弹层显示时仍标 aria-hidden=true。
       // 过渡期 pointer-events:none，用布局可见性判断。
       return !isLaidOut(el);
+    }
+
+    function lookupIdInRoots(id, trigger) {
+      if (!id) return null;
+      var hit = null;
+      var root = trigger && trigger.getRootNode ? trigger.getRootNode() : document;
+      try { hit = root.querySelector('#' + CSS.escape(id)); } catch (e0) {}
+      if (!hit) {
+        try { hit = queryDeep('#' + CSS.escape(id)); } catch (e1) {}
+      }
+      return hit;
+    }
+
+    function nativeOwnedPopup(trigger) {
+      if (!trigger) return null;
+      try {
+        if (trigger.list) return trigger.list;
+      } catch (e0) {}
+      try {
+        var listId = trigger.getAttribute && trigger.getAttribute('list');
+        if (listId) {
+          var dl = lookupIdInRoots(listId, trigger);
+          if (dl) return dl;
+        }
+      } catch (e1) {}
+      return null;
     }
 
     function controlledPopup(trigger) {
@@ -5833,14 +5873,20 @@
         ids.push(rootEl.getAttribute('aria-controls'), rootEl.getAttribute('aria-owns'));
       }
       for (var i = 0; i < ids.length; i++) {
-        if (!ids[i]) continue;
-        var root = trigger.getRootNode ? trigger.getRootNode() : document;
-        var hit = null;
-        try { hit = root.querySelector('#' + CSS.escape(ids[i])); } catch (e) {}
-        if (!hit) {
-          try { hit = queryDeep('#' + CSS.escape(ids[i])); } catch (e) {}
-        }
+        var hit = lookupIdInRoots(ids[i], trigger);
         if (hit) return hit;
+      }
+      var act = '';
+      try { act = trigger.getAttribute('aria-activedescendant') || ''; } catch (e2) { act = ''; }
+      if (!act && rootEl && rootEl.getAttribute) {
+        try { act = rootEl.getAttribute('aria-activedescendant') || ''; } catch (e3) { act = ''; }
+      }
+      if (act) {
+        var desc = lookupIdInRoots(act, trigger);
+        if (desc) {
+          var lifted = listRootFromHit(desc, trigger);
+          if (lifted) return lifted;
+        }
       }
       return null;
     }
@@ -5857,23 +5903,37 @@
 
     function isPopupItemNode(el) {
       if (!el || el.nodeType !== 1) return false;
-      var cn = classNameOfNode(el);
-      if (/__item\b/.test(cn)) return true;
-      try {
-        if (el.getAttribute && el.getAttribute('role') === 'option') return true;
-      } catch (e0) {}
+      var role = listRoleOf(el);
+      if (role === 'option' || role === 'menuitem' || role === 'treeitem' || role === 'listitem') return true;
+      var tag = String(el.tagName || '').toUpperCase();
+      if (tag === 'OPTION') return true;
+      return false;
+    }
+
+    function looksLikeOptionPopup(el, trigger) {
+      if (!acceptPopupNode(el, trigger)) return false;
+      if (isViewportOverlayShell(el)) return false;
+      if (isListRoleNode(el)) return true;
+      if (floatingPosition(el) && (popupHasOptionNodes(el) || isListRoleNode(el))) return true;
+      if (floatingPosition(el)) {
+        try {
+          if (el.querySelector && el.querySelector('ul, ol, dl, [role="listbox"], [role="menu"], [role="tree"]')) return true;
+        } catch (e) {}
+      }
       return false;
     }
 
     function acceptPopupNode(el, trigger) {
       if (!el || el.nodeType !== 1) return false;
       if (isHiddenPopup(el)) return false;
-      var root = null;
-      try { root = widgetRoot(trigger); } catch (e0) { root = null; }
-      if (root && el === root) return false;
-      try {
-        if (trigger && el.contains && el.contains(trigger)) return false;
-      } catch (e1) {}
+      if (trigger) {
+        var root = null;
+        try { root = widgetRoot(trigger); } catch (e0) { root = null; }
+        if (root && el === root) return false;
+        try {
+          if (el.contains && el.contains(trigger)) return false;
+        } catch (e1) {}
+      }
       if (isPopupItemNode(el)) return false;
       try {
         if (el.matches && el.matches(OPTION_SEL) && !popupHasOptionNodes(el)) return false;
@@ -5881,58 +5941,388 @@
       return true;
     }
 
-    function findPopupForTrigger(trigger) {
-      var isCascader = !!cascaderHostOf(trigger);
-      var controlled = controlledPopup(trigger);
-      if (controlled && acceptPopupNode(controlled, trigger)) {
-        if (!isCascader || popupHasOptionNodes(controlled)) return controlled;
+    function listRootFromHit(hit, trigger) {
+      var best = null;
+      var n = hit;
+      for (var hops = 0; hops < 12 && n && n.nodeType === 1; hops++) {
+        if (looksLikeOptionPopup(n, trigger)) best = n;
+        n = n.parentElement;
       }
-      var root = widgetRoot(trigger);
+      return best;
+    }
+
+    function bodyLayerCandidates() {
+      var out = [];
+      var seen = typeof Set === 'function' ? new Set() : [];
+      function mark(el) {
+        if (!el || el.nodeType !== 1) return false;
+        if (seen.has) {
+          if (seen.has(el)) return false;
+          seen.add(el);
+        } else if (seen.indexOf(el) >= 0) return false;
+        else seen.push(el);
+        return true;
+      }
+      var roots = [];
+      try { if (document.body) roots.push(document.body); } catch (e0) {}
+      try { if (document.documentElement) roots.push(document.documentElement); } catch (e1) {}
+      try {
+        var ov = overlayRootEls();
+        for (var oi = 0; oi < ov.length; oi++) roots.push(ov[oi]);
+      } catch (e2) {}
+      for (var r = 0; r < roots.length; r++) {
+        var kids = roots[r] && roots[r].children;
+        if (!kids) continue;
+        for (var i = 0; i < kids.length; i++) {
+          var el = kids[i];
+          if (!mark(el) || isHiddenPopup(el)) continue;
+          if (floatingPosition(el) || isListRoleNode(el)) out.push(el);
+          var grand = el.children;
+          if (!grand) continue;
+          for (var g = 0; g < grand.length && g < 32; g++) {
+            var ch = grand[g];
+            if (!mark(ch) || isHiddenPopup(ch)) continue;
+            if (floatingPosition(ch) || isListRoleNode(ch)) out.push(ch);
+          }
+        }
+      }
+      return out;
+    }
+
+    function probePopupHits(trigger) {
+      if (!trigger || !trigger.getBoundingClientRect) return [];
+      var tr;
+      try { tr = trigger.getBoundingClientRect(); } catch (e0) { return []; }
+      var pts = [
+        [tr.left + tr.width / 2, tr.bottom + 10],
+        [tr.left + Math.min(24, tr.width / 2), tr.bottom + 10],
+        [tr.right - Math.min(24, tr.width / 2), tr.bottom + 10],
+        [tr.left + tr.width / 2, tr.top + tr.height / 2],
+        [tr.right + 16, tr.top + 20],
+        [tr.left + tr.width / 2, tr.bottom + 56]
+      ];
+      var hits = [];
+      var seen = typeof Set === 'function' ? new Set() : [];
+      function add(el) {
+        if (!el || el.nodeType !== 1) return;
+        if (seen.has) {
+          if (seen.has(el)) return;
+          seen.add(el);
+        } else {
+          if (seen.indexOf(el) >= 0) return;
+          seen.push(el);
+        }
+        hits.push(el);
+      }
+      for (var p = 0; p < pts.length; p++) {
+        var x = pts[p][0];
+        var y = pts[p][1];
+        if (!isFinite(x) || !isFinite(y)) continue;
+        var stack = [];
+        try {
+          if (document.elementsFromPoint) stack = document.elementsFromPoint(x, y) || [];
+          else {
+            var one = document.elementFromPoint(x, y);
+            if (one) stack = [one];
+          }
+        } catch (e1) { stack = []; }
+        for (var s = 0; s < stack.length && s < 16; s++) add(stack[s]);
+      }
+      return hits;
+    }
+
+    var POPUP_CLASS_HINT_RE = /dropdown|listbox|menu|suggest|cascader|select-panel/i;
+    var POPUP_DIST_CAP = 2000;
+
+    function layerKey(el) {
+      return el || null;
+    }
+
+    function layerDelta(before, after) {
+      before = Array.isArray(before) ? before : [];
+      after = Array.isArray(after) ? after : [];
+      var prevEls = [];
+      var prevSig = [];
+      function prevIndex(el) {
+        for (var i = 0; i < prevEls.length; i++) if (prevEls[i] === el) return i;
+        return -1;
+      }
+      for (var bi = 0; bi < before.length; bi++) {
+        var b = before[bi];
+        if (!b || b.el == null) continue;
+        if (prevIndex(b.el) >= 0) continue;
+        prevEls.push(b.el);
+        prevSig.push(b.sig == null ? '' : String(b.sig));
+      }
+      var out = [];
+      var seen = [];
+      for (var aj = 0; aj < after.length; aj++) {
+        var a = after[aj];
+        if (!a || a.el == null) continue;
+        var dup = false;
+        for (var s = 0; s < seen.length; s++) if (seen[s] === a.el) { dup = true; break; }
+        if (dup) continue;
+        seen.push(a.el);
+        var pi = prevIndex(a.el);
+        var sig = a.sig == null ? '' : String(a.sig);
+        if (pi < 0 || prevSig[pi] !== sig) out.push(a.el);
+      }
+      return out;
+    }
+
+    function snapshotLayerSet(trigger) {
+      var out = [];
+      var seen = typeof Set === 'function' ? new Set() : [];
+      function add(el) {
+        if (!el || el.nodeType !== 1) return;
+        var node = popupContentRoot(el) || el;
+        var key = layerKey(node);
+        if (!key) return;
+        if (seen.has) {
+          if (seen.has(key)) return;
+          seen.add(key);
+        } else {
+          if (seen.indexOf(key) >= 0) return;
+          seen.push(key);
+        }
+        var laid = true;
+        try { laid = isLaidOut(node); } catch (eL) { laid = true; }
+        if (!laid) return;
+        var sig = '';
+        try { sig = listSignature(node); } catch (eS) { sig = ''; }
+        out.push({ el: key, sig: sig });
+      }
+      try { add(nativeOwnedPopup(trigger)); } catch (eN) {}
+      try { add(controlledPopup(trigger)); } catch (eC) {}
+      if (trigger) {
+        var host = null;
+        try { host = widgetRoot(trigger); } catch (eW) { host = null; }
+        if (host && host.querySelectorAll) {
+          var inners = [];
+          try { inners = host.querySelectorAll(INNER_LIST_SEL); } catch (eIn) { inners = []; }
+          for (var ii = 0; ii < inners.length; ii++) add(inners[ii]);
+        }
+      }
+      var layers = [];
+      try { layers = bodyLayerCandidates(); } catch (eB) { layers = []; }
+      for (var li = 0; li < layers.length; li++) add(layers[li]);
+      var roles = [];
+      try { roles = queryAllDeep(LIST_ROLE_SEL); } catch (eR) { roles = []; }
+      for (var ri = 0; ri < roles.length; ri++) {
+        if (trigger) {
+          var dist = 0;
+          try { dist = popupDistance(trigger, roles[ri]); } catch (eD) { dist = 9999; }
+          if (dist > POPUP_DIST_CAP) continue;
+        }
+        add(roles[ri]);
+      }
+      try {
+        var popover = queryAllDeep(':popover-open');
+        for (var pi = 0; pi < popover.length; pi++) add(popover[pi]);
+      } catch (ePo) {}
+      return out;
+    }
+
+    function layersAtProbePoints(trigger) {
+      if (!trigger || !trigger.getBoundingClientRect) return [];
+      var tr;
+      try { tr = trigger.getBoundingClientRect(); } catch (e0) { return []; }
+      var pts = [
+        [tr.left + tr.width / 2, tr.bottom + 10],
+        [tr.left + Math.min(24, tr.width / 2), tr.bottom + 10],
+        [tr.right - Math.min(24, tr.width / 2), tr.bottom + 10],
+        [tr.left + tr.width / 2, tr.top + tr.height / 2],
+        [tr.right + 16, tr.top + 20],
+        [tr.left + tr.width / 2, tr.bottom + 56]
+      ];
+      var layers = [];
+      try { layers = bodyLayerCandidates(); } catch (e1) { layers = []; }
+      var out = [];
+      var seen = typeof Set === 'function' ? new Set() : [];
+      function add(el) {
+        if (!el || el.nodeType !== 1) return;
+        if (seen.has) {
+          if (seen.has(el)) return;
+          seen.add(el);
+        } else {
+          if (seen.indexOf(el) >= 0) return;
+          seen.push(el);
+        }
+        out.push(el);
+      }
+      for (var p = 0; p < pts.length; p++) {
+        var x = pts[p][0];
+        var y = pts[p][1];
+        if (!isFinite(x) || !isFinite(y)) continue;
+        for (var i = 0; i < layers.length; i++) {
+          var el = layers[i];
+          if (!el || !el.getBoundingClientRect) continue;
+          var laid = true;
+          try { laid = isLaidOut(el); } catch (e2) { laid = true; }
+          if (!laid) continue;
+          var r;
+          try { r = el.getBoundingClientRect(); } catch (e3) { continue; }
+          if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) add(el);
+        }
+      }
+      return out;
+    }
+
+    function pushPopupCandidate(list, seen, el, trigger) {
+      if (!el || el.nodeType !== 1) return;
+      var node = popupContentRoot(el) || el;
+      if (!looksLikeOptionPopup(node, trigger)) return;
+      if (seen.has) {
+        if (seen.has(node)) return;
+        seen.add(node);
+      } else {
+        if (seen.indexOf(node) >= 0) return;
+        seen.push(node);
+      }
+      list.push(node);
+    }
+
+    function collectGeoCandidates(trigger) {
+      var seen = typeof Set === 'function' ? new Set() : [];
+      var list = [];
+      if (!trigger) return list;
+      var root = null;
+      try { root = widgetRoot(trigger); } catch (eW) { root = null; }
       if (root && root.querySelectorAll) {
         var inners = [];
-        try { inners = root.querySelectorAll(POPUP_INNER_SEL); } catch (eIn) { inners = []; }
-        var innerHit = null;
-        var innerScore = -Infinity;
-        for (var ii = 0; ii < inners.length; ii++) {
-          var inner = inners[ii];
-          if (!acceptPopupNode(inner, trigger)) continue;
-          var iScore = popupHasOptionNodes(inner) ? 1000 : 0;
-          if (iScore > innerScore) { innerScore = iScore; innerHit = inner; }
-        }
-        if (innerHit) return innerHit;
+        try { inners = root.querySelectorAll(INNER_LIST_SEL); } catch (eIn) { inners = []; }
+        for (var ii = 0; ii < inners.length; ii++) pushPopupCandidate(list, seen, inners[ii], trigger);
       }
-      if (isCascader) {
-        var spec = queryAllDeep(CASCADER_POPUP_SEL);
-        var bestC = null;
-        var bestCScore = -Infinity;
-        for (var ci = 0; ci < spec.length; ci++) {
-          if (!acceptPopupNode(spec[ci], trigger)) continue;
-          var distC = popupDistance(trigger, spec[ci]);
-          if (distC > 1600) continue;
-          var score = (popupHasOptionNodes(spec[ci]) ? 1000 : 0) - distC;
-          var cn = String(spec[ci].className || '');
-          if (/suggestion/.test(cn)) score += 80;
-          if (score > bestCScore) { bestCScore = score; bestC = spec[ci]; }
+      var probed = probePopupHits(trigger);
+      for (var hi = 0; hi < probed.length; hi++) {
+        var lifted = listRootFromHit(probed[hi], trigger);
+        if (lifted) pushPopupCandidate(list, seen, lifted, trigger);
+        else {
+          var n = probed[hi];
+          for (var hops = 0; hops < 12 && n && n.nodeType === 1; hops++) {
+            if (isLaidOut(n) && (floatingPosition(n) || isListRoleNode(n))) {
+              pushPopupCandidate(list, seen, n, trigger);
+            }
+            n = n.parentElement;
+          }
         }
-        if (bestC) return bestC;
       }
-      var pops = queryAllDeep(POPUP_SEL);
-      var best = null;
-      var bestScore = -Infinity;
-      for (var i = 0; i < pops.length; i++) {
-        if (isHiddenPopup(pops[i])) continue;
-        var el = popupContentRoot(pops[i]) || pops[i];
-        if (!acceptPopupNode(el, trigger)) continue;
-        if (isViewportOverlayShell(el) && !popupHasOptionNodes(el)) continue;
-        if (isCascader && !popupHasOptionNodes(el)) continue;
-        var dist = popupDistance(trigger, el);
-        var maxDist = isCascader ? 1600 : 2000;
-        if (dist > maxDist) continue;
+      var atPts = layersAtProbePoints(trigger);
+      for (var ai = 0; ai < atPts.length; ai++) pushPopupCandidate(list, seen, atPts[ai], trigger);
+      return list;
+    }
+
+    function collectLastResortCandidates(trigger) {
+      var seen = typeof Set === 'function' ? new Set() : [];
+      var list = [];
+      var roles = [];
+      try { roles = queryAllDeep(LIST_ROLE_SEL); } catch (eR) { roles = []; }
+      for (var ri = 0; ri < roles.length; ri++) {
+        if (trigger) {
+          var dist = 0;
+          try { dist = popupDistance(trigger, roles[ri]); } catch (eD) { dist = 9999; }
+          if (dist > POPUP_DIST_CAP) continue;
+        }
+        pushPopupCandidate(list, seen, roles[ri], trigger);
+      }
+      try {
+        var popover = queryAllDeep(':popover-open');
+        for (var pi = 0; pi < popover.length; pi++) pushPopupCandidate(list, seen, popover[pi], trigger);
+      } catch (ePo) {}
+      var layers = [];
+      try { layers = bodyLayerCandidates(); } catch (eB) { layers = []; }
+      for (var li = 0; li < layers.length; li++) {
+        if (trigger) {
+          var d2 = 0;
+          try { d2 = popupDistance(trigger, layers[li]); } catch (eD2) { d2 = 9999; }
+          if (d2 > POPUP_DIST_CAP) continue;
+        }
+        pushPopupCandidate(list, seen, layers[li], trigger);
+      }
+      return list;
+    }
+
+    function collectPopupCandidates(trigger) {
+      var seen = typeof Set === 'function' ? new Set() : [];
+      var list = [];
+      var geo = collectGeoCandidates(trigger);
+      var last = collectLastResortCandidates(trigger);
+      var i;
+      for (i = 0; i < geo.length; i++) pushPopupCandidate(list, seen, geo[i], trigger);
+      for (i = 0; i < last.length; i++) pushPopupCandidate(list, seen, last[i], trigger);
+      return list;
+    }
+
+    function popupClassBonus(el) {
+      try {
+        var cn = classNameOfNode(el);
+        if (cn && POPUP_CLASS_HINT_RE.test(cn)) return 12;
+      } catch (e) {}
+      return 0;
+    }
+
+    function pickOwnedPopup(trigger, cands) {
+      var scored = [];
+      for (var i = 0; i < (cands || []).length; i++) {
+        var el = cands[i];
+        if (!el) continue;
+        var dist = trigger ? popupDistance(trigger, el) : 0;
+        if (trigger && dist > POPUP_DIST_CAP) continue;
         var score = (popupHasOptionNodes(el) ? 1000 : 0) - dist;
-        if (score > bestScore) { bestScore = score; best = el; }
+        if (isListRoleNode(el)) score += 40;
+        scored.push({ el: el, score: score, dist: dist });
       }
-      if (best && bestScore > -2000) return best;
+      if (!scored.length) return null;
+      scored.sort(function (a, b) { return b.score - a.score; });
+      var top = scored[0];
+      if (scored.length >= 2 && Math.abs(scored[0].dist - scored[1].dist) < 80) {
+        var s0 = scored[0].score + popupClassBonus(scored[0].el);
+        var s1 = scored[1].score + popupClassBonus(scored[1].el);
+        if (s1 > s0) top = scored[1];
+        else if (s0 > s1) top = scored[0];
+      }
+      if (top && top.score > -2000) return top.el;
       return null;
+    }
+
+    function uniqueDeltaPopup(trigger, beforeLayers) {
+      if (beforeLayers == null) return null;
+      var after = snapshotLayerSet(trigger);
+      var deltaEls = layerDelta(beforeLayers, after);
+      var accepted = [];
+      var seen = typeof Set === 'function' ? new Set() : [];
+      for (var d = 0; d < deltaEls.length; d++) {
+        var node = popupContentRoot(deltaEls[d]) || deltaEls[d];
+        if (!acceptPopupNode(node, trigger)) continue;
+        if (!looksLikeOptionPopup(node, trigger)) continue;
+        if (seen.has) {
+          if (seen.has(node)) continue;
+          seen.add(node);
+        } else {
+          if (seen.indexOf(node) >= 0) continue;
+          seen.push(node);
+        }
+        accepted.push(node);
+      }
+      if (accepted.length === 1) return accepted[0];
+      return null;
+    }
+
+    function findPopupForTrigger(trigger, opts) {
+      opts = opts || {};
+      var native = nativeOwnedPopup(trigger);
+      if (native && acceptPopupNode(native, trigger)) {
+        return popupContentRoot(native) || native;
+      }
+      var controlled = controlledPopup(trigger);
+      if (controlled && acceptPopupNode(controlled, trigger)) {
+        return popupContentRoot(controlled) || controlled;
+      }
+      var deltaHit = uniqueDeltaPopup(trigger, opts.beforeLayers);
+      if (deltaHit) return deltaHit;
+      var geoHit = pickOwnedPopup(trigger, collectGeoCandidates(trigger));
+      if (geoHit) return geoHit;
+      return pickOwnedPopup(trigger, collectLastResortCandidates(trigger));
     }
 
     function isTriggerOpen(trigger) {
@@ -5949,18 +6339,7 @@
       var root = widgetRoot(trigger);
       var rootExp = expanded(root);
       if (rootExp === true) return true;
-      if (root && root.classList) {
-        var cn = classNameOfNode(root);
-        if (root.classList.contains('is-focus') || root.classList.contains('is-reverse') ||
-            root.classList.contains('ant-select-open') || root.classList.contains('el-select--open') ||
-            root.classList.contains('layui-form-selected') || root.classList.contains('select2-container--open') ||
-            root.classList.contains('ivu-select-visible') || root.classList.contains('n-select--open') ||
-            /\b(open|opened|expanded|is-focus|is-reverse|focused)\b/i.test(cn) ||
-            /dropdown-open|select-open|is-open|select-visible/i.test(cn)) {
-          return true;
-        }
-      }
-      if (own === false && rootExp === false) return false;
+      if (own === false && rootExp === false) return !!findPopupForTrigger(trigger);
       return !!findPopupForTrigger(trigger);
     }
 
@@ -5968,9 +6347,7 @@
       var root = widgetRoot(trigger) || trigger;
       if (!root || !root.querySelector) return null;
       var hit = root.querySelector(
-        '.el-input__suffix, .el-select__caret, .el-icon-arrow-up, .el-icon-arrow-down, ' +
-        '.ant-select-arrow, .layui-edge, .select2-selection__arrow, .ivu-select-arrow, ' +
-        '[class*="arrow-icon"], [class*="select-arrow"], [class*="select__arrow"], [class*="caret"]'
+        '[class*="arrow"], [class*="caret"], [class*="suffix"] svg, [class*="suffix"] i, [class*="icon"] svg'
       );
       return hit || null;
     }
@@ -5978,15 +6355,24 @@
     function optionTextOf(el) {
       if (!el) return '';
       try {
-        var lab = el.querySelector && el.querySelector(
-          '.el-cascader-node__label, .el-cascader__suggestion-item, .el-cascader__suggestion-item > span, ' +
-          '.ivu-cascader-label, .ant-cascader-menu-item-content'
-        );
-        if (lab && lab !== el) {
-          var lt = (lab.innerText || lab.textContent || '').trim();
-          if (lt) return lt.replace(/\s+/g, ' ');
+        var named = el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'));
+        if (named && String(named).trim()) return String(named).replace(/\s+/g, ' ').trim();
+      } catch (e0) {}
+      try {
+        var kids = el.children;
+        if (kids && kids.length) {
+          var best = '';
+          for (var i = 0; i < kids.length; i++) {
+            var kid = kids[i];
+            if (!kid || kid.nodeType !== 1) continue;
+            var ktag = String(kid.tagName || '').toUpperCase();
+            if (ktag === 'SVG' || ktag === 'I' || ktag === 'PATH') continue;
+            var kt = String(kid.innerText || kid.textContent || '').replace(/\s+/g, ' ').trim();
+            if (kt && kt.length > best.length && kt.length <= 80) best = kt;
+          }
+          if (best) return best;
         }
-      } catch (e) {}
+      } catch (e1) {}
       return ((el.innerText || el.textContent || '').trim()).replace(/\s+/g, ' ');
     }
 
@@ -6000,7 +6386,21 @@
     function collectGenericOptionsIn(root, limit, withSelector) {
       if (!root || !root.querySelectorAll) return [];
       var raw = [];
-      try { raw = safeAll(root, GENERIC_OPTION_SEL + ', li'); } catch (e) { return []; }
+      try { raw = safeAll(root, OPTION_LEAF_SEL); } catch (e) { raw = []; }
+      if (!raw.length) {
+        var lists = [];
+        try {
+          lists = root.querySelectorAll('[role="listbox"], [role="menu"], [role="group"], ul, ol, dl');
+        } catch (eL) { lists = []; }
+        var scopes = lists.length ? lists : [root];
+        for (var s = 0; s < scopes.length; s++) {
+          var kids = scopes[s] && scopes[s].children;
+          if (!kids || kids.length < 2) continue;
+          for (var ci = 0; ci < kids.length; ci++) {
+            if (kids[ci] && kids[ci].nodeType === 1) raw.push(kids[ci]);
+          }
+        }
+      }
       var seen = new Set();
       var cands = [];
       for (var i = 0; i < raw.length; i++) {
@@ -6053,10 +6453,9 @@
       function walk(r) {
         if (!r) return;
         try {
-          if (r.matches && (r.matches(OPTION_SEL) || r.matches(CASCADER_OPTION_SEL))) nodes.push(r);
+          if (r.matches && isOptionNode(r)) nodes.push(r);
         } catch (e0) {}
-        nodes = nodes.concat(safeAll(r, OPTION_SEL));
-        nodes = nodes.concat(safeAll(r, CASCADER_OPTION_SEL));
+        nodes = nodes.concat(safeAll(r, OPTION_LEAF_SEL));
         var all = safeAll(r, '*');
         for (var i = 0; i < all.length; i++) {
           if (all[i].shadowRoot) walk(all[i].shadowRoot);
@@ -6086,23 +6485,19 @@
 
     function collectVisibleCascaderOptions(trigger, limit, withSelector) {
       var cap = limit || MAX_LIST_OPTIONS;
-      var all = queryAllDeep(CASCADER_OPTION_SEL);
+      var pops = [];
+      try { pops = collectPopupCandidates(trigger); } catch (e) { pops = []; }
       var out = [];
       var seen = new Set();
-      for (var i = 0; i < all.length && out.length < cap; i++) {
-        var e = all[i];
-        if (seen.has(e)) continue;
-        seen.add(e);
-        if (!isLaidOut(e)) continue;
-        if (trigger && popupDistance(trigger, e) > 1600) continue;
-        var t = optionTextOf(e);
-        if (!t) continue;
-        var v = e.getAttribute ? (e.getAttribute('data-value') || e.getAttribute('lay-value') || e.getAttribute('value') || '') : '';
-        var s = '';
-        if (withSelector) {
-          try { var u = uniqueSelector(e); s = u && u.selector ? u.selector : ''; } catch (err) { s = ''; }
+      for (var p = 0; p < pops.length && out.length < cap; p++) {
+        var chunk = collectOptionsIn(pops[p], cap - out.length, withSelector);
+        for (var i = 0; i < chunk.length && out.length < cap; i++) {
+          var e = chunk[i] && chunk[i].el;
+          if (!e || seen.has(e)) continue;
+          seen.add(e);
+          if (trigger && popupDistance(trigger, e) > 1600) continue;
+          out.push(chunk[i]);
         }
-        out.push({ el: e, text: t.slice(0, 80), value: v, selector: s });
       }
       return out;
     }
@@ -6110,15 +6505,12 @@
     // 只收集「这个触发器」的选项。没有关联弹层时返回空数组，绝不回退到整页——
     // 否则年份/JCR/其它下拉的可见项会被误当成已经展开，从而既不点击也不搜索。
     // 可过滤级联输入后切到建议列表：若选中的弹层收割为空，再扫描附近可见的建议项。
-    function optionsForTrigger(trigger, limit, withSelector) {
-      var popup = findPopupForTrigger(trigger);
+    function optionsForTrigger(trigger, limit, withSelector, opts) {
+      opts = opts || {};
+      var popup = findPopupForTrigger(trigger, opts);
       if (popup) {
         var inPop = collectOptionsIn(popup, limit, withSelector);
         if (inPop.length) return inPop;
-      }
-      if (cascaderHostOf(trigger)) {
-        var vis = collectVisibleCascaderOptions(trigger, limit, withSelector);
-        if (vis.length) return vis;
       }
       var root = widgetRoot(trigger);
       if (root && root !== trigger) {
@@ -6129,7 +6521,7 @@
     }
 
     function collectOpenPopupOptions(limit, withSelector) {
-      var pops = queryAllDeep(POPUP_SEL).filter(function (p) { return !isHiddenPopup(p); });
+      var pops = collectPopupCandidates(null);
       if (!pops.length) return [];
       var acc = [];
       var cap = limit || MAX_LIST_OPTIONS;
@@ -6273,21 +6665,20 @@
       return payload;
     }
 
-    var NEARBY_LIST_SEL = '[role="listbox"], .search-list, [class*="search-list"], ' +
-      '[class*="select-dropdown"], [class*="dropdown-menu"], [class*="suggestion"], [class*="suggest-list"]';
+    var NEARBY_LIST_SEL = LIST_ROLE_SEL;
 
     function fieldDialogScope(el) {
       if (!el) return null;
       try {
         var item = formItemOf(el);
         if (item) {
-          var modal = item.closest && item.closest('.ivu-modal, .el-dialog, .ant-modal, .n-modal, [role="dialog"]');
+          var modal = item.closest && item.closest('dialog, [role="dialog"], [role="alertdialog"]');
           if (modal) return modal;
           return item.parentElement || item;
         }
       } catch (e) {}
       try {
-        var dlg = el.closest && el.closest('.ivu-modal, .el-dialog, .ant-modal, .n-modal, [role="dialog"], .modal');
+        var dlg = el.closest && el.closest('dialog, [role="dialog"], [role="alertdialog"]');
         if (dlg) return dlg;
       } catch (e2) {}
       return el.parentElement || null;
@@ -6306,29 +6697,25 @@
       return n || null;
     }
 
-    function findNearbyOptionList(el) {
+    function findNearbyOptionList(el, opts) {
       if (!el) return null;
-      var n = findListContainer(el);
-      if (n && isVisible(n)) return n;
+      opts = opts || {};
+      var n = null;
       try {
-        n = findPopupForTrigger(el);
+        n = findPopupForTrigger(el, opts);
         if (n && isVisible(n)) return n;
       } catch (e2) {}
-      var all = [];
-      try { all = queryAllDeep(NEARBY_LIST_SEL); } catch (e3) { all = []; }
-      var best = null;
-      var bestD = 420;
-      for (var i = 0; i < all.length; i++) {
-        if (!isVisible(all[i])) continue;
-        var d = 9999;
-        try { d = popupDistance(el, all[i]); } catch (e4) { d = 9999; }
-        if (d < bestD) { bestD = d; best = all[i]; }
-      }
-      return best;
+      n = findListContainer(el);
+      if (n && isVisible(n)) return n;
+      try {
+        var geo = pickOwnedPopup(el, collectGeoCandidates(el));
+        if (geo && isVisible(geo)) return geo;
+      } catch (e3) {}
+      return null;
     }
 
-    function nearbyListCatalog(el, want) {
-      var list = findNearbyOptionList(el);
+    function nearbyListCatalog(el, want, opts) {
+      var list = findNearbyOptionList(el, opts);
       if (!list) return [];
       var items = [];
       try {
@@ -6356,12 +6743,15 @@
     }
 
     function snapshotTypeList(el) {
+      var layers = [];
+      try { layers = snapshotLayerSet(el); } catch (eL) { layers = []; }
       var vis = findNearbyOptionList(el);
       var box = vis || findListContainer(el);
       return {
         sig: listSignature(vis || box),
         count: vis ? nearbyListCatalog(el, '').length : 0,
-        hasContainer: !!box
+        hasContainer: !!box,
+        layers: layers
       };
     }
 
@@ -6375,7 +6765,7 @@
       var trigger = el;
       try { trigger = cascaderTriggerOf(host, el) || comboboxTriggerOf(host, el) || el; } catch (e2) {}
       var open = false;
-      try { open = !!findPopupForTrigger(trigger); } catch (e3) {}
+      try { open = !!findPopupForTrigger(trigger, { beforeLayers: opts.beforeLayers }); } catch (e3) {}
       var filter = '';
       try {
         var si = findSearchInput(trigger);
@@ -6411,7 +6801,7 @@
       if (open || opts.harvest) {
         if (widgetish) {
           try {
-            var harvested = optionsForTrigger(trigger, limit);
+            var harvested = optionsForTrigger(trigger, limit, false, { beforeLayers: opts.beforeLayers });
             optionsTop = serializeOptions(harvested, limit);
             truncated = harvested.length >= limit;
             for (var oi = 0; oi < optionsTop.length; oi++) {
@@ -6424,7 +6814,7 @@
             }
           } catch (e9) {}
         }
-        var nearby = nearbyListCatalog(el, filter || committed);
+        var nearby = nearbyListCatalog(el, filter || committed, { beforeLayers: opts.beforeLayers });
         if (nearby.length && !optionsTop.length) {
           optionsTop = nearby;
         }
@@ -6476,7 +6866,7 @@
       try { if (typeof fileRowOf === 'function' && fileRowOf(item)) return null; } catch (eF) {}
       var list = null;
       try {
-        list = item.closest('[role="listbox"], .search-list, [class*="search-list"], [class*="select-dropdown"], ul, [class*="dropdown"]');
+        list = item.closest('[role="listbox"], [role="menu"], [role="list"], [role="tree"], ul, ol, dl, [class*="dropdown"], [class*="listbox"], [class*="menu"]');
       } catch (e2) { list = null; }
       var scope = (list && fieldDialogScope(list)) || fieldDialogScope(item) || (list && list.parentElement) || null;
       if (!scope || !scope.querySelector) return null;
@@ -6548,19 +6938,23 @@
     }
 
     async function ensureOpenDropdown(trigger) {
-      if (isTriggerOpen(trigger) && findPopupForTrigger(trigger)) return true;
+      var beforeOpen = null;
+      try { beforeOpen = snapshotLayerSet(trigger); } catch (e0) { beforeOpen = []; }
+      if (isTriggerOpen(trigger) && findPopupForTrigger(trigger, { beforeLayers: beforeOpen })) return true;
       var attempts = 0;
       while (attempts < 3) {
         attempts++;
+        var beforeLayers = [];
+        try { beforeLayers = snapshotLayerSet(trigger); } catch (e1) { beforeLayers = []; }
         var arrow = findArrow(trigger);
         dispatchClick(arrow && attempts > 1 ? arrow : trigger);
         var until = Date.now() + 900;
         while (Date.now() < until) {
           await sleepMs(120);
-          if (findPopupForTrigger(trigger) || isTriggerOpen(trigger)) return true;
+          if (findPopupForTrigger(trigger, { beforeLayers: beforeLayers }) || isTriggerOpen(trigger)) return true;
         }
       }
-      return !!(isTriggerOpen(trigger) || findPopupForTrigger(trigger));
+      return !!(isTriggerOpen(trigger) || findPopupForTrigger(trigger, { beforeLayers: beforeOpen }));
     }
 
     async function applyFilterQuery(trigger, q) {
@@ -6620,68 +7014,41 @@
 
     function isCascaderSearchInput(el) {
       if (!el || String(el.tagName || '').toUpperCase() !== 'INPUT') return false;
-      var cls = String(el.className || '');
-      if (/cascader[_-]*search[_-]*input/i.test(cls)) return true;
-      var host = cascaderHostOf(el);
-      if (!host || el.readOnly) return false;
-      try {
-        return !!el.closest('.el-cascader__tags, .ivu-cascader-tags, .ant-cascader-picker');
-      } catch (e) { return false; }
+      if (el.readOnly) return false;
+      var host = null;
+      try { host = cascaderHostOf(el); } catch (e) { host = null; }
+      if (!host) return false;
+      try { return !!(host.contains && host.contains(el)); } catch (e2) { return false; }
     }
 
-    function cascaderOptionOf(el) {
+    function optionNodeOf(el) {
       var node = el;
-      for (var depth = 0; node && depth < 6; depth++) {
-        var tag = String(node.tagName || '').toUpperCase();
-        var own = false;
-        try {
-          own = !!(node.matches && node.matches(
-            '.el-cascader-node, .el-cascader-menu__item, .el-cascader__suggestion-item, ' +
-            '.ivu-cascader-menu-item, .ant-cascader-menu-item, ' +
-            'li[id^="cascader-menu-"], li[id*="-cascader-menu-"]'
-          ));
-        } catch (e) {}
-        var parent = null;
-        try {
-          parent = node.closest && node.closest(
-            '.el-cascader__dropdown, .el-cascader-menus, .el-cascader-menu, ' +
-            '.el-cascader__suggestion-panel, .el-cascader__suggestion-list, ' +
-            '.ivu-cascader-dropdown, .ivu-cascader-menus, .ivu-cascader-menu, ' +
-            '.ant-cascader-dropdown, .ant-cascader-menus, .ant-cascader-menu'
-          );
-        } catch (e2) {}
-        if (own || (parent && tag === 'LI')) {
-          return node;
+      for (var depth = 0; node && depth < 8; depth++) {
+        if (isOptionNode(node)) {
+          var n = node.parentElement;
+          for (var p = 0; n && p < 8; p++) {
+            if (isListRoleNode(n) || floatingPosition(n) || (popupHasOptionNodes(n) && n !== node)) return node;
+            n = n.parentElement;
+          }
         }
         node = node.parentElement;
       }
       return null;
     }
 
-    // 级联菜单/建议项里的方框只是多选样式，不是表单复选框。
+    function cascaderOptionOf(el) {
+      return optionNodeOf(el);
+    }
+
+    // 列表/级联项里的方框只是选项样式，不是表单复选框。
     function isCascaderChoice(el) {
-      if (!el) return false;
-      if (cascaderOptionOf(el)) return true;
-      try {
-        if (el.closest && el.closest(
-          '.el-cascader-node, .el-cascader-menu, .el-cascader-menu__item, .el-cascader__dropdown, ' +
-          '.el-cascader__suggestion-item, .el-cascader__suggestion-list, .el-cascader__suggestion-panel, ' +
-          '.ivu-cascader-menu, .ivu-cascader-menu-item, .ivu-cascader-dropdown, ' +
-          '.ant-cascader-menu, .ant-cascader-menu-item, .ant-cascader-dropdown, ' +
-          'li[id^="cascader-menu-"], li[id*="-cascader-menu-"]'
-        )) return true;
-      } catch (e) {}
-      return false;
+      return !!optionNodeOf(el);
     }
 
     function cascaderClickTarget(el) {
       if (!el) return el;
       try {
-        if (el.matches && el.matches('.el-cascader__suggestion-item')) return el;
-        var box = el.querySelector && el.querySelector(
-          '.el-checkbox, .el-checkbox__input, .el-checkbox__original, .el-checkbox__inner, ' +
-          '.ant-cascader-checkbox, .ivu-checkbox'
-        );
+        var box = el.querySelector && el.querySelector('input[type="checkbox"], [role="checkbox"]');
         if (box) return box;
       } catch (e) {}
       return el;
@@ -6692,19 +7059,18 @@
         String(requested.tagName || '').toUpperCase() === 'INPUT') return requested;
       if (!host || !host.querySelector) return requested || host;
       try {
-        return host.querySelector('input.el-input__inner, input[role="combobox"], input[readonly]') || host;
+        return host.querySelector('input[role="combobox"], input[readonly], input:not([type="hidden"])') || host;
       } catch (e) { return host; }
     }
 
     function cascaderOptionIsBranch(el) {
       if (!el) return false;
       try {
-        if (el.matches && el.matches('.el-cascader__suggestion-item')) return false;
-        if (el.getAttribute('aria-haspopup') === 'true' || el.getAttribute('aria-expanded') === 'true') return true;
-        if (el.querySelector(
-          '.el-cascader-node__postfix, .el-icon-arrow-right, .ivu-icon-ios-arrow-forward, ' +
-          '.ant-cascader-menu-item-expand-icon, [class*="arrow-right"], [class*="arrow-forward"]'
-        )) return true;
+        var hp = el.getAttribute && el.getAttribute('aria-haspopup');
+        if (hp && hp !== 'false') return true;
+        if (el.getAttribute && el.getAttribute('aria-expanded') === 'true') return true;
+        var nested = el.querySelector('ul, ol, [role="menu"], [role="listbox"], [role="group"]');
+        if (nested && popupHasOptionNodes(nested)) return true;
       } catch (e) {}
       return false;
     }
@@ -6740,8 +7106,8 @@
       var parts = [];
       try {
         var nodes = host.querySelectorAll(
-          '.el-tag, .ivu-tag, .ant-select-selection-item, .ivu-select-selected-value, ' +
-          '.ivu-cascader-label, .el-cascader__label, .ant-cascader-picker-label'
+          '[class*="selection-item"], [class*="selected-item"], [class*="selected-value"], ' +
+          '[class*="picker-label"], [class*="tag"]'
         );
         var seen = {};
         for (var i = 0; i < nodes.length && parts.length < 8; i++) {
@@ -6849,11 +7215,7 @@
       }
 
       var winner = found.hit.winner;
-      var isSuggestion = false;
-      try {
-        isSuggestion = !!(winner.el && winner.el.matches && winner.el.matches('.el-cascader__suggestion-item'));
-      } catch (eSug) {}
-      if (!isSuggestion && cascaderOptionIsBranch(winner.el)) {
+      if (cascaderOptionIsBranch(winner.el)) {
         var leaves = harvested.filter(function (item) { return !cascaderOptionIsBranch(item.el); });
         return catalogPayload(leaves.length ? leaves : harvested, {
           ok: false, reason: 'not-leaf', opened: opened,
@@ -7067,31 +7429,33 @@
     async function finishTypedFilter(el, val, before) {
       if (!el) return null;
       var want = String(val == null ? '' : val);
-      before = before || { sig: '', count: 0, hasContainer: false };
-      var list = findNearbyOptionList(el);
+      before = before || { sig: '', count: 0, hasContainer: false, layers: [] };
+      var listOpts = { beforeLayers: before.layers };
+      function nearby() { return findNearbyOptionList(el, listOpts); }
+      var list = nearby();
       if (!list && (before.hasContainer || before.count || before.sig)) {
         var waited = 0;
         while (!list && waited < 1500) {
           await sleepMs(80);
           waited += 80;
-          list = findNearbyOptionList(el);
+          list = nearby();
         }
       } else if (!list) {
         await sleepMs(80);
-        list = findNearbyOptionList(el);
+        list = nearby();
       }
       if (!list && !before.hasContainer && !before.count) return null;
       if (list) {
-        await waitListSettle(function () { return findNearbyOptionList(el); }, 1500);
+        await waitListSettle(function () { return nearby(); }, 1500);
       }
       var fs = null;
-      try { fs = collectFieldState(el, { harvest: true }); } catch (e) { fs = null; }
-      var catalog = nearbyListCatalog(el, want);
+      try { fs = collectFieldState(el, { harvest: true, beforeLayers: before.layers }); } catch (e) { fs = null; }
+      var catalog = nearbyListCatalog(el, want, listOpts);
       if (fs && catalog.length && !(fs.optionsTop && fs.optionsTop.length)) {
         fs.optionsTop = catalog;
         fs.optionsCount = catalog.length;
       }
-      var afterSig = listSignature(findNearbyOptionList(el));
+      var afterSig = listSignature(nearby());
       var afterCount = catalog.length || (fs && fs.optionsCount) || 0;
       var listChanged = !!(afterSig && afterSig !== before.sig);
       var appeared = before.count === 0 && afterCount > 0;

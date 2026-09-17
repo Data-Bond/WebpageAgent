@@ -455,8 +455,8 @@ ok(/actionableHidden = isOverflowActEl\(el\)/.test(bridge), '隐藏溢出控件�
 ok(/function isIconActEl/.test(bridge) && /function hasVisibleAncestor/.test(bridge) &&
   /function rowLabelNear/.test(bridge) && /hiddenIconAdded/.test(bridge),
   '隐藏图标操作（有可见祖先）额外进快照');
-ok(/i\[class\*="el-icon-"\]/.test(bridge) && /iconClassOf\(el\)/.test(bridge),
-  'INTERACTIVE 含 el-icon，outline 写 icon 类名');
+ok(/i\[class\*="icon-"\]/.test(bridge) && /iconClassOf\(el\)/.test(bridge),
+  'INTERACTIVE 含通用 icon 类，outline 写 icon 类名');
 ok(/function looksLikeOverlay/.test(bridge) && /collectOpenPanes/.test(bridge) &&
   /<PANE via=/.test(bridge) && /panes: panes/.test(bridge),
   '快照采可见 iframe/dialog/pre 为 panes，outline 置顶 <PANE>');
@@ -587,7 +587,8 @@ ok(/reason: 'not-checkbox'/.test(bridge), 'check 遇到级联项时诚实失败�
 ok(/via: 'already-selected'/.test(bridge), 'select 在弹层关闭且 committed 匹配时可幂等');
 ok(/function comboSelectionMatches/.test(bridge), 'combobox 已选文本与目标比对');
 ok(/via: 'multi'/.test(bridge), 'selectOption 接受多个目标文本');
-ok(/不要整段 \.el-cascader__tags|el-cascader__tags block/.test(bridge), '已选文本只收 selection items，不混入筛选框输入');
+ok(/tags container/.test(extractFn(bridge, 'widgetSelectedTextNear')),
+  '已选文本只收 selection items，不混入筛选框输入');
 ok(!/学科分类等级联字段必须/.test(bg), '手册不把某一站的学科分类写成唯一级联规则');
 const checkboxStart = bridge.indexOf('var CHECKBOX_SEL');
 const checkboxEnd = bridge.indexOf('input[type="checkbox"], input[type="radio"]', checkboxStart);
@@ -600,9 +601,90 @@ ok(/typed-not-committed/.test(bridge), 'type/setVal 对级联只打过滤词并�
 ok(/via: 'cascader-option'/.test(bridge), 'click 可见级联选项不再抛禁点');
 ok(!/级联菜单选项禁止直接 page\.click/.test(bridge), '取消级联禁点政策');
 // 手工回归：作者 type 后观察含卡片 idx，click 卡片根或可用「选择」；学科 type 短词后 optionsTop 含叶子，click 叶子且 committed 非过滤词。
-ok(/el-cascader__suggestion-item/.test(bridge), '可过滤级联建议项纳入选项收集');
-ok(/el-cascader__suggestion-panel/.test(bridge), '可过滤级联建议面板纳入弹层定位');
-ok(/function optionTextOf/.test(bridge), '级联选项文案优先取 node__label');
+ok(/function isOptionNode/.test(bridge) && /OPTION_LEAF_SEL/.test(bridge),
+  '选项按 role/li/dd 结构收，不按组件库 class 表');
+ok(/function countOptionColumns/.test(bridge) && /function cascaderHostOf/.test(bridge),
+  '级联宿主看多列选项层，不看 el-cascader 类名');
+ok(/function collectPopupCandidates/.test(bridge) && /function bodyLayerCandidates/.test(bridge),
+  '弹层按角色/浮层/指针探测收，不按组件库 class 表');
+ok(/elementsFromPoint/.test(bridge) && /function probePopupHits/.test(bridge),
+  '无 ARIA 时用 elementsFromPoint 找 trigger 附近浮层');
+ok(/function layerKey/.test(bridge) && /function snapshotLayerSet/.test(bridge) && /function layerDelta/.test(bridge),
+  '弹层有 layerKey / snapshotLayerSet / layerDelta');
+ok(/beforeLayers/.test(extractFn(bridge, 'ensureOpenDropdown')) && /snapshotLayerSet/.test(extractFn(bridge, 'ensureOpenDropdown')),
+  'ensureOpenDropdown 点击前做层快照并用差分归属');
+ok(/snapshotLayerSet/.test(extractFn(bridge, 'snapshotTypeList')) &&
+  /beforeLayers/.test(extractFn(bridge, 'finishTypedFilter')) &&
+  /layerDelta|beforeLayers/.test(extractFn(bridge, 'findPopupForTrigger')),
+  'findPopupForTrigger / type 收割走层快照差分');
+ok(!/cascaderHostOf/.test(extractFn(bridge, 'pickOwnedPopup')),
+  'pickOwnedPopup 不调用 cascaderHostOf');
+ok(/countOptionColumns/.test(extractFn(bridge, 'cascaderHostOf')) &&
+  /findPopupForTrigger/.test(extractFn(bridge, 'cascaderHostOf')) &&
+  !/bodyLayerCandidates/.test(extractFn(bridge, 'cascaderHostOf')),
+  'cascaderHostOf 只看已归属弹层列数，不扫 body 浮层');
+ok(/dropdown\|listbox\|menu\|suggest\|cascader\|select-panel/.test(bridge) &&
+  /popupClassBonus/.test(extractFn(bridge, 'pickOwnedPopup')),
+  'class 仅作距离接近时的加分，不是查询白名单');
+ok(!/queryAllDeep\(NEARBY_LIST_SEL\)/.test(extractFn(bridge, 'findNearbyOptionList')),
+  '附近列表不整页最近邻');
+ok(/collectGeoCandidates/.test(extractFn(bridge, 'findPopupForTrigger')) &&
+  /collectLastResortCandidates/.test(extractFn(bridge, 'findPopupForTrigger')),
+  '归属链：所有权 → 差分 → 几何 → 整页兜底');
+ok(/node === host/.test(extractFn(bridge, 'shownLeafNodes')) &&
+  /input, textarea/.test(extractFn(bridge, 'shownLeafNodes')) &&
+  /\.contains\(/.test(extractFn(bridge, 'shownLeafNodes')),
+  'shown 叶子跳过宿主根、过滤框容器、关闭钮，只收不被其它候选包裹的节点');
+ok(/shownLeafNodes/.test(extractFn(bridge, 'tagChipTexts')) &&
+  /shownLeafNodes/.test(extractFn(bridge, 'selectionItemTexts')),
+  'committed 已选项走 shownLeafNodes');
+{
+  const leafSrc = extractFn(bridge, 'shownLeafNodes');
+  let shownLeafNodesFn = null;
+  try { shownLeafNodesFn = new Function('return (' + leafSrc + ')')(); }
+  catch (e) { ok(false, 'shownLeafNodes 可执行: ' + (e && e.message)); }
+  if (shownLeafNodesFn) {
+    function fake(id, opts) {
+      opts = opts || {};
+      return {
+        id: id,
+        closest: function (sel) {
+          return opts.close && /close/.test(String(sel)) ? this : null;
+        },
+        querySelector: function (sel) {
+          return opts.input && /input/.test(String(sel)) ? { id: 'inp' } : null;
+        },
+        contains: function (other) {
+          return !!(opts.kids && opts.kids.indexOf(other) >= 0);
+        }
+      };
+    }
+    const host = fake('host');
+    const box = fake('box', { input: true });
+    const text = fake('text');
+    const chip = fake('chip', { kids: [text] });
+    const closeBtn = fake('close', { close: true });
+    const leaves = shownLeafNodesFn(host, [host, box, chip, text, closeBtn]);
+    ok(leaves.length === 1 && leaves[0].id === 'text', 'shown 叶子只收最内已选项节点');
+  }
+}
+{
+  const deltaSrc = extractFn(bridge, 'layerDelta');
+  ok(/prevIndex/.test(deltaSrc) && /sig/.test(deltaSrc), 'layerDelta 比较前后层签名');
+  let layerDeltaFn = null;
+  try { layerDeltaFn = new Function('return (' + deltaSrc + ')')(); }
+  catch (e) { ok(false, 'layerDelta 可执行: ' + (e && e.message)); }
+  if (layerDeltaFn) {
+    const a = { el: 1, sig: 'x' };
+    const b = { el: 2, sig: 'y' };
+    const c = { el: 1, sig: 'z' };
+    ok(String(layerDeltaFn([a], [a, b])) === '2', '差分收下新节点');
+    ok(String(layerDeltaFn([a], [c])) === '1', '差分收下签名变化');
+    ok(layerDeltaFn([a], [a]).length === 0, '无变化则空');
+  }
+}
+ok(/function optionTextOf/.test(bridge) && /aria-label/.test(extractFn(bridge, 'optionTextOf')),
+  '选项文案取 aria-label 或子节点文本，不取库名 label class');
 ok(/acc\.length === 0 && round < 12/.test(bridge) && /await sleepMs\(120\)/.test(bridge),
   '下拉/级联首轮空列表会等待布局再收割');
 const cascFnStart = bridge.indexOf('async function selectCascaderOption');
@@ -611,11 +693,12 @@ const cascFn = cascFnStart >= 0
   : '';
 ok(cascFn && !/page\.sleep/.test(cascFn), 'selectCascaderOption 验证循环不用尚未创建的 page.sleep');
 ok(/await sleepMs\(100\)/.test(cascFn), 'selectCascaderOption 验证循环使用 sleepMs');
-ok(/\.ivu-select-item/.test(bridge), 'iView 下拉选项纳入 OPTION_SEL');
-ok(/\[class\*="dropdown-item"\]/.test(bridge) && /\[class\*="select-option"\]/.test(bridge),
-  '选项收集含泛化 dropdown-item/select-option class');
-ok(/\[class\*="editable-select"\]/.test(bridge) && /\[class\*="select-dropdown"\]/.test(bridge),
-  '宿主与弹层含 editable-select / select-dropdown 泛化选择器');
+ok(/var OPTION_SEL = OPTION_LEAF_SEL/.test(bridge),
+  'OPTION_SEL 与结构叶子选择器锁步');
+ok(!/\.ivu-select-item/.test(bridge) && !/\.el-select-dropdown__item/.test(bridge),
+  '选项选择器不再枚举 iView/Element 类名');
+ok(/\[class\*="editable-select"\]/.test(bridge) && /\[role="combobox"\]/.test(bridge),
+  '宿主识别含 editable-select 与 combobox 角色');
 ok(/function looksLikeSelectHost/.test(bridge) && /function collectGenericOptionsIn/.test(bridge),
   '泛化识别 combobox 宿主并收割弹层内 li');
 ok(/user-select\|select-none/.test(bridge), '不把 user-select-none 当成下拉宿主');
@@ -645,16 +728,10 @@ ok(/isPagerHost\(el\) \|\| inPagerHost\(el\)/.test(extractFn(bridge, 'owningSele
   '分页条不把 fieldState 提到 combobox');
 ok(/optionClickLift\(target\)/.test(bridge), '左键 click 走 optionClickLift');
 {
-  const popupSelStart = bridge.indexOf('var POPUP_SEL = [');
-  const popupSelJoin = bridge.indexOf(".join(', ');", popupSelStart);
-  const popupSelSrc = popupSelStart >= 0 && popupSelJoin > popupSelStart
-    ? bridge.slice(popupSelStart, popupSelJoin)
-    : '';
-  ok(/editable-select__inner/.test(popupSelSrc) && /select__inner/.test(popupSelSrc),
-    'POPUP_SEL 含 list container 后缀');
-  ok(!/\[class\*="editable-select"\]/.test(popupSelSrc),
-    'POPUP_SEL 不含裸 editable-select 宿主');
-  ok(!/__item/.test(popupSelSrc), 'POPUP_SEL 不含 __item');
+  ok(!/var POPUP_SEL = \[/.test(bridge) && !/var POPUP_INNER_SEL/.test(bridge) && !/var CASCADER_POPUP_SEL/.test(bridge),
+    '已去掉 POPUP_SEL / POPUP_INNER_SEL / CASCADER_POPUP_SEL 组件库枚举');
+  ok(/function looksLikeOptionPopup/.test(bridge) && /floatingPosition/.test(extractFn(bridge, 'looksLikeOptionPopup')),
+    '弹层判定用定位与选项形态，不用库名 class');
 }
 ok(/function acceptPopupNode/.test(bridge) && /contains\(trigger\)/.test(extractFn(bridge, 'acceptPopupNode')),
   '弹层候选若包含 trigger 则不是 list');
@@ -704,7 +781,8 @@ ok(!/关键词（最少三个）/.test(bg), '手册不写某一站栏目名');
 ok(/function fieldLabelOf/.test(bridge) && /fieldLabelOf\(el\)/.test(extractFn(bridge, 'snapshot')),
   '快照用表单项 label 标注隐藏标签输入框');
 ok(!/级联菜单选项禁止直接 page\.click/.test(bridge), '允许 click 级联选项');
-ok(/li\[id\^="cascader-menu-"\]/.test(bridge), '级联 cascader-menu ID 纳入选项收集');
+ok(/function isOptionNode/.test(bridge) && /role === 'treeitem'/.test(extractFn(bridge, 'isOptionNode')),
+  '级联/树选项按 role 与 li/dd 收，不靠 cascader-menu id');
 ok(!/function checkRepeat/.test(bg) && !/【未再次执行】/.test(bg),
   '不再按 hash 跳过相同工具调用');
 ok(/s\.length >= 10/.test(bridge), '长数字 id（雪花）视为稳定选择器');
@@ -1384,7 +1462,7 @@ ok(!/\|\| isTriggerOpen\(trigger\)/.test(extractFn(bridge, 'collectFieldState'))
   'fieldState.open 只看 findPopupForTrigger，不以 focus 当真开');
 ok(!/collectOpenPopupOptions/.test(extractFn(bridge, 'collectFieldState')),
   'get/fieldState 不整页收割别人的 options');
-ok(/open = !!findPopupForTrigger\(trigger\)/.test(extractFn(bridge, 'collectFieldState')),
+ok(/open = !!findPopupForTrigger\(trigger/.test(extractFn(bridge, 'collectFieldState')),
   'fieldState.open 源为 findPopupForTrigger');
 ok(/headerBrand\.appendChild\(buildBadge\)[\s\S]*headerBrand\.appendChild\(connLampWrap\)/.test(panelSrc), '标题栏版本号在已连接前面');
 ok(/magicCaptcha/.test(bridge), 'captureImage 支持 sel===captcha');
@@ -1934,7 +2012,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '5.10.3', '锁步版本为 5.10.3');
+ok(manifestVer === '6.0.0', '锁步版本为 6.0.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -2837,8 +2915,11 @@ ok(/请先将必填项填写完整/.test('请先将必填项填写完整') &&
   /必填|填写完整|请先/.test('请先将必填项填写完整'), '必填弹窗正则可命中');
 ok(!/【技能·人员搜索】/.test(bg), '不再发人员搜索技能卡配方');
 ok(/starFields/.test(bg), '附近状态仍可带 starFields');
-ok(/function finishTypedFilter/.test(bridge) && /search-list/.test(bridge),
-  'type 后收割附近列表目录');
+ok(/function finishTypedFilter/.test(bridge) &&
+  (/LIST_ROLE_SEL/.test(extractFn(bridge, 'findNearbyOptionList')) ||
+   /findPopupForTrigger/.test(extractFn(bridge, 'findNearbyOptionList')) ||
+   /findPopupForTrigger/.test(extractFn(bridge, 'finishTypedFilter'))),
+  'type 后按归属弹层收割列表，不靠 search-list 类名');
 ok(/function pageSignalBlock/.test(bg) && /【页面信号】/.test(bg), '回执交原文页面信号而非判定');
 ok(/【附近状态】/.test(bg) && !/禁止未读本段就再点下一步/.test(bg), '附近状态只交 JSON，不立法');
 ok(!/【未再次执行】/.test(bg) && !/请换 get\/click\/select/.test(bg), '不再注入未再次执行回执');
