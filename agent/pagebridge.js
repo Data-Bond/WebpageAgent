@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '6.2.0';
+  var BRIDGE_VERSION = '6.2.1';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
   var WAIT_TIMEOUT_MAX_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
@@ -22,6 +22,35 @@
     var scriptAborted = false;
     var trafficHook = null;
     var trafficLog = [];
+    // 弹层探测代缓存：同一代内共享分类与全页扫描结果；任何 DOM 结构或开态属性变动即整代失效
+    var popupGen = 0;
+    var memoCascaderHost = new WeakMap();
+    var memoComboboxHost = new WeakMap();
+    var memoFindPopup = new WeakMap();
+    var memoBodyLayers = null;
+    var memoOverlayRoots = null;
+    function bumpPopupGen() {
+      popupGen++;
+      memoCascaderHost = new WeakMap();
+      memoComboboxHost = new WeakMap();
+      memoFindPopup = new WeakMap();
+      memoBodyLayers = null;
+      memoOverlayRoots = null;
+    }
+    function beginPopupGen() { bumpPopupGen(); }
+    var popupObserver = null;
+    function attachPopupObserver() {
+      var rootEl = document.documentElement || document.body;
+      if (!rootEl || typeof MutationObserver !== 'function') return false;
+      try {
+        popupObserver = new MutationObserver(function () { bumpPopupGen(); });
+        popupObserver.observe(rootEl, {
+          subtree: true, childList: true, attributes: true,
+          attributeFilter: ['class', 'aria-expanded', 'style', 'open', 'popover']
+        });
+        return true;
+      } catch (e) { return false; }
+    }
     function isAssistantFrame(el) {
       if (!el) return false;
       try {
@@ -2399,6 +2428,7 @@
     }
 
     function overlayRootEls() {
+      if (memoOverlayRoots) return memoOverlayRoots;
       var roots = [];
       try { roots = queryAllDeep(overlayRootSelector()); } catch (eR) { roots = []; }
       var out = [];
@@ -2425,6 +2455,7 @@
       for (i = 0; i < kids.length; i++) {
         if (looksLikeOverlay(kids[i])) add(kids[i]);
       }
+      memoOverlayRoots = out;
       return out;
     }
 
@@ -2831,13 +2862,59 @@
 
     function hostSurfaceText(host, trigger) {
       if (!host) return '';
-      var popup = null;
-      try { popup = findPopupForTrigger(trigger || host); } catch (e0) { popup = null; }
+      // 宿主内的列表角色节点与浮动选项子树视为弹层，其文字不进 committed；不做全页弹层探测
+      var skipped = typeof Set === 'function' ? new Set() : [];
+      function markSkip(el) {
+        if (!el || el.nodeType !== 1) return;
+        if (skipped.add) skipped.add(el);
+        else if (skipped.indexOf(el) < 0) skipped.push(el);
+      }
+      function hasSkip(el) {
+        return skipped.has ? skipped.has(el) : skipped.indexOf(el) >= 0;
+      }
       try {
-        if (popup && host.contains && host.contains(popup)) return '';
+        var lists = host.querySelectorAll(INNER_LIST_SEL);
+        for (var i = 0; i < lists.length; i++) markSkip(lists[i]);
+      } catch (e0) {}
+      try {
+        var boxes = host.querySelectorAll('div, ul, ol, section, nav');
+        for (var j = 0; j < boxes.length; j++) {
+          var bx = boxes[j];
+          if (hasSkip(bx)) continue;
+          var lis = bx.querySelectorAll ? bx.querySelectorAll('li') : null;
+          if (!lis || lis.length < 2) continue;
+          var view = bx.ownerDocument && bx.ownerDocument.defaultView;
+          var st = view && view.getComputedStyle ? view.getComputedStyle(bx) : null;
+          var pos = String(st && st.position || '');
+          if (pos === 'absolute' || pos === 'fixed') markSkip(bx);
+        }
       } catch (e1) {}
-      var ht = '';
-      try { ht = String(host.innerText || host.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e2) {}
+      var empty = skipped.size === 0 || skipped.length === 0;
+      if (empty) {
+        var ht0 = '';
+        try { ht0 = String(host.innerText || host.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e2) {}
+        if (isPlaceholderSelectText(ht0)) return '';
+        return ht0.slice(0, 80);
+      }
+      // 逐节点收集文本并整棵跳过弹层子树，不依赖 innerText 对隐藏态的隐含行为
+      var parts = [];
+      var total = 0;
+      (function walk(node) {
+        if (!node || total > 160) return;
+        if (node.nodeType === 3) {
+          var t = String(node.nodeValue || '').replace(/\s+/g, ' ').trim();
+          if (t) { parts.push(t); total += t.length; }
+          return;
+        }
+        if (node.nodeType !== 1) return;
+        if (node !== host) {
+          if (hasSkip(node)) return;
+          try { if (!isLaidOut(node)) return; } catch (e3) {}
+        }
+        var ch = node.childNodes;
+        for (var c = 0; c < ch.length; c++) walk(ch[c]);
+      })(host);
+      var ht = parts.join(' ').replace(/\s+/g, ' ').trim();
       if (isPlaceholderSelectText(ht)) return '';
       return ht.slice(0, 80);
     }
@@ -3950,6 +4027,7 @@
       lastSnapElements = [];
       clearWpaIdxAttrs();
       markSample();
+      beginPopupGen();
       var all = [];
       var elements = [];
       var skipHidden = 0;
@@ -4717,6 +4795,7 @@
       fireMouse('mouseup', target);
       if (typeof el.click === 'function') { try { el.click(); } catch (e) {} }
       else { fireMouse('click', target); }
+      bumpPopupGen();
     }
 
     function clickNavHint(el) {
@@ -5417,14 +5496,91 @@
       return Math.max(cols, top);
     }
 
-    function cascaderHostOf(el) {
+    function cascaderHostOf(el, opts) {
       if (!el) return null;
+      opts = opts || {};
       var root = widgetRoot(el);
-      var trig = comboboxTriggerOf(root || el, el);
+      var key = root || el;
+      if (memoCascaderHost.has(key)) {
+        var cached = memoCascaderHost.get(key);
+        // 快照路径的阴性结果可能被开态闸门提前裁掉，动作路径（probe）不信任缓存的 null
+        if (cached || !opts.probe) return cached;
+      }
+      var hit = cascaderHostOfProbe(el, root, opts);
+      memoCascaderHost.set(key, hit);
+      return hit;
+    }
+
+    // 级联宿主判定主体：廉价宿主闸门先行；opts.probe（动作路径）跳过开态闸门直接全链探测。
+    // 快照路径下 aria 明示关闭直接否；无开态标记时只看宿主内已开的多列列表，不扫 body。
+    function cascaderHostOfProbe(el, root, opts) {
+      var host0 = root || el;
+      var widgetish = false;
+      try {
+        widgetish = looksLikeSelectHost(host0) || looksLikeSelectHost(el) ||
+          !!(host0.matches && host0.matches(WIDGET_SEL)) || !!(el.matches && el.matches(WIDGET_SEL));
+      } catch (e0) {}
+      if (!widgetish) return null;
+      var trig = comboboxTriggerOf(host0, el);
+      if (!opts.probe) {
+        var hint = triggerOpenHint(el);
+        if (hint === false) return null;
+        if (hint === null) {
+          var inners = [];
+          try { inners = host0.querySelectorAll(INNER_LIST_SEL); } catch (eIn) { inners = []; }
+          var visibleTop = 0;
+          for (var vi = 0; vi < inners.length; vi++) {
+            try { if (!isLaidOut(inners[vi])) continue; } catch (eV) { continue; }
+            var nested = false;
+            for (var vj = 0; vj < inners.length; vj++) {
+              if (vi === vj) continue;
+              try { if (inners[vj].contains && inners[vj].contains(inners[vi])) { nested = true; break; } } catch (eN) {}
+            }
+            if (!nested) visibleTop++;
+          }
+          return visibleTop >= 2 ? host0 : null;
+        }
+      }
       var owned = null;
-      try { owned = findPopupForTrigger(trig || el); } catch (e0) { owned = null; }
+      try { owned = nativeOwnedPopup(trig) || controlledPopup(trig); } catch (e1) { owned = null; }
+      if (!owned && host0 && host0.querySelectorAll) {
+        try {
+          var innerLists = host0.querySelectorAll(INNER_LIST_SEL);
+          for (var ii = 0; ii < innerLists.length; ii++) {
+            if (!isHiddenPopup(innerLists[ii])) { owned = innerLists[ii]; break; }
+          }
+        } catch (e2) {}
+      }
+      if (!owned) {
+        try { owned = findPopupForTrigger(trig || el); } catch (e3) { owned = null; }
+      }
       if (!owned) return null;
-      if (countOptionColumns(owned) >= 2) return root || el;
+      try { if (countOptionColumns(owned) >= 2) return host0; } catch (e4) {}
+      return null;
+    }
+
+    // 开态提示：只读 aria-expanded 与开态 class，绝不做弹层探测。
+    // true 明确开；false 为 trigger 与宿主均 aria-expanded="false" 且无开态 class；null 为无标记。
+    var OPEN_CLASS_RE = /(?:^|[\s_-])(?:open|opened|expanded|visible)(?:[\s_-]|$)/i;
+    function triggerOpenHint(el) {
+      if (!el) return null;
+      var own = null;
+      try { own = el.getAttribute ? el.getAttribute('aria-expanded') : null; } catch (e0) {}
+      if (own === 'true') return true;
+      var root = null;
+      try { root = widgetRoot(el); } catch (eW) { root = null; }
+      var rootExp = null;
+      if (root && root !== el) {
+        try { rootExp = root.getAttribute ? root.getAttribute('aria-expanded') : null; } catch (e1) {}
+        if (rootExp === 'true') return true;
+      }
+      var openCls = false;
+      try {
+        openCls = OPEN_CLASS_RE.test(classNameOfNode(el)) ||
+          !!(root && root !== el && OPEN_CLASS_RE.test(classNameOfNode(root)));
+      } catch (e2) {}
+      if (openCls) return true;
+      if (own === 'false' && (root === el || !root || rootExp === 'false')) return false;
       return null;
     }
 
@@ -5829,11 +5985,26 @@
 
     function comboboxHostOf(el) {
       if (!el) return null;
-      if (cascaderHostOf(el)) return null;
       var root = widgetRoot(el);
-      if (root && looksLikeSelectHost(root)) return root;
-      if (looksLikeSelectHost(el)) return el;
-      return null;
+      var key = root || el;
+      if (memoComboboxHost.has(key)) return memoComboboxHost.get(key);
+      var hit = null;
+      var widgetish = false;
+      try {
+        widgetish = looksLikeSelectHost(key) || looksLikeSelectHost(el) ||
+          !!(key.matches && key.matches(WIDGET_SEL)) || !!(el.matches && el.matches(WIDGET_SEL));
+      } catch (e0) {}
+      if (widgetish) {
+        if (cascaderHostOf(el)) {
+          hit = null;
+        } else if (root && looksLikeSelectHost(root)) {
+          hit = root;
+        } else if (looksLikeSelectHost(el)) {
+          hit = el;
+        }
+      }
+      memoComboboxHost.set(key, hit);
+      return hit;
     }
 
     function isViewportOverlayShell(el) {
@@ -5981,6 +6152,7 @@
     }
 
     function bodyLayerCandidates() {
+      if (memoBodyLayers) return memoBodyLayers;
       var out = [];
       var seen = typeof Set === 'function' ? new Set() : [];
       function mark(el) {
@@ -5991,6 +6163,19 @@
         } else if (seen.indexOf(el) >= 0) return false;
         else seen.push(el);
         return true;
+      }
+      // 每个节点只取一次 computed style，同时服务可见性与浮动定位判定
+      function consider(el) {
+        var listRole = isListRoleNode(el);
+        var st = null;
+        try {
+          var view = el.ownerDocument && el.ownerDocument.defaultView;
+          st = view && view.getComputedStyle ? view.getComputedStyle(el) : null;
+        } catch (eS) { st = null; }
+        if (!isVisible(el, st, true)) return;
+        if (listRole) { out.push(el); return; }
+        var pos = String(st && st.position || '');
+        if (pos === 'absolute' || pos === 'fixed' || pos === 'sticky') out.push(el);
       }
       var roots = [];
       try { if (document.body) roots.push(document.body); } catch (e0) {}
@@ -6004,17 +6189,18 @@
         if (!kids) continue;
         for (var i = 0; i < kids.length; i++) {
           var el = kids[i];
-          if (!mark(el) || isHiddenPopup(el)) continue;
-          if (floatingPosition(el) || isListRoleNode(el)) out.push(el);
+          if (!mark(el)) continue;
+          consider(el);
           var grand = el.children;
           if (!grand) continue;
           for (var g = 0; g < grand.length && g < 32; g++) {
             var ch = grand[g];
-            if (!mark(ch) || isHiddenPopup(ch)) continue;
-            if (floatingPosition(ch) || isListRoleNode(ch)) out.push(ch);
+            if (!mark(ch)) continue;
+            consider(ch);
           }
         }
       }
+      memoBodyLayers = out;
       return out;
     }
 
@@ -6339,6 +6525,18 @@
 
     function findPopupForTrigger(trigger, opts) {
       opts = opts || {};
+      // 带 beforeLayers 的差分调用（ensureOpenDropdown 轮询）必须新鲜，不进代缓存
+      if (!opts.beforeLayers && trigger) {
+        if (memoFindPopup.has(trigger)) return memoFindPopup.get(trigger);
+        var memoHit = findPopupForTriggerChain(trigger, opts);
+        memoFindPopup.set(trigger, memoHit);
+        return memoHit;
+      }
+      return findPopupForTriggerChain(trigger, opts);
+    }
+
+    function findPopupForTriggerChain(trigger, opts) {
+      opts = opts || {};
       var native = nativeOwnedPopup(trigger);
       if (native && acceptPopupNode(native, trigger)) {
         return popupContentRoot(native) || native;
@@ -6356,19 +6554,7 @@
 
     function isTriggerOpen(trigger) {
       if (!trigger) return false;
-      function expanded(el) {
-        if (!el || !el.getAttribute) return null;
-        var v = el.getAttribute('aria-expanded');
-        if (v === 'true') return true;
-        if (v === 'false') return false;
-        return null;
-      }
-      var own = expanded(trigger);
-      if (own === true) return true;
-      var root = widgetRoot(trigger);
-      var rootExp = expanded(root);
-      if (rootExp === true) return true;
-      if (own === false && rootExp === false) return !!findPopupForTrigger(trigger);
+      if (triggerOpenHint(trigger) === true) return true;
       return !!findPopupForTrigger(trigger);
     }
 
@@ -6788,7 +6974,7 @@
       opts = opts || {};
       var casc = null;
       var combo = null;
-      try { casc = cascaderHostOf(el); } catch (eC) {}
+      try { casc = cascaderHostOf(el, { probe: true }); } catch (eC) {}
       try { combo = comboboxHostOf(el); } catch (eB) {}
       var host = casc || combo || el;
       var trigger = el;
@@ -6872,7 +7058,7 @@
         var host = widgets[i];
         var cascH = null;
         var comboH = null;
-        try { cascH = cascaderHostOf(host); } catch (eC) {}
+        try { cascH = cascaderHostOf(host, { probe: true }); } catch (eC) {}
         try { comboH = comboboxHostOf(host); } catch (eB) {}
         if (!cascH && !comboH) continue;
         var trig = cascH ? cascaderTriggerOf(cascH, host) : comboboxTriggerOf(comboH || host, host);
@@ -7174,7 +7360,7 @@
     // 只有唯一选项被点击且宿主出现目标选中路径才返回 verified=true。
     async function selectCascaderOption(requested, raw, opts) {
       opts = opts && typeof opts === 'object' ? opts : {};
-      var host = cascaderHostOf(requested) || requested;
+      var host = cascaderHostOf(requested, { probe: true }) || requested;
       var trigger = cascaderTriggerOf(host, requested);
       var target = String(raw || '').trim();
       if (!target) throw new Error('selectOption: 级联目标文本为空');
@@ -7311,6 +7497,7 @@
         el.dispatchEvent(new win.Event('keydown', { bubbles: true }));
         el.dispatchEvent(new win.Event('keyup', { bubbles: true }));
       }
+      bumpPopupGen();
     }
 
     function fireKey(el, key, keyCode) {
@@ -7785,9 +7972,9 @@
             if (officeHit) return officeHit;
             if (!el) throw notFoundError(sel);
             if (el.disabled) throw new Error('元素已禁用，不能填写: ' + sel);
-            if (cascaderHostOf(el)) {
+            if (cascaderHostOf(el, { probe: true })) {
               var cascVal = String(val == null ? '' : val);
-              var host = cascaderHostOf(el);
+              var host = cascaderHostOf(el, { probe: true });
               var trigger = cascaderTriggerOf(host, el);
               await ensureOpenDropdown(trigger);
               var si = findSearchInput(trigger);
@@ -7947,7 +8134,7 @@
               try { optUs = uniqueSelector(el); } catch (eOu) { optUs = null; }
               var cascLift = null;
               try { cascLift = optionClickLift(el); } catch (eCl) { cascLift = null; }
-              var cascFsEl = cascaderHostOf(el);
+              var cascFsEl = cascaderHostOf(el, { probe: true });
               return withResolved({
                 ok: true, kind: 'action', via: 'cascader-option', verified: null,
                 selector: optUs && optUs.selector ? optUs.selector : '',
@@ -7955,7 +8142,7 @@
                 fieldState: (cascLift && cascLift.fieldState) || collectFieldState(cascFsEl || el, { harvest: true })
               }, looked);
             }
-            var cascadeClickHost = cascaderHostOf(el);
+            var cascadeClickHost = cascaderHostOf(el, { probe: true });
             if (cascadeClickHost) {
               var opened = await ensureOpenDropdown(cascaderTriggerOf(cascadeClickHost, el));
               var cus;
@@ -8010,7 +8197,7 @@
           select: async function (sel, valOrLabel, opts) {
             var el = page.q(sel); if (!el) throw notFoundError(sel);
             if (el.disabled) throw new Error('元素已禁用，不能选择: ' + sel);
-            if (cascaderHostOf(el) || comboboxHostOf(el)) {
+            if (cascaderHostOf(el, { probe: true }) || comboboxHostOf(el)) {
               return await page.selectOption(sel, valOrLabel, opts);
             }
             var w = resolveWidget(el);
@@ -8359,7 +8546,7 @@
             var limit = Math.max(1, Math.min(Number(max) || MAX_LIST_OPTIONS, MAX_LIST_OPTIONS));
             var el = page.q(triggerSel);
             if (!el) throw new Error('下拉触发器未找到: ' + triggerSel);
-            var listCascade = cascaderHostOf(el);
+            var listCascade = cascaderHostOf(el, { probe: true });
             var w = resolveWidget(el);
             if (w.native) {
               var native = nativeOptionList(w.native, limit);
@@ -8390,7 +8577,7 @@
             var limit = Math.max(1, Math.min(Number(max) || MAX_LIST_OPTIONS, MAX_LIST_OPTIONS));
             var el = page.q(triggerSel);
             if (!el) throw new Error('下拉触发器未找到: ' + triggerSel);
-            var filterCascade = cascaderHostOf(el);
+            var filterCascade = cascaderHostOf(el, { probe: true });
             var w = resolveWidget(el);
             if (w.native) {
               var native = nativeOptionList(w.native, limit);
@@ -8501,7 +8688,7 @@
             if (!raw) throw new Error('selectOption: 目标文本为空');
             var el = page.q(triggerSel);
             if (!el) throw new Error('下拉触发器未找到: ' + triggerSel);
-            var cascadeHost = cascaderHostOf(el);
+            var cascadeHost = cascaderHostOf(el, { probe: true });
             if (cascadeHost) return await selectCascaderOption(el, raw, o);
             var w = resolveWidget(el);
             if (w.native) return selectNativeOption(w.native, raw);
@@ -8939,7 +9126,7 @@
             }
             if (opts.open) {
               try {
-                var host = cascaderHostOf(el) || comboboxHostOf(el) || el;
+                var host = cascaderHostOf(el, { probe: true }) || comboboxHostOf(el) || el;
                 var trigger = cascaderTriggerOf(host, el) || comboboxTriggerOf(host, el) || el;
                 await ensureOpenDropdown(trigger);
                 await sleepMs(160);
@@ -9107,6 +9294,7 @@
 
     async function runOperations(operations) {
       scriptAborted = false;
+      beginPopupGen();
       hydrateSnapIndexFromDom();
       var allowed = {
         setVal: 1, click: 1, select: 1, getText: 1, findControls: 1,
@@ -9209,8 +9397,14 @@
       dispatch: dispatch,
       dispose: function () {
         try { onAbortSignal(); } catch (e) {}
+        try { if (popupObserver) popupObserver.disconnect(); } catch (e2) {}
       }
     };
+    if (!attachPopupObserver()) {
+      try {
+        document.addEventListener('DOMContentLoaded', function () { attachPopupObserver(); }, { once: true });
+      } catch (e3) {}
+    }
   }
 
   if (globalThis.__wpaBridge && globalThis.__wpaBridge.version === BRIDGE_VERSION &&

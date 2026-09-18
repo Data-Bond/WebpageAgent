@@ -709,17 +709,43 @@ ok(/snapshotLayerSet/.test(extractFn(bridge, 'snapshotTypeList')) &&
   'findPopupForTrigger / type 收割走层快照差分');
 ok(!/cascaderHostOf/.test(extractFn(bridge, 'pickOwnedPopup')),
   'pickOwnedPopup 不调用 cascaderHostOf');
-ok(/countOptionColumns/.test(extractFn(bridge, 'cascaderHostOf')) &&
-  /findPopupForTrigger/.test(extractFn(bridge, 'cascaderHostOf')) &&
-  !/bodyLayerCandidates/.test(extractFn(bridge, 'cascaderHostOf')),
+ok(/countOptionColumns/.test(extractFn(bridge, 'cascaderHostOfProbe')) &&
+  /findPopupForTrigger/.test(extractFn(bridge, 'cascaderHostOfProbe')) &&
+  !/bodyLayerCandidates/.test(extractFn(bridge, 'cascaderHostOfProbe')),
   'cascaderHostOf 只看已归属弹层列数，不扫 body 浮层');
+ok(/triggerOpenHint/.test(extractFn(bridge, 'cascaderHostOfProbe')) &&
+  /opts\.probe/.test(extractFn(bridge, 'cascaderHostOfProbe')),
+  'cascaderHostOf 快照路径走开态闸门，动作路径 probe 旁路');
+ok(/function triggerOpenHint/.test(bridge) &&
+  !/findPopupForTrigger/.test(extractFn(bridge, 'triggerOpenHint')),
+  'triggerOpenHint 纯属性判定，不做弹层探测');
+ok(/memoCascaderHost/.test(extractFn(bridge, 'cascaderHostOf')) &&
+  /memoFindPopup/.test(extractFn(bridge, 'findPopupForTrigger')) &&
+  /memoBodyLayers/.test(extractFn(bridge, 'bodyLayerCandidates')),
+  '宿主分类与弹层探测有代缓存');
+ok(/new MutationObserver/.test(bridge) && /attributeFilter/.test(bridge) &&
+  /beginPopupGen/.test(extractFn(bridge, 'snapshot')) &&
+  /beginPopupGen/.test(extractFn(bridge, 'runOperations')) &&
+  /bumpPopupGen/.test(extractFn(bridge, 'dispatchClick')) &&
+  /bumpPopupGen/.test(extractFn(bridge, 'typeInto')),
+  '代缓存随快照/批次开始与 DOM 变动失效');
+{
+  const blc = extractFn(bridge, 'bodyLayerCandidates');
+  ok(blc.indexOf('isListRoleNode') >= 0 &&
+     blc.indexOf('isListRoleNode') < blc.indexOf("position"),
+    'bodyLayerCandidates 角色判定先于浮动定位');
+}
+ok(!/findPopupForTrigger/.test(extractFn(bridge, 'hostSurfaceText')),
+  'hostSurfaceText 不再发起弹层探测');
+ok((bridge.match(/cascaderHostOf\([a-zA-Z]+, \{ probe: true \}\)/g) || []).length >= 8,
+  '动作路径的级联判定带 probe 旁路');
 ok(/dropdown\|listbox\|menu\|suggest\|cascader\|select-panel/.test(bridge) &&
   /popupClassBonus/.test(extractFn(bridge, 'pickOwnedPopup')),
   'class 仅作距离接近时的加分，不是查询白名单');
 ok(!/queryAllDeep\(NEARBY_LIST_SEL\)/.test(extractFn(bridge, 'findNearbyOptionList')),
   '附近列表不整页最近邻');
-ok(/collectGeoCandidates/.test(extractFn(bridge, 'findPopupForTrigger')) &&
-  /collectLastResortCandidates/.test(extractFn(bridge, 'findPopupForTrigger')),
+ok(/collectGeoCandidates/.test(extractFn(bridge, 'findPopupForTriggerChain')) &&
+  /collectLastResortCandidates/.test(extractFn(bridge, 'findPopupForTriggerChain')),
   '归属链：所有权 → 差分 → 几何 → 整页兜底');
 ok(/node === host/.test(extractFn(bridge, 'shownLeafNodes')) &&
   /input, textarea/.test(extractFn(bridge, 'shownLeafNodes')) &&
@@ -2102,7 +2128,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '6.2.0', '锁步版本为 6.2.0');
+ok(manifestVer === '6.2.1', '锁步版本为 6.2.1');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
