@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '6.2.1';
+  var BRIDGE_VERSION = '6.2.2';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
   var WAIT_TIMEOUT_MAX_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
@@ -4798,13 +4798,37 @@
       bumpPopupGen();
     }
 
+    // 向上找带文档 href 的 a（读属性 href，不含 javascript:/mailto: 等）。
+    function documentAnchorOf(el) {
+      if (!el) return null;
+      var a = el;
+      if (String(a.tagName || '').toUpperCase() !== 'A') {
+        a = el.closest ? el.closest('a') : null;
+      }
+      if (!a || String(a.tagName || '').toUpperCase() !== 'A') return null;
+      var href = '';
+      try { href = String(a.getAttribute('href') || '').trim(); } catch (eH) { href = ''; }
+      if (!href || href === '#') return null;
+      if (href.charAt(0) === '#') return null;
+      var lower = href.toLowerCase();
+      if (lower.indexOf('javascript:') === 0) return null;
+      if (lower.indexOf('mailto:') === 0) return null;
+      if (lower.indexOf('tel:') === 0) return null;
+      if (lower.indexOf('data:') === 0) return null;
+      if (lower.indexOf('blob:') === 0) return null;
+      return a;
+    }
+
     function clickNavHint(el) {
       var hint = {};
       if (!el) return hint;
       try {
-        var a = el;
-        if (String(a.tagName || '').toUpperCase() !== 'A') {
-          a = el.closest ? el.closest('a') : null;
+        var a = documentAnchorOf(el);
+        if (!a) {
+          a = el;
+          if (String(a.tagName || '').toUpperCase() !== 'A') {
+            a = el.closest ? el.closest('a') : null;
+          }
         }
         if (a && String(a.tagName || '').toUpperCase() === 'A') {
           var href = '';
@@ -5427,6 +5451,15 @@
       if (!el || el.nodeType !== 1) return false;
       var r = listRoleOf(el);
       if (r === 'listbox' || r === 'menu' || r === 'tree' || r === 'list') return true;
+      var tag = String(el.tagName || '').toUpperCase();
+      return tag === 'DATALIST' || tag === 'DL';
+    }
+
+    // 选项列表容器：不含 role=list 与正文 ul/ol，避免页面列表 li 被收成级联项。
+    function isChoiceListNode(el) {
+      if (!el || el.nodeType !== 1) return false;
+      var r = listRoleOf(el);
+      if (r === 'listbox' || r === 'menu' || r === 'tree') return true;
       var tag = String(el.tagName || '').toUpperCase();
       return tag === 'DATALIST' || tag === 'DL';
     }
@@ -7242,7 +7275,7 @@
         if (isOptionNode(node)) {
           var n = node.parentElement;
           for (var p = 0; n && p < 8; p++) {
-            if (isListRoleNode(n) || floatingPosition(n) || (popupHasOptionNodes(n) && n !== node)) return node;
+            if (isChoiceListNode(n) || floatingPosition(n)) return node;
             n = n.parentElement;
           }
         }
@@ -8127,7 +8160,7 @@
             if (isPagerHost(el)) {
               throw new Error('请点分页条上的页码或下一页/上一页按钮，不要点整条分页容器');
             }
-            if (cascaderOptionOf(el)) {
+            if (cascaderOptionOf(el) && !documentAnchorOf(el)) {
               try { el.scrollIntoView({ block: 'nearest' }); } catch (eOpt) {}
               dispatchClick(cascaderClickTarget(el));
               var optUs;

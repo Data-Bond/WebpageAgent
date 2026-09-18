@@ -477,6 +477,7 @@
       systemPromptOcr: $('systemPromptOcr').value,
       maxSteps: clampInt($('maxSteps').value, 1, 100, 100),
       llmCallGapMs: secInputToMs($('llmCallGapSec'), 0, 10000, 500),
+      newTabOpenGapMs: secInputToMs($('newTabOpenGapSec'), 0, 60000, 8000),
       llmTimeoutRetry: clampInt($('llmTimeoutRetry').value, 0, 3, 2),
       llmErrorRetry: clampInt($('llmErrorRetry').value, 0, 5, 2),
       pageQuietMs: secInputToMs($('pageQuietSec'), 1000, 15000, 4000),
@@ -519,6 +520,7 @@
     $('systemPromptOcr').value = cfg.systemPromptOcr != null ? cfg.systemPromptOcr : (defs.systemPromptOcr || '');
     if (cfg.maxSteps != null) $('maxSteps').value = cfg.maxSteps;
     $('llmCallGapSec').value = msToSecValue(cfg.llmCallGapMs, 500);
+    $('newTabOpenGapSec').value = msToSecValue(cfg.newTabOpenGapMs, 8000);
     if (cfg.llmTimeoutRetry != null) $('llmTimeoutRetry').value = cfg.llmTimeoutRetry;
     if (cfg.llmErrorRetry != null) $('llmErrorRetry').value = cfg.llmErrorRetry;
     $('pageQuietSec').value = msToSecValue(cfg.pageQuietMs, 4000);

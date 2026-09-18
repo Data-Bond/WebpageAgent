@@ -664,7 +664,7 @@
     .bubble.user {
       position: relative;
       align-self: flex-end;
-      background: linear-gradient(135deg, #4f7cff 0%, #6a5cff 100%);
+      background: linear-gradient(135deg, rgba(79, 124, 255, var(--wpa-alpha)) 0%, rgba(106, 92, 255, var(--wpa-alpha)) 100%);
       color: #fff;
       border-bottom-right-radius: 4px;
       padding-bottom: 28px;
@@ -697,7 +697,7 @@
     .bubble.assistant {
       position: relative;
       align-self: flex-start;
-      background: #ffffff;
+      background: rgba(255, 255, 255, var(--wpa-alpha));
       color: #2b2f3a;
       border: 1px solid #e6e8f0;
       border-bottom-left-radius: 4px;
@@ -712,7 +712,7 @@
     }
     .bubble.system {
       align-self: center;
-      background: #eef0f6;
+      background: rgba(238, 240, 246, var(--wpa-alpha));
       color: #6a7080;
       font-size: 15px;
       border-radius: 999px;
@@ -721,14 +721,14 @@
     }
     .bubble.status {
       align-self: flex-start;
-      background: #fff8e6;
+      background: rgba(255, 248, 230, var(--wpa-alpha));
       color: #8a6d1a;
       border: 1px solid #f3e3b0;
     }
     .print-catalog {
       align-self: stretch;
       max-width: 96%;
-      background: #f4f7fb;
+      background: rgba(244, 247, 251, var(--wpa-alpha));
       color: #243044;
       border: 1px solid #d5deea;
       padding: 8px 10px;
@@ -763,14 +763,14 @@
     }
     .bubble.error {
       align-self: flex-start;
-      background: #ffecec;
+      background: rgba(255, 236, 236, var(--wpa-alpha));
       color: #c0392b;
       border: 1px solid #f5c6c6;
     }
     .bubble.llm-call {
       align-self: stretch;
       max-width: 96%;
-      background: #f7f8fc;
+      background: rgba(247, 248, 252, var(--wpa-alpha));
       color: #2b2f3a;
       border: 1px solid #e0e3ee;
       padding: 8px 10px;
@@ -932,6 +932,12 @@
     .attach-btn:disabled {
       opacity: 0.55;
       cursor: not-allowed;
+    }
+    .send-btn.standby {
+      background: #eef0f6;
+      color: #6a7080;
+      border: 1px solid #d8dbe7;
+      cursor: default;
     }
     .tag-row {
       display: flex;
@@ -1434,6 +1440,8 @@
   // ============ 状态 ============
   let origin = '';
   let running = false;
+  let standby = false;
+  let delegateFromUrlShown = '';
   let stopping = false;
   let stopWatchId = null;
   let runningBeforeDisconnect = false;
@@ -3080,31 +3088,58 @@
     if (stopWatchId) { clearTimeout(stopWatchId); stopWatchId = null; }
   }
 
+  function showDelegateFromUrl(url) {
+    const u = String(url || '').trim();
+    if (!u || u === delegateFromUrlShown) return;
+    delegateFromUrlShown = u;
+    addBubble('system', 'Delegated from URL:\n' + u);
+  }
+
+  function setStandby(v, hint) {
+    standby = !!v;
+    if (!standby) {
+      els.sendBtn.classList.remove('standby');
+      if (!running) setRunning(false);
+      return;
+    }
+    running = false;
+    stopping = false;
+    clearStopWatch();
+    els.userInput.disabled = true;
+    if (els.attachBtn) els.attachBtn.disabled = true;
+    els.sendBtn.textContent = '待命';
+    els.sendBtn.title = hint || '等待父页 delegate 到此页，暂不可发送新任务';
+    els.sendBtn.disabled = true;
+    els.sendBtn.classList.remove('primary', 'stop');
+    els.sendBtn.classList.add('standby');
+  }
+
   function setRunning(v) {
+    if (v) setStandby(false);
     running = v;
     if (!v) {
       stopping = false;
       clearStopWatch();
     }
-    els.userInput.disabled = v;
-    if (els.attachBtn) els.attachBtn.disabled = v;
+    els.userInput.disabled = v || standby;
+    if (els.attachBtn) els.attachBtn.disabled = v || standby;
     if (v) {
       els.sendBtn.textContent = stopping ? '停止中' : '停止';
       els.sendBtn.title = stopping ? '正在停止…' : '停止当前正在执行的任务';
       els.sendBtn.classList.add('stop');
-      els.sendBtn.classList.remove('primary');
+      els.sendBtn.classList.remove('primary', 'standby');
       els.sendBtn.disabled = stopping;
-    } else {
+    } else if (!standby) {
       els.sendBtn.textContent = '发送';
       els.sendBtn.title = '发送';
       els.sendBtn.classList.add('primary');
-      els.sendBtn.classList.remove('stop');
+      els.sendBtn.classList.remove('stop', 'standby');
       els.sendBtn.disabled = false;
     }
   }
 
   function sendMessage() {
-    if (running) return;
+    if (running || standby) return;
     const text = els.userInput.value.trim();
     const hasFiles = attachedFiles.length > 0;
     if (!text && !hasFiles) return;
@@ -4489,6 +4524,10 @@
   // ============ 消息分发 ============
   async function handleReady(msg) {
     if (msg.taskRunning) setRunning(true);
+    else if (msg.pendingDelegate) {
+      setStandby(true, '等待父页 delegate 到此页，暂不可发送新任务');
+      if (msg.delegateFromUrl) showDelegateFromUrl(msg.delegateFromUrl);
+    }
     if (msg.origin) origin = msg.origin;
     if (origin) {
       if (msg.injectError) {
@@ -4512,6 +4551,9 @@
       if (!shell.hidden) reportVisibility(true);
       if (msg.taskRunning) {
         setRunning(true);
+      } else if (msg.pendingDelegate) {
+        setStandby(true, '等待父页 delegate 到此页，暂不可发送新任务');
+        if (msg.delegateFromUrl) showDelegateFromUrl(msg.delegateFromUrl);
       } else if (runningBeforeDisconnect) {
         addBubble('error', '浏览器后台已重启，之前的运行中任务已中断，请确认页面状态后重新发送。');
         setRunning(false);
@@ -4579,8 +4621,18 @@
       switch (type) {
         case 'ready': handleReady(msg); break;
         case 'taskState':
-          if (msg.running) setRunning(true);
-          else if (msg.running === false) setRunning(false);
+          if (msg.phase === 'standby') {
+            setStandby(true, msg.text != null ? String(msg.text) : '');
+            if (msg.delegateFromUrl) showDelegateFromUrl(msg.delegateFromUrl);
+          } else if (msg.phase === 'idle') {
+            setStandby(false);
+            if (msg.running === false) setRunning(false);
+          } else if (msg.running) {
+            setRunning(true);
+          } else if (msg.running === false) {
+            setStandby(false);
+            setRunning(false);
+          }
           break;
         case 'config': handleConfig(msg); break;
         case 'configSaved':
@@ -4636,6 +4688,9 @@
               cancelled: !!msg.cancelled || /cancel/i.test(String(msg.error || ''))
             });
           }
+          break;
+        case 'delegateFrom':
+          showDelegateFromUrl(msg.url);
           break;
         case 'status':
           addBubble(msg.kind === 'error' ? 'error' : 'status', msg.text != null ? String(msg.text) : '');
@@ -5000,6 +5055,7 @@
       stickBottom = messagesNearBottom();
     }, { passive: true });
     els.sendBtn.addEventListener('click', () => {
+      if (standby) return;
       if (running) {
         requestStop();
       } else {

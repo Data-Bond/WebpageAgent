@@ -385,12 +385,37 @@ ok(!/"side_panel"/.test(manifestSrc) && !/default_popup/.test(manifestSrc), '无
 ok(!/activeOrigins/.test(bg) && !/activeOrigins/.test(bridge) && !/activeOrigins/.test(panelSrc), '无按 origin 自动 start');
 ok(/function applyClickNavHint/.test(bridge) && /intentUrl/.test(extractFn(bridge, 'applyClickNavHint')),
   'click 回执可附 intentUrl');
+ok(/function createTabFromClickIntent/.test(bg) && /function clickResultWantsNewTab/.test(bg),
+  'blank 链接由 SW tabs.create 补开');
+ok(/createTabFromClickIntent\(val\.intentUrl/.test(bg),
+  'afterFlush 在 waitBrief 后按 intentUrl 补开 tab');
+ok(/function mirrorPanelToOpenedTab/.test(bg) &&
+  /mirrorPanelToOpenedTab\(tabId, openedNow/.test(bg) &&
+  /mirrorPanelToOpenedTab\(tabId, openedLate/.test(bg),
+  'click 新开 tab 时父页面板可见则镜像到子页');
+ok(/pendingDelegateParent/.test(bg) && /function markPendingDelegate/.test(bg) &&
+  /phase: 'standby'/.test(bg) && /childPendingDelegateInfo\(tabId\)/.test(bg),
+  '开出子 tab 空窗期标记待命并拦截 runTask');
+ok(/function setStandby/.test(panelSrc) && /textContent = '待命'/.test(panelSrc) &&
+  /if \(running \|\| standby\) return/.test(panelSrc),
+  '子 tab 面板待命态禁用输入与发送');
+ok(/function showDelegateFromUrl/.test(panelSrc) &&
+  /Delegated from URL:/.test(panelSrc) &&
+  /type: 'delegateFrom'/.test(bg),
+  '子 tab 对话框显示 Delegated from URL');
+ok(/\.bubble\.assistant[\s\S]*var\(--wpa-alpha\)/.test(panelSrc) &&
+  /\.bubble\.llm-call[\s\S]*var\(--wpa-alpha\)/.test(panelSrc),
+  '对话气泡卡片背景统一使用 --wpa-alpha');
 ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
 {
   const a0 = bg.indexOf('function compactOpenedTab');
   const a1 = bg.indexOf('function startOpenerWatch');
   const box = {
     lastOpenedByOpener: new Map(),
+    activeTasks: new Map(),
+    childJobs: new Map(),
+    pendingDelegateParent: new Map(),
+    postToTab: function () {},
     chrome: { storage: { session: {
       set: function () { return Promise.resolve(); },
       get: function () { return Promise.resolve({}); },
@@ -407,7 +432,8 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
     vm.runInNewContext(
       bg.slice(a0, a1) +
         '\nthis.attachOpenedToResultList = attachOpenedToResultList;\nthis.compactOpenedTab = compactOpenedTab;' +
-        '\nthis.pickOpenedTab = pickOpenedTab;\nthis.rememberOpenedTabs = rememberOpenedTabs;\nthis.forgetOpenedTab = forgetOpenedTab;',
+        '\nthis.pickOpenedTab = pickOpenedTab;\nthis.rememberOpenedTabs = rememberOpenedTabs;\nthis.forgetOpenedTab = forgetOpenedTab;' +
+        '\nthis.clickResultWantsNewTab = clickResultWantsNewTab;',
       box
     );
     ok(typeof box.attachOpenedToResultList === 'function', 'attachOpenedToResultList 可在测试中加载');
@@ -435,6 +461,12 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
   const remain = box.lastOpenedByOpener.get(3) || [];
   ok(remain.length === 2 && !remain.some(function (r) { return r.tabId === 14; }),
     'forgetOpenedTab 只清指定 tab 的记录');
+  ok(box.clickResultWantsNewTab({ intentUrl: 'https://x.example/p', target: '_blank' }),
+    'clickResultWantsNewTab 认 _blank 与 http(s) intentUrl');
+  ok(!box.clickResultWantsNewTab({ intentUrl: 'https://x.example/p', target: '_self' }),
+    'clickResultWantsNewTab 不认 _self');
+  ok(!box.clickResultWantsNewTab({ intentUrl: '/rel/path', target: '_blank' }),
+    'clickResultWantsNewTab 只认绝对 http(s) URL');
 }
 {
   const fossilBox = {};
@@ -689,6 +721,14 @@ ok(/function selectCascaderOption/.test(bridge), 'pagebridge 有级联选择完�
 ok(/selectCascaderOption\(el, raw, o\)/.test(bridge), 'selectOption 自动转入级联闭环');
 ok(/typed-not-committed/.test(bridge), 'type/setVal 对级联只打过滤词并标 typed-not-committed');
 ok(/via: 'cascader-option'/.test(bridge), 'click 可见级联选项不再抛禁点');
+ok(/cascaderOptionOf\(el\) && !documentAnchorOf\(el\)/.test(bridge),
+  'click 带文档 href 的 a 不走 cascader-option');
+ok(/function documentAnchorOf/.test(bridge), 'documentAnchorOf 识别文档链接');
+ok(!/popupHasOptionNodes\(n\)/.test(extractFn(bridge, 'optionNodeOf')),
+  'optionNodeOf 不用 popupHasOptionNodes 收正文列表');
+ok(/isChoiceListNode/.test(extractFn(bridge, 'optionNodeOf')) &&
+  /floatingPosition/.test(extractFn(bridge, 'optionNodeOf')),
+  'optionNodeOf 只认选项列表容器或浮层');
 ok(!/级联菜单选项禁止直接 page\.click/.test(bridge), '取消级联禁点政策');
 // 手工回归：作者 type 后观察含卡片 idx，click 卡片根或可用「选择」；学科 type 短词后 optionsTop 含叶子，click 叶子且 committed 非过滤词。
 ok(/function isOptionNode/.test(bridge) && /OPTION_LEAF_SEL/.test(bridge),
@@ -2128,7 +2168,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '6.2.1', '锁步版本为 6.2.1');
+ok(manifestVer === '6.2.2', '锁步版本为 6.2.2');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -3057,6 +3097,12 @@ ok(/tag === 'IMG'/.test(extractFn(bridge, 'retargetFileSelectClick')),
 ok(/snapshotPiiMask/.test(bg) && /快照脱敏/.test(settingsHtml), '设置含快照脱敏开关');
 ok(/cfg\.snapshotPiiMask === true/.test(bg), '快照脱敏默认关（仅显式 true 才开）');
 ok(/llmCallGapMs: 500/.test(bg), '调用间隔默认 500ms');
+ok(/newTabOpenGapMs: 8000/.test(bg), '最小新建页面间隔默认 8 秒');
+ok(/最小新建页面间隔/.test(settingsHtml) && /newTabOpenGapSec/.test(settingsHtml),
+  '设置页有最小新建页面间隔');
+ok(/function waitNewTabOpenGap/.test(bg) && /function enqueueNewTabOpen/.test(bg) &&
+  /noteNewTabOpened/.test(extractFn(bg, 'createTabFromClickIntent')),
+  '程序化新开 tab 走间隔队列');
 ok(/busyMaskEnabled: false/.test(bg), '操作遮罩默认关');
 ok(/llmTimeoutRetry: 2/.test(bg) && /llmErrorRetry: 2/.test(bg), '重试次数默认 2/2');
 ok(/pageQuietMs: 4000/.test(bg) && /suggestWaitMs: 2000/.test(bg), '页面等待默认 4s / 2s');
@@ -3289,7 +3335,7 @@ const knobBox = {};
 try {
   vm.runInNewContext(
     extractFn(bg, 'clampInt') + '\n' +
-      'const DEFAULT_CONFIG = { llmCallGapMs: 500, busyMaskEnabled: false, llmTimeoutRetry: 2, llmErrorRetry: 2, pageQuietMs: 3000, suggestWaitMs: 1000 };\n' +
+      'const DEFAULT_CONFIG = { llmCallGapMs: 500, newTabOpenGapMs: 8000, busyMaskEnabled: false, llmTimeoutRetry: 2, llmErrorRetry: 2, pageQuietMs: 3000, suggestWaitMs: 1000 };\n' +
       extractFn(bg, 'applyRuntimeKnobs') +
       '\nthis.applyRuntimeKnobs = applyRuntimeKnobs;',
     knobBox
@@ -3303,6 +3349,8 @@ if (knobBox.applyRuntimeKnobs) {
   ok(def.llmCallGapMs === 500 && def.busyMaskEnabled === false, '缺省配置走默认间隔与遮罩关');
   ok(knobBox.applyRuntimeKnobs({ busyMaskEnabled: true }).busyMaskEnabled === true, '可显式打开遮罩');
   ok(knobBox.applyRuntimeKnobs({ llmCallGapMs: 20000 }).llmCallGapMs === 10000, '间隔超出上限被截断');
+  ok(knobBox.applyRuntimeKnobs({}).newTabOpenGapMs === 8000, '新建页面间隔默认 8 秒');
+  ok(knobBox.applyRuntimeKnobs({ newTabOpenGapMs: 90000 }).newTabOpenGapMs === 60000, '新建页面间隔上限 60 秒');
   ok(knobBox.applyRuntimeKnobs({ pageQuietMs: 100 }).pageQuietMs === 1000, '页面等待下限 1 秒');
 }
 ok(/function compactVerifiedResult/.test(bg), 'verified 结果写入历史时截短');

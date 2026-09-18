@@ -36,6 +36,7 @@ const DEFAULT_CONFIG = {
   maxSteps: 100,
   snapshotPiiMask: false,
   llmCallGapMs: 500,
+  newTabOpenGapMs: 8000,
   busyMaskEnabled: false,
   llmTimeoutRetry: 2,
   llmErrorRetry: 2,
@@ -66,6 +67,7 @@ function applyRuntimeKnobs(cfg) {
   const src = cfg || {};
   return {
     llmCallGapMs: clampInt(src.llmCallGapMs, 0, 10000, DEFAULT_CONFIG.llmCallGapMs),
+    newTabOpenGapMs: clampInt(src.newTabOpenGapMs, 0, 60000, DEFAULT_CONFIG.newTabOpenGapMs),
     busyMaskEnabled: src.busyMaskEnabled === true,
     llmTimeoutRetry: clampInt(src.llmTimeoutRetry, 0, 3, DEFAULT_CONFIG.llmTimeoutRetry),
     llmErrorRetry: clampInt(src.llmErrorRetry, 0, 5, DEFAULT_CONFIG.llmErrorRetry),
@@ -248,7 +250,7 @@ const RUNTIME_PLAYBOOK =
   PLAYBOOK_BEGIN + '\n' +
   '通过工具操作当前页。禁止编造 CSS，禁止输出可执行 JS，禁止 plan/script。\n' +
   '工具：get type click check select scroll wait upload ocr ocrFill officeRead officeFill print memorize recall forget goto delegate returnToParent tabClose。\n' +
-  'click/goto 若回执 openedTab 则本批停，下一轮 delegate 或 tabClose。\n' +
+  'click/goto 若回执 openedTab 则本批停，下一轮 delegate 或 tabClose。点到带文档 href 的 a 且 target 为新上下文时，回执含 intentUrl/target；程序化打开被拦时引擎仍打开该 URL 并写 openedTab。\n' +
   'JSON 回退：{"action":"execute","calls":[{"tool":"type","args":{"target":5,"value":"张三"}}]}；ask；done。\n' +
   '定位优先本轮 idx，idx 每轮重排；回执 catalog 编号与上轮快照同批，跨轮作废。用户/技能中的 CSS 只对照本轮快照，勿当 click/get/type 的 target；提交 idx 或 name。\n' +
   'outline 的 role/name 为无障碍名；同串不重复堆字段。click 短文按 name 得 0/1/多：先查本轮 idx（含 hidden），失败回执带本轮 catalog；get 短文仍 live 反查，不是同一张表。\n' +
@@ -957,6 +959,7 @@ function configPayload(cfg) {
     maxSteps: cfg.maxSteps,
     snapshotPiiMask: cfg.snapshotPiiMask === true,
     llmCallGapMs: cfg.llmCallGapMs,
+    newTabOpenGapMs: cfg.newTabOpenGapMs,
     busyMaskEnabled: cfg.busyMaskEnabled === true,
     llmTimeoutRetry: cfg.llmTimeoutRetry,
     llmErrorRetry: cfg.llmErrorRetry,
@@ -999,7 +1002,7 @@ function pickExportPayload(full, pick) {
   take(pick.diag, ['diagCapKb']);
   take(pick.ui, ['uiOpacity', 'panelScaleX', 'panelScaleY']);
   take(pick.runtime, [
-    'maxSteps', 'snapshotPiiMask', 'llmCallGapMs', 'busyMaskEnabled',
+    'maxSteps', 'snapshotPiiMask', 'llmCallGapMs', 'newTabOpenGapMs', 'busyMaskEnabled',
     'llmTimeoutRetry', 'llmErrorRetry', 'pageQuietMs', 'suggestWaitMs',
     'pdfParseMode', 'pdfParsePages', 'pdfTextMaxChars',
     'ocrCacheMaxChars', 'attachContextMaxChars'
@@ -1133,6 +1136,7 @@ function validateImportConfig(obj, current) {
     maxSteps: cur.maxSteps != null ? cur.maxSteps : DEFAULT_CONFIG.maxSteps,
     snapshotPiiMask: cur.snapshotPiiMask === true,
     llmCallGapMs: cur.llmCallGapMs != null ? cur.llmCallGapMs : DEFAULT_CONFIG.llmCallGapMs,
+    newTabOpenGapMs: cur.newTabOpenGapMs != null ? cur.newTabOpenGapMs : DEFAULT_CONFIG.newTabOpenGapMs,
     busyMaskEnabled: cur.busyMaskEnabled === true,
     llmTimeoutRetry: cur.llmTimeoutRetry != null ? cur.llmTimeoutRetry : DEFAULT_CONFIG.llmTimeoutRetry,
     llmErrorRetry: cur.llmErrorRetry != null ? cur.llmErrorRetry : DEFAULT_CONFIG.llmErrorRetry,
@@ -1182,6 +1186,7 @@ function validateImportConfig(obj, current) {
     merged[key] = clampInt(n, min, max, fallback);
   }
   importClamped('llmCallGapMs', 0, 10000, DEFAULT_CONFIG.llmCallGapMs);
+  importClamped('newTabOpenGapMs', 0, 60000, DEFAULT_CONFIG.newTabOpenGapMs);
   importClamped('llmTimeoutRetry', 0, 3, DEFAULT_CONFIG.llmTimeoutRetry);
   importClamped('llmErrorRetry', 0, 5, DEFAULT_CONFIG.llmErrorRetry);
   importClamped('pageQuietMs', 1000, 15000, DEFAULT_CONFIG.pageQuietMs);
@@ -2130,6 +2135,25 @@ function isLlmTransientError(err) {
 }
 
 let lastTextLlmAt = 0;
+let lastNewTabOpenAt = 0;
+let newTabOpenQueueTail = Promise.resolve();
+
+function noteNewTabOpened() {
+  lastNewTabOpenAt = Date.now();
+}
+
+async function waitNewTabOpenGap(config, cancelRef) {
+  const gap = clampInt(config && config.newTabOpenGapMs, 0, 60000, DEFAULT_CONFIG.newTabOpenGapMs);
+  if (gap <= 0 || lastNewTabOpenAt <= 0) return;
+  const wait = Math.max(0, gap - (Date.now() - lastNewTabOpenAt));
+  if (wait > 0) await sleepCancellable(wait, cancelRef);
+}
+
+function enqueueNewTabOpen(work) {
+  const job = newTabOpenQueueTail.then(work, work);
+  newTabOpenQueueTail = job.catch(function () {});
+  return job;
+}
 
 async function waitLlmCallGap(config, signal) {
   const gap = clampInt(config && config.llmCallGapMs, 0, 10000, DEFAULT_CONFIG.llmCallGapMs);
@@ -4877,6 +4901,8 @@ const taskMemories = new Map();
 const lastReads = new Map();
 const childJobs = new Map();
 const lastOpenedByOpener = new Map();
+// 父页 click 已开出、尚未 delegate 的子 tab -> 父 tabId
+const pendingDelegateParent = new Map();
 const READ_MEMORY_SOURCE_OPS = { get: 1, print: 1, getText: 1, officeRead: 1 };
 
 function memorySessionKey(origin) {
@@ -5132,6 +5158,82 @@ function opMayOpenTab(op) {
   return pub === 'click' || pub === 'goto';
 }
 
+async function parentTabUrl(parentTabId) {
+  if (parentTabId == null) return '';
+  try {
+    const t = await chrome.tabs.get(parentTabId);
+    return String(t && t.url || '').slice(0, 500);
+  } catch (e) {
+    return '';
+  }
+}
+
+function childPendingDelegateInfo(childTabId) {
+  if (childTabId == null) return null;
+  const rec = pendingDelegateParent.get(childTabId);
+  if (!rec || rec.parentTabId == null) return null;
+  if (!activeTasks.has(rec.parentTabId) || activeTasks.has(childTabId) || childJobs.has(childTabId)) {
+    pendingDelegateParent.delete(childTabId);
+    return null;
+  }
+  return { parentTabId: rec.parentTabId, parentUrl: String(rec.parentUrl || '').slice(0, 500) };
+}
+
+function notifyChildDelegateFrom(childTabId, parentUrl) {
+  const url = String(parentUrl || '').slice(0, 500);
+  if (!url || childTabId == null) return;
+  postToTab(childTabId, null, { type: 'delegateFrom', url: url });
+}
+
+function notifyChildStandby(childTabId, parentUrl, text) {
+  if (childTabId == null) return;
+  let url = parentUrl;
+  if (url == null) {
+    const rec = pendingDelegateParent.get(childTabId);
+    url = rec && rec.parentUrl || '';
+  }
+  url = String(url || '').slice(0, 500);
+  postToTab(childTabId, null, {
+    type: 'taskState',
+    phase: 'standby',
+    delegateFromUrl: url,
+    text: text || '等待父页 delegate 到此页，暂不可发送新任务'
+  });
+  notifyChildDelegateFrom(childTabId, url);
+}
+
+async function markPendingDelegate(parentTabId, packed) {
+  if (parentTabId == null || !packed || !packed.length) return;
+  if (!activeTasks.has(parentTabId)) return;
+  const parentUrl = await parentTabUrl(parentTabId);
+  for (let i = 0; i < packed.length; i++) {
+    const rec = packed[i];
+    if (!rec || rec.tabId == null) continue;
+    const childTabId = rec.tabId;
+    if (childTabId === parentTabId) continue;
+    if (activeTasks.has(childTabId) || childJobs.has(childTabId)) continue;
+    pendingDelegateParent.set(childTabId, { parentTabId: parentTabId, parentUrl: parentUrl });
+    notifyChildStandby(childTabId, parentUrl);
+  }
+}
+
+function clearPendingDelegateChild(childTabId) {
+  if (childTabId == null) return;
+  if (!pendingDelegateParent.delete(childTabId)) return;
+  postToTab(childTabId, null, { type: 'taskState', phase: 'idle' });
+}
+
+function clearPendingDelegateForParent(parentTabId) {
+  if (parentTabId == null) return;
+  const cleared = [];
+  pendingDelegateParent.forEach(function (rec, childTabId) {
+    if (rec && rec.parentTabId === parentTabId) cleared.push(childTabId);
+  });
+  for (let i = 0; i < cleared.length; i++) {
+    clearPendingDelegateChild(cleared[i]);
+  }
+}
+
 // 记录父页开出的全部新 tab（含无 openerTabId 的同窗口候选），供 delegate/tabClose 校验与默认解析
 function rememberOpenedTabs(parentTabId, packed) {
   if (parentTabId == null || !packed || !packed.length) return;
@@ -5144,6 +5246,7 @@ function rememberOpenedTabs(parentTabId, packed) {
     list.push(rec);
   }
   lastOpenedByOpener.set(parentTabId, list);
+  void markPendingDelegate(parentTabId, packed);
   try {
     const write = chrome.storage.session.set({ ['openedTab:' + parentTabId]: list.slice() });
     if (write && typeof write.catch === 'function') write.catch(function () {});
@@ -5152,6 +5255,7 @@ function rememberOpenedTabs(parentTabId, packed) {
 
 function forgetOpenedTab(parentTabId, tabId) {
   if (parentTabId == null || tabId == null) return;
+  clearPendingDelegateChild(tabId);
   const list = lastOpenedByOpener.get(parentTabId);
   if (list) {
     const next = list.filter(function (r) { return r && r.tabId !== tabId; });
@@ -5215,6 +5319,73 @@ function findLastOpenableResultIndex(results) {
     if (opMayOpenTab(results[i] && results[i].op)) return i;
   }
   return results.length ? results.length - 1 : -1;
+}
+
+function isNewBrowsingContextTarget(target) {
+  const t = String(target || '').trim().toLowerCase();
+  if (!t) return false;
+  return t !== '_self' && t !== '_parent' && t !== '_top';
+}
+
+function isHttpIntentUrl(url) {
+  const u = String(url || '').trim().toLowerCase();
+  return u.startsWith('http://') || u.startsWith('https://');
+}
+
+function clickResultWantsNewTab(val) {
+  if (!val || typeof val !== 'object') return false;
+  if (val.openedTab && val.openedTab.tabId != null) return false;
+  if (!isHttpIntentUrl(val.intentUrl)) return false;
+  return isNewBrowsingContextTarget(val.target);
+}
+
+function createTabFromClickIntent(intentUrl, openerTabId, config, cancelRef) {
+  return enqueueNewTabOpen(async function () {
+    await waitNewTabOpenGap(config, cancelRef);
+    if (isCancelledNow(cancelRef)) return null;
+    return await new Promise(function (resolve) {
+      try {
+        chrome.tabs.create({
+          url: String(intentUrl).slice(0, 2000),
+          openerTabId: openerTabId
+        }, function (tab) {
+          void chrome.runtime.lastError;
+          if (!tab || tab.id == null) {
+            resolve(null);
+            return;
+          }
+          noteNewTabOpened();
+          resolve(compactOpenedTab(tab));
+        });
+      } catch (e) {
+        resolve(null);
+      }
+    });
+  });
+}
+
+// 父页面板可见时，在新开的子 tab 注入并显示同款面板（与 delegate 子页一致）。
+async function mirrorPanelToOpenedTab(parentTabId, opened, cancelRef) {
+  if (parentTabId == null || !opened || !opened.length) return;
+  if (!visibleTabs.has(parentTabId)) return;
+  const packed = [];
+  for (let i = 0; i < opened.length; i++) {
+    const rec = compactOpenedTab(opened[i]);
+    if (rec) packed.push(rec);
+  }
+  const picked = pickOpenedTab(packed);
+  if (!picked || picked.tabId == null || picked.tabId === parentTabId) return;
+  visibleTabs.add(picked.tabId);
+  try {
+    await waitForPageStable(picked.tabId, 400, cancelRef);
+    await inject(picked.tabId);
+  } catch (e) {
+    return;
+  }
+  try {
+    chrome.tabs.sendMessage(picked.tabId, { cmd: 'showPanel' }, function () { void chrome.runtime.lastError; });
+  } catch (eP) {}
+  notifyChildStandby(picked.tabId);
 }
 
 function attachOpenedToResultList(results, opened, parentTabId) {
@@ -5325,6 +5496,7 @@ function startOpenerWatch(parentTabId) {
     const p = Promise.resolve(windowReady).then(function () {
       // target=_blank 隐含 noopener 时 openerTabId 为空，退到同窗口时间窗候选
       if (!byOpener && (parentWindowId == null || tab.windowId !== parentWindowId)) return null;
+      noteNewTabOpened();
       return enrich(tab, byOpener);
     });
     const tracked = p.then(function (row) {
@@ -5639,6 +5811,9 @@ async function runDelegateOp(parentTabId, spec, origin, priorResults, ctx) {
   if (childJobs.has(childTabId)) {
     return { ok: false, via: 'delegate', reason: 'busy', returned: {}, missing: returnKeys };
   }
+  clearPendingDelegateChild(childTabId);
+  const delegateFromUrl = await parentTabUrl(parentTabId);
+  notifyChildDelegateFrom(childTabId, delegateFromUrl);
   const job = createChildJob({
     parentTabId: parentTabId,
     childTabId: childTabId,
@@ -7452,6 +7627,7 @@ async function runPageOpsBatch(tabId, operations, ctx) {
     if (flushed && flushed.hadOpenable && ctx && ctx.openerWatch) {
       const openedNow = await ctx.openerWatch.waitBrief(80, 400);
       if (attachOpenedToResultList(results, openedNow, tabId)) {
+        await mirrorPanelToOpenedTab(tabId, openedNow, ctx && ctx.cancelRef);
         return {
           resp: {
             ok: true,
@@ -7460,6 +7636,39 @@ async function runPageOpsBatch(tabId, operations, ctx) {
           },
           navigated: navigated
         };
+      }
+      const openIdx = findLastOpenableResultIndex(results);
+      if (openIdx >= 0) {
+        const row = results[openIdx] || {};
+        let val = row.value;
+        if (!val || typeof val !== 'object' || Array.isArray(val)) val = { ok: true };
+        if (clickResultWantsNewTab(val)) {
+          const tabCfg = (ctx && ctx.config) || await getConfigMerged(ctx && ctx.origin);
+          const created = await createTabFromClickIntent(val.intentUrl, tabId, tabCfg, ctx && ctx.cancelRef);
+          if (created && attachOpenedToResultList(results, [created], tabId)) {
+            await mirrorPanelToOpenedTab(tabId, [created], ctx && ctx.cancelRef);
+            return {
+              resp: {
+                ok: true,
+                result: JSON.stringify({ kind: 'batch', results: results }),
+                probe: lastProbe
+              },
+              navigated: navigated
+            };
+          }
+          val.ok = false;
+          val.reason = 'tab-create-failed';
+          row.value = val;
+          results[openIdx] = row;
+          return {
+            resp: {
+              ok: false,
+              result: JSON.stringify({ kind: 'batch', results: results }),
+              probe: lastProbe
+            },
+            navigated: navigated
+          };
+        }
       }
     }
     return null;
@@ -8076,6 +8285,7 @@ const activeTasks = new Map();
 
 function stopActiveTask(tabId, opts) {
   stopChildJobsForParent(tabId);
+  clearPendingDelegateForParent(tabId);
   const asChild = childJobs.get(tabId);
   if (asChild) abortChildJob(asChild, 'cancelled');
   const a = activeTasks.get(tabId);
@@ -8605,7 +8815,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       }
       try {
       const hintTask = (resumeMeta && resumeMeta.originalTask) || task;
-      const execution = await runOperationsSafe(tabId, attachTaskHintToOps(parsed.operations, hintTask), { postMsg, cancelRef, origin, flags: flagsFromPage(config), skillContext: skillContexts.get(tabId) || null, openerWatch: openerWatch });
+      const execution = await runOperationsSafe(tabId, attachTaskHintToOps(parsed.operations, hintTask), { postMsg, cancelRef, origin, config: config, flags: flagsFromPage(config), skillContext: skillContexts.get(tabId) || null, openerWatch: openerWatch });
       const { resp: runResp, navigated } = execution;
       if (cancelRef.cancelled || execution.cancelled) {
         return await notifyCancelled(postMsg, cancelRef, origin, messages);
@@ -8679,7 +8889,12 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       if (openerWatch) {
         const openedLate = await openerWatch.stop();
         openerWatch = null;
-        if (runResp) attachOpenedToResp(runResp, openedLate, tabId);
+        if (runResp) {
+          attachOpenedToResp(runResp, openedLate, tabId);
+          if (openedLate && openedLate.length) {
+            await mirrorPanelToOpenedTab(tabId, openedLate, cancelRef);
+          }
+        }
       }
       if (childJob && childJob.exitChild) {
         postMsg({ type: 'done', summary: '已交回父页' });
@@ -9062,12 +9277,25 @@ chrome.runtime.onConnect.addListener((port) => {
     }
     const active = activeTasks.get(tabId);
     const sessionOrigin = (active && active.origin) || pausedOrigins.get(tabId) || origin;
+    const pendingDelegate = childPendingDelegateInfo(tabId);
     postMsg({
       type: 'ready', tabId, origin: sessionOrigin, pageOrigin: origin,
-      injected, injectError, taskRunning: activeTasks.has(tabId)
+      injected, injectError, taskRunning: activeTasks.has(tabId),
+      pendingDelegate: !!pendingDelegate,
+      delegateFromUrl: pendingDelegate ? pendingDelegate.parentUrl : ''
     });
     if (activeTasks.has(tabId)) {
       postMsg({ type: 'taskState', running: true, text: '页面已跳转，正在继续原任务…' });
+    } else if (pendingDelegate) {
+      postMsg({
+        type: 'taskState',
+        phase: 'standby',
+        delegateFromUrl: pendingDelegate.parentUrl || '',
+        text: '等待父页 delegate 到此页，暂不可发送新任务'
+      });
+      if (pendingDelegate.parentUrl) {
+        postMsg({ type: 'delegateFrom', url: pendingDelegate.parentUrl });
+      }
     }
     const config = await getConfigMerged();
     postMsg({ type: 'config', config: publicConfigPayload(config), pageConfig: await getPageConfig(origin) });
@@ -9709,6 +9937,10 @@ chrome.runtime.onConnect.addListener((port) => {
     } else if (cmd === 'runTask') {
       (async () => {
         deferredTaskMessages.delete(tabId);
+        if (childPendingDelegateInfo(tabId)) {
+          postMsg({ type: 'error', message: '此页等待父页 delegate，暂不可发送新任务' });
+          return;
+        }
         // 串行化：取消并等待该标签页上正在运行的任务，避免并发执行造成重复副作用
         const prev = activeTasks.get(tabId);
         if (prev) {
@@ -9811,6 +10043,7 @@ chrome.runtime.onConnect.addListener((port) => {
           const cur = activeTasks.get(tabId);
           if (cur && cur.cancelRef === cancelRef) {
             activeTasks.delete(tabId);
+            clearPendingDelegateForParent(tabId);
             postToTab(tabId, port, { type: 'taskState', running: false });
           }
         }
@@ -9868,6 +10101,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
       forgetOpenedTab(parentTabId, tabId);
     }
   });
+  clearPendingDelegateChild(tabId);
+  clearPendingDelegateForParent(tabId);
   stopActiveTask(tabId, { closeOffscreen: false });
   activeTasks.delete(tabId);
 });
