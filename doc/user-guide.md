@@ -2,7 +2,7 @@
 
 你在面板里写的是**给大模型看的任务**。模型根据本轮页面快照调用工具；插件（Harness）只做可泛化的操作，并如实回传页面状态。插件不会替你分析「该点哪个按钮」，也不会执行任意脚本。
 
-本文说明：怎样把任务写清楚，以及模型实际能调用的 17 个公开工具（参数、分支、回执）。内部旧名（如 `clickByText`、`setVal`）会映射到这些工具，你不必写它们。
+本文说明：怎样把任务写清楚，以及模型实际能调用的 20 个公开工具（参数、分支、回执）。内部旧名（如 `clickByText`、`setVal`）会映射到这些工具，你不必写它们。
 
 ## 1. 写指令：你负责目标，模型负责点哪里
 
@@ -155,11 +155,20 @@
 
 | 值          | 行为                      | 之后能不能同批再点新出现的项                                          |
 | ---------- | ----------------------- | ------------------------------------------------------- |
-| `left` 或省略 | 左键。可见建议项、级联叶子都可以点。带勾选控件的行左键回执 `selection` 为当前勾选条目 | 左键一般不停批（失败除外）。`type` 停批后请在下一轮再点新出现的选项 |
+| `left` 或省略 | 左键。可见建议项、级联叶子都可以点。带勾选控件的行左键回执 `selection` 为当前勾选条目 | 左键一般不停批（失败除外）。`type` 停批后请在下一轮再点新出现的选项。若开出新标签页则回执带 `openedTab`，**本批停** |
 | `hover`    | 只把指针移上去，**不点击、不代点菜单项**  | **本批停**（`yieldBatch`）。新节点见回执 catalog 或下一轮快照，再单独 `click` |
 | `right`    | 只发上下文菜单，**不先左键、不改当前选中集** | 同上，本批停。回执 `selection` 为当前勾选/高亮的条目名；确认弹窗原文在 `statusMessages` |
-| `dblclick` | 双击                      | 按普通动作回执，不自动停批                                           |
+| `dblclick` | 双击                      | 按普通动作回执；若开出新标签页则同样带 `openedTab` 并停批                                           |
 
+
+点击若打开了新标签页，回执含：
+
+- `openedTab`：`{ tabId, url, title, windowId }`。同一步开出多个时还有 `openedTabs`，`openedTab` 取最后一条确定归属的记录。
+- 记录带 `openerTabId` 字段时为 Service Worker 按 `openerTabId` 确认的归属；不带该字段的记录是点击前后同窗口新开的候选页（`target=_blank` 的链接按浏览器规则不带 opener），归属由你按 url/title 与 `intentUrl` 旁证判断。
+- `yieldBatch: true`：本批已停，把新页事实交给下一轮。
+- `intentUrl` / `target`（例如 `_blank`）：来自链接节点的旁证。
+
+下一轮调用 `delegate` 把任务交给该页，或调用 `tabClose` 关掉它。
 
 **按** `target` **查找（左键短文）**
 
@@ -460,7 +469,56 @@
 | `name` | 字符串 | 与 `url` 至少其一  | 从记忆表该槽取出 URL         |
 
 
-读当前地址：`get` 且 `target` 为 `url`，再 `memorize`，需要时再 `goto`。
+读当前地址：`get` 且 `target` 为 `url`，再 `memorize`，需要时再 `goto`。`goto` 若另外开出新标签页，回执同样带 `openedTab` 并停批。
+
+---
+
+
+
+### `delegate` — 把任务交给新开的标签页
+
+父页模型写下子任务原文；引擎在指定 tab 注入面板并新开一轮 agent。父页这一步会一直等到子页交回。
+
+**参数**
+
+
+| 名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `task` | 字符串 | 是 | 子 agent 的用户指令原文。引擎不改写、不补站点步骤 |
+| `return` | 字符串数组 | 是 | 子页必须用 `returnToParent` 交回的字段名 |
+| `name` | 字符串 | 否 | 子任务短名（面板标题/日志） |
+| `tab` | 数字或 `"opened"` | 否 | 子 `tabId`，必须是本页回执 `openedTab`/`openedTabs` 里的记录；省略或 `"opened"` 表示最近一条 `openedTab` |
+
+
+引擎只检查 `return` 列出的键是否都出现，不核对值对不对。父面板在等待期间显示「等待子标签页：{name}」。父页点停止会同时取消并关掉尚未交回的子页。注入失败时回执 `reason: inject-failed` 且带 `tabLeftOpen: true`，表示该子 tab 仍开着，可再 `delegate` 或 `tabClose`。
+
+---
+
+
+
+### `returnToParent` — 子页交回字段
+
+仅在 `delegate` 的子标签页上调用。参数对象原样交给父页，随后引擎关掉子 tab，并把焦点带回父页。
+
+缺键时仍关子 tab，父页回执带已交对象和 `missing` 列表。子轮 `done` 却未调用本工具时，父页会收到 `returned.summary`（来自 `done.summary`），`missing` 为全部 `return` 字段名。
+
+不要在页面脚本里关标签页。
+
+---
+
+
+
+### `tabClose` — 关掉多余的新标签页
+
+模型看到 `openedTab`、决定不跟过去时调用。引擎不会自行关掉新 tab。
+
+**参数**
+
+
+| 名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `tab` | 数字或 `"opened"` | 否 | 要关的 `tabId`，必须是本页回执 `openedTab`/`openedTabs` 里的记录；省略或 `"opened"` 表示最近一条 `openedTab` |
+
 
 ---
 
@@ -477,7 +535,9 @@
 | `reason`                       | `not-found` / `ambiguous` / `disabled` / `missing-source` 等 |
 | `catalog`                      | 本轮可点条目，行内有 `[idx]`、`name=`、`hidden`、`sec=`                  |
 | `idxRoundOnly`                 | 这些编号只在本轮有效                                                  |
-| `yieldBatch`                   | 悬停或右键后本批已停，后面的调用没有执行                                        |
+| `yieldBatch`                   | 悬停、右键、开出新标签页等情况下本批已停，后面的调用没有执行                  |
+| `openedTab` / `openedTabs`     | 本步开出的新标签页；带 `openerTabId` 的为确定归属，不带的为同窗口候选。多个时 `openedTab` 为最后一条确定归属的记录 |
+| `returned` / `missing`         | `delegate` 交回的字段对象，以及 `return` 列表里尚未出现的键名                 |
 | `text` / `chars` / `truncated` | 读到的正文与是否被切片                                                 |
 | `fieldState`                   | `committed` 为 shown 展示字，`filter` 为可写框，`open`/`optionsTop` 为所属可见弹层；不是「已选中」判定 |
 | `resolved`                     | 实际按 `idx` / `name` / `selector` 的哪一种对上                      |

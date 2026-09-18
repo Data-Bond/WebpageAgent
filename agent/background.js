@@ -247,7 +247,8 @@ const PLAYBOOK_END = '【运行时手册·结束】';
 const RUNTIME_PLAYBOOK =
   PLAYBOOK_BEGIN + '\n' +
   '通过工具操作当前页。禁止编造 CSS，禁止输出可执行 JS，禁止 plan/script。\n' +
-  '工具：get type click check select scroll wait upload ocr ocrFill officeRead officeFill print memorize recall forget goto。\n' +
+  '工具：get type click check select scroll wait upload ocr ocrFill officeRead officeFill print memorize recall forget goto delegate returnToParent tabClose。\n' +
+  'click/goto 若回执 openedTab 则本批停，下一轮 delegate 或 tabClose。\n' +
   'JSON 回退：{"action":"execute","calls":[{"tool":"type","args":{"target":5,"value":"张三"}}]}；ask；done。\n' +
   '定位优先本轮 idx，idx 每轮重排；回执 catalog 编号与上轮快照同批，跨轮作废。用户/技能中的 CSS 只对照本轮快照，勿当 click/get/type 的 target；提交 idx 或 name。\n' +
   'outline 的 role/name 为无障碍名；同串不重复堆字段。click 短文按 name 得 0/1/多：先查本轮 idx（含 hidden），失败回执带本轮 catalog；get 短文仍 live 反查，不是同一张表。\n' +
@@ -3583,7 +3584,7 @@ async function inject(tabId) {
 
 const AGENT_ACTIONS = { execute: 1, ask: 1, done: 1, plan: 1 };
 const JSON_NUDGE_MAX = 2;
-const JSON_ONLY_HINT = '\n【输出】tools 或 JSON：{"action":"execute","calls":[{"tool":"get","args":{"target":"url"}}]} / print / memorize / recall / forget / goto / ask / done。若在回答用户，用 action:done 且 summary 为回答。';
+const JSON_ONLY_HINT = '\n【输出】tools 或 JSON：{"action":"execute","calls":[{"tool":"get","args":{"target":"url"}}]} / print / memorize / recall / forget / goto / delegate / returnToParent / tabClose / ask / done。若在回答用户，用 action:done 且 summary 为回答。';
 const sessionToolsOff = new Set();
 function toolsEndpointKey(baseURL, model) {
   return String(baseURL || '').replace(/\/+$/, '') + '|' + String(model || '');
@@ -3595,7 +3596,8 @@ const HELPER_OPS = {
   waitFor: 1, probe: 1, scroll: 1, ocr: 1, ocrFill: 1, needAttach: 1,
   urlHints: 1, scriptHints: 1, hover: 1, dblclick: 1, openFileMenu: 1, contextClick: 1, watchTraffic: 1,
   officeRead: 1, officeFill: 1,
-  get: 1, type: 1, check: 1, wait: 1, print: 1, memorize: 1, recall: 1, forget: 1, goto: 1
+  get: 1, type: 1, check: 1, wait: 1, print: 1, memorize: 1, recall: 1, forget: 1, goto: 1,
+  delegate: 1, returnToParent: 1, tabClose: 1
 };
 
 function isAgentAction(obj) {
@@ -4598,9 +4600,9 @@ const MUTATING_HELPER_OPS = {
   click: 1, clickByText: 1, setVal: 1, setChecked: 1, select: 1,
   upload: 1, ocrFill: 1, selectOption: 1, clickOptionByText: 1, filterSelect: 1,
   hover: 1, dblclick: 1, openFileMenu: 1, contextClick: 1, officeFill: 1,
-  type: 1, check: 1, goto: 1
+  type: 1, check: 1, goto: 1, delegate: 1, tabClose: 1
 };
-const HELPER_LINE_RE = /^(clickByText|click|setVal|setChecked|select|upload|ocrFill|selectOption|clickOptionByText|filterSelect|inspect|getText|listOptions|findControls|findOption|optionTexts|waitFor|probe|sleep|ocr|urlHints|scriptHints|hover|dblclick|openFileMenu|contextClick|watchTraffic|officeRead|officeFill|get|type|check|wait|print|memorize|recall|remember|forget|goto)\b/i;
+const HELPER_LINE_RE = /^(clickByText|click|setVal|setChecked|select|upload|ocrFill|selectOption|clickOptionByText|filterSelect|inspect|getText|listOptions|findControls|findOption|optionTexts|waitFor|probe|sleep|ocr|urlHints|scriptHints|hover|dblclick|openFileMenu|contextClick|watchTraffic|officeRead|officeFill|get|type|check|wait|print|memorize|recall|remember|forget|goto|delegate|returnToParent|tabClose)\b/i;
 const HELPER_ARG_LINE_RE = /^(within|selector|css|选择器|容器)\s*[：:]/i;
 const MORE_STEPS_RE = /然后|接着|并且|同时|直到|之后|下一步|完成后|再点|再选|再填|再点击|并勾选|并上传|并发布|并填写/;
 
@@ -4865,6 +4867,8 @@ const TASK_MEMORY_NAME_MAX = 40;
 const TASK_MEMORY_VALUE_MAX = WPA_CONTRACTS.GET_TEXT_HARD;
 const taskMemories = new Map();
 const lastReads = new Map();
+const childJobs = new Map();
+const lastOpenedByOpener = new Map();
 const READ_MEMORY_SOURCE_OPS = { get: 1, print: 1, getText: 1, officeRead: 1 };
 
 function memorySessionKey(origin) {
@@ -5092,6 +5096,659 @@ function batchResultsStopped(results) {
   return false;
 }
 
+function childJobSessionKey(childTabId) {
+  return 'childJob:' + childTabId;
+}
+
+function compactOpenedTab(tab) {
+  if (!tab || (tab.tabId == null && tab.id == null)) return null;
+  const tabId = tab.tabId != null ? tab.tabId : tab.id;
+  const n = Number(tabId);
+  if (!Number.isFinite(n)) return null;
+  const rec = {
+    tabId: Math.round(n),
+    url: String(tab.url || '').slice(0, 500),
+    title: String(tab.title || '').slice(0, 120)
+  };
+  if (tab.windowId != null && Number.isFinite(Number(tab.windowId))) rec.windowId = Number(tab.windowId);
+  if (tab.openerTabId != null && Number.isFinite(Number(tab.openerTabId))) rec.openerTabId = Math.round(Number(tab.openerTabId));
+  return rec;
+}
+
+function opMayOpenTab(op) {
+  const raw = String(op || '');
+  if (raw === 'clickByText' || raw === 'dblclick' || raw === 'clickOptionByText') return true;
+  const pub = (typeof WPA_CONTRACTS !== 'undefined' && WPA_CONTRACTS && typeof WPA_CONTRACTS.resolvePublicTool === 'function')
+    ? WPA_CONTRACTS.resolvePublicTool(raw)
+    : raw;
+  return pub === 'click' || pub === 'goto';
+}
+
+// 记录父页开出的全部新 tab（含无 openerTabId 的同窗口候选），供 delegate/tabClose 校验与默认解析
+function rememberOpenedTabs(parentTabId, packed) {
+  if (parentTabId == null || !packed || !packed.length) return;
+  const list = lastOpenedByOpener.get(parentTabId) || [];
+  for (let i = 0; i < packed.length; i++) {
+    const rec = packed[i];
+    if (!rec || rec.tabId == null) continue;
+    const at = list.findIndex(function (r) { return r && r.tabId === rec.tabId; });
+    if (at >= 0) list.splice(at, 1);
+    list.push(rec);
+  }
+  lastOpenedByOpener.set(parentTabId, list);
+  try {
+    const write = chrome.storage.session.set({ ['openedTab:' + parentTabId]: list.slice() });
+    if (write && typeof write.catch === 'function') write.catch(function () {});
+  } catch (e) {}
+}
+
+function forgetOpenedTab(parentTabId, tabId) {
+  if (parentTabId == null || tabId == null) return;
+  const list = lastOpenedByOpener.get(parentTabId);
+  if (list) {
+    const next = list.filter(function (r) { return r && r.tabId !== tabId; });
+    if (next.length) lastOpenedByOpener.set(parentTabId, next);
+    else lastOpenedByOpener.delete(parentTabId);
+  }
+  try {
+    const sk = 'openedTab:' + parentTabId;
+    const write = chrome.storage.session.get(sk).then(function (saved) {
+      const rec = saved && saved[sk];
+      if (!Array.isArray(rec)) return;
+      const next = rec.filter(function (r) { return r && r.tabId !== tabId; });
+      if (next.length === rec.length) return;
+      if (next.length) return chrome.storage.session.set({ [sk]: next });
+      return chrome.storage.session.remove(sk);
+    });
+    if (write && typeof write.catch === 'function') write.catch(function () {});
+  } catch (e) {}
+}
+
+// 有 openerTabId 的记录是确定归属，优先取最后一条确定记录，否则取最后一条同窗口候选
+function pickOpenedTab(packed) {
+  if (!packed || !packed.length) return null;
+  for (let i = packed.length - 1; i >= 0; i--) {
+    if (packed[i] && packed[i].openerTabId != null) return packed[i];
+  }
+  return packed[packed.length - 1];
+}
+
+function collectOpenedFromResults(results, into) {
+  if (!Array.isArray(results)) return;
+  for (let i = 0; i < results.length; i++) {
+    const val = results[i] && results[i].value;
+    if (!val) continue;
+    const one = compactOpenedTab(val.openedTab);
+    if (one) into.set(one.tabId, one);
+    if (Array.isArray(val.openedTabs)) {
+      for (let j = 0; j < val.openedTabs.length; j++) {
+        const rec = compactOpenedTab(val.openedTabs[j]);
+        if (rec) into.set(rec.tabId, rec);
+      }
+    }
+  }
+}
+
+function findOpenedInResults(results) {
+  if (!Array.isArray(results)) return null;
+  for (let i = results.length - 1; i >= 0; i--) {
+    const val = results[i] && results[i].value;
+    if (val && val.openedTab && val.openedTab.tabId != null) return compactOpenedTab(val.openedTab);
+    if (val && Array.isArray(val.openedTabs) && val.openedTabs.length) {
+      return pickOpenedTab(val.openedTabs.map(compactOpenedTab).filter(Boolean));
+    }
+  }
+  return null;
+}
+
+function findLastOpenableResultIndex(results) {
+  if (!Array.isArray(results)) return -1;
+  for (let i = results.length - 1; i >= 0; i--) {
+    if (opMayOpenTab(results[i] && results[i].op)) return i;
+  }
+  return results.length ? results.length - 1 : -1;
+}
+
+function attachOpenedToResultList(results, opened, parentTabId) {
+  const packed = [];
+  const src = Array.isArray(opened) ? opened : [];
+  for (let i = 0; i < src.length; i++) {
+    const rec = compactOpenedTab(src[i]);
+    if (rec) packed.push(rec);
+  }
+  if (!packed.length || !Array.isArray(results) || !results.length) return false;
+  const idx = findLastOpenableResultIndex(results);
+  if (idx < 0) return false;
+  const row = results[idx] || {};
+  let val = row.value;
+  if (!val || typeof val !== 'object' || Array.isArray(val)) val = { ok: true };
+  val.openedTab = pickOpenedTab(packed);
+  if (packed.length > 1) val.openedTabs = packed;
+  val.yieldBatch = true;
+  row.value = val;
+  results[idx] = row;
+  rememberOpenedTabs(parentTabId, packed);
+  return true;
+}
+
+function attachOpenedToResp(resp, opened, parentTabId) {
+  if (!resp || !opened || !opened.length) return resp;
+  try {
+    const v = JSON.parse(String(resp.result == null ? '' : resp.result));
+    if (v && v.kind === 'batch' && Array.isArray(v.results)) {
+      if (attachOpenedToResultList(v.results, opened, parentTabId)) {
+        resp.result = JSON.stringify(v);
+      }
+    }
+  } catch (e) {}
+  return resp;
+}
+
+function startOpenerWatch(parentTabId) {
+  const opened = [];
+  const pending = new Map();
+  let parentWindowId = null;
+  const windowReady = Promise.resolve().then(function () {
+    return chrome.tabs.get(parentTabId);
+  }).then(function (t) {
+    parentWindowId = t && t.windowId != null ? t.windowId : null;
+  }).catch(function () {});
+  function enrich(tab, byOpener) {
+    const tabId = tab && tab.id;
+    const rec = {
+      tabId: tabId,
+      url: (tab && tab.url) || '',
+      title: (tab && tab.title) || '',
+      windowId: tab && tab.windowId
+    };
+    // 有 openerTabId 为确定归属；同窗口时间窗内的记录不带 openerTabId，归属交模型判断
+    if (byOpener) rec.openerTabId = parentTabId;
+    return new Promise(function (resolve) {
+      let finished = false;
+      function done() {
+        if (finished) return;
+        finished = true;
+        resolve(rec);
+      }
+      function isUseful(url) {
+        const u = String(url || '');
+        return !!(u && u !== 'about:blank' && u !== 'chrome://newtab/');
+      }
+      function pull() {
+        chrome.tabs.get(tabId, function (t) {
+          void chrome.runtime.lastError;
+          if (t) {
+            rec.url = t.url || rec.url;
+            rec.title = t.title || rec.title;
+            rec.windowId = t.windowId != null ? t.windowId : rec.windowId;
+          }
+          done();
+        });
+      }
+      if (isUseful(rec.url)) {
+        done();
+        return;
+      }
+      const onUpdated = function (id, info, t) {
+        if (id !== tabId) return;
+        if (info.url) rec.url = info.url;
+        if (info.title) rec.title = info.title;
+        if (t) {
+          rec.url = t.url || rec.url;
+          rec.title = t.title || rec.title;
+          rec.windowId = t.windowId != null ? t.windowId : rec.windowId;
+        }
+        if (isUseful(rec.url)) {
+          try { chrome.tabs.onUpdated.removeListener(onUpdated); } catch (eU) {}
+          done();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(onUpdated);
+      setTimeout(function () {
+        try { chrome.tabs.onUpdated.removeListener(onUpdated); } catch (eR) {}
+        if (finished) return;
+        pull();
+      }, 1500);
+    });
+  }
+  function onCreated(tab) {
+    if (!tab || tab.id == null) return;
+    const byOpener = tab.openerTabId === parentTabId;
+    const p = Promise.resolve(windowReady).then(function () {
+      // target=_blank 隐含 noopener 时 openerTabId 为空，退到同窗口时间窗候选
+      if (!byOpener && (parentWindowId == null || tab.windowId !== parentWindowId)) return null;
+      return enrich(tab, byOpener);
+    });
+    const tracked = p.then(function (row) {
+      pending.delete(tab.id);
+      if (row) opened.push(row);
+      return row;
+    });
+    pending.set(tab.id, tracked);
+  }
+  chrome.tabs.onCreated.addListener(onCreated);
+  return {
+    snapshot: function () { return opened.slice(); },
+    waitBrief: async function (idleMs, maxMs) {
+      const idle = idleMs == null ? 80 : idleMs;
+      const max = maxMs == null ? 400 : maxMs;
+      const t0 = Date.now();
+      let idleAt = Date.now();
+      let last = opened.length;
+      while (Date.now() - t0 < max) {
+        if (pending.size) {
+          await Promise.all(Array.from(pending.values()));
+          idleAt = Date.now();
+        }
+        if (opened.length !== last) {
+          last = opened.length;
+          idleAt = Date.now();
+        }
+        if (!pending.size && Date.now() - idleAt >= idle) break;
+        await new Promise(function (r) { setTimeout(r, 40); });
+      }
+      if (pending.size) await Promise.all(Array.from(pending.values()));
+      return opened.slice();
+    },
+    stop: async function () {
+      try { chrome.tabs.onCreated.removeListener(onCreated); } catch (eS) {}
+      if (pending.size) await Promise.all(Array.from(pending.values()));
+      return opened.slice();
+    }
+  };
+}
+
+function persistChildJob(job) {
+  if (!job) return;
+  const rec = {
+    jobId: job.jobId,
+    parentTabId: job.parentTabId,
+    childTabId: job.childTabId,
+    name: job.name,
+    task: job.task,
+    returnKeys: job.returnKeys,
+    createdAt: job.createdAt
+  };
+  try {
+    const write = chrome.storage.session.set({ [childJobSessionKey(job.childTabId)]: rec });
+    if (write && typeof write.catch === 'function') write.catch(function () {});
+  } catch (e) {}
+}
+
+function createChildJob(info) {
+  const job = {
+    jobId: Date.now() + '-' + info.childTabId,
+    parentTabId: info.parentTabId,
+    childTabId: info.childTabId,
+    name: info.name,
+    task: info.task,
+    returnKeys: Array.isArray(info.returnKeys) ? info.returnKeys.slice() : [],
+    createdAt: Date.now(),
+    settled: false,
+    payload: null,
+    exitChild: false,
+    closing: false
+  };
+  job.wait = new Promise(function (resolve) { job._resolveWait = resolve; });
+  childJobs.set(info.childTabId, job);
+  persistChildJob(job);
+  return job;
+}
+
+function settleJob(job, payload) {
+  if (!job || job.settled) return;
+  job.settled = true;
+  job.payload = payload;
+  if (typeof job._resolveWait === 'function') job._resolveWait(payload);
+}
+
+function packChildRunEnd(job, result) {
+  const missing = (job.returnKeys || []).slice();
+  const returned = {};
+  if (result === 'done' && job.doneSummary) returned.summary = job.doneSummary;
+  let reason = '';
+  let okFlag = true;
+  if (result === 'cancelled') { okFlag = false; reason = 'cancelled'; }
+  else if (result === 'error') { okFlag = false; reason = 'error'; }
+  else if (result === 'maxsteps') { okFlag = false; reason = 'timeout'; }
+  const out = {
+    ok: okFlag,
+    via: 'delegate',
+    name: job.name,
+    childTabId: job.childTabId,
+    url: job.childUrl || '',
+    returned: returned,
+    missing: missing
+  };
+  if (reason) out.reason = reason;
+  return out;
+}
+
+function settleChildJobIfNeeded(tabId, result) {
+  const job = childJobs.get(tabId);
+  if (!job || job.settled) return;
+  if (result === 'ask' || result === 'returned') return;
+  settleJob(job, packChildRunEnd(job, result));
+}
+
+function abortChildJob(job, reason) {
+  if (!job) return;
+  if (job.childCancelRef && typeof job.childCancelRef.abort === 'function') {
+    try { job.childCancelRef.abort(); } catch (e) {}
+  }
+  const live = activeTasks.get(job.childTabId);
+  if (live && live.cancelRef && live.cancelRef !== job.childCancelRef) {
+    if (typeof live.cancelRef.abort === 'function') {
+      try { live.cancelRef.abort(); } catch (e2) {}
+    } else live.cancelRef.cancelled = true;
+  }
+  settleJob(job, {
+    ok: false,
+    via: 'delegate',
+    name: job.name,
+    childTabId: job.childTabId,
+    url: job.childUrl || '',
+    reason: reason || 'cancelled',
+    returned: {},
+    missing: (job.returnKeys || []).slice()
+  });
+}
+
+function stopChildJobsForParent(parentTabId) {
+  const jobs = [];
+  childJobs.forEach(function (job) {
+    if (job.parentTabId === parentTabId) jobs.push(job);
+  });
+  for (let i = 0; i < jobs.length; i++) abortChildJob(jobs[i], 'cancelled');
+  return jobs;
+}
+
+async function closeChildAfterDelegate(job) {
+  if (!job || job.closing) return;
+  job.closing = true;
+  const childTabId = job.childTabId;
+  if (job.childCancelRef && typeof job.childCancelRef.abort === 'function') {
+    try { job.childCancelRef.abort(); } catch (e) {}
+  }
+  const cur = activeTasks.get(childTabId);
+  if (cur && cur.cancelRef === job.childCancelRef) activeTasks.delete(childTabId);
+  visibleTabs.delete(childTabId);
+  panelPorts.delete(childTabId);
+  hydratedPanelTabs.delete(childTabId);
+  deferredTaskMessages.delete(childTabId);
+  bridgeKeys.delete(childTabId);
+  snapState.delete(childTabId);
+  skillContexts.delete(childTabId);
+  pausedOrigins.delete(childTabId);
+  clearPendingCheckpoint(childTabId);
+  childJobs.delete(childTabId);
+  // 子轮的记忆、断点、历史挂在 delegate:<jobId> 一次性键下，随子 tab 一起清掉
+  const childRunOrigin = 'delegate:' + job.jobId;
+  clearTaskMemory(childRunOrigin);
+  clearResumeCheckpoint(childRunOrigin);
+  try {
+    const hrm = chrome.storage.local.remove('hist:' + childRunOrigin);
+    if (hrm && typeof hrm.catch === 'function') hrm.catch(function () {});
+  } catch (eH) {}
+  try {
+    const rm = chrome.storage.session.remove(childJobSessionKey(childTabId));
+    if (rm && typeof rm.catch === 'function') rm.catch(function () {});
+  } catch (eS) {}
+  try { await chrome.tabs.remove(childTabId); } catch (eR) {}
+  try { await chrome.tabs.update(job.parentTabId, { active: true }); } catch (eU) {}
+  forgetOpenedTab(job.parentTabId, childTabId);
+}
+
+// SW 重启后内存中的等待者已经消失，父 tab 不在的子任务永远无法交回，启动时清掉这类孤儿
+async function sweepOrphanChildJobs() {
+  let all;
+  try {
+    all = await chrome.storage.session.get(null);
+  } catch (e) {
+    return;
+  }
+  if (!all || typeof all !== 'object') return;
+  const keys = Object.keys(all);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (key.indexOf('childJob:') !== 0) continue;
+    const rec = all[key];
+    if (!rec || rec.childTabId == null) continue;
+    let parentAlive = false;
+    try {
+      parentAlive = !!(await chrome.tabs.get(rec.parentTabId));
+    } catch (eG) {}
+    if (parentAlive) continue;
+    try { await chrome.tabs.remove(rec.childTabId); } catch (eR) {}
+    try { await chrome.storage.session.remove(key); } catch (eS) {}
+  }
+}
+void sweepOrphanChildJobs();
+
+async function loadChildJob(childTabId) {
+  let job = childJobs.get(childTabId);
+  if (job) return job;
+  try {
+    const sk = childJobSessionKey(childTabId);
+    const saved = await chrome.storage.session.get(sk);
+    const rec = saved && saved[sk];
+    if (rec && rec.childTabId != null) {
+      job = {
+        jobId: rec.jobId,
+        parentTabId: rec.parentTabId,
+        childTabId: rec.childTabId,
+        name: rec.name,
+        task: rec.task,
+        returnKeys: Array.isArray(rec.returnKeys) ? rec.returnKeys.slice() : [],
+        createdAt: rec.createdAt || Date.now(),
+        settled: false,
+        payload: null,
+        exitChild: false,
+        closing: false
+      };
+      job.wait = new Promise(function (resolve) { job._resolveWait = resolve; });
+      job.resurrected = true;
+      childJobs.set(childTabId, job);
+      return job;
+    }
+  } catch (e) {}
+  return null;
+}
+
+// 汇总本页有记录的开出 tab：本批回执、内存、session 存储
+async function collectOpenedTabsFor(parentTabId, priorResults) {
+  const into = new Map();
+  try {
+    const sk = 'openedTab:' + parentTabId;
+    const saved = await chrome.storage.session.get(sk);
+    const rec = saved && saved[sk];
+    const list = Array.isArray(rec) ? rec : (rec && rec.tabId != null ? [rec] : []);
+    for (let i = 0; i < list.length; i++) {
+      const one = compactOpenedTab(list[i]);
+      if (one) into.set(one.tabId, one);
+    }
+  } catch (e) {}
+  const mem = lastOpenedByOpener.get(parentTabId);
+  if (Array.isArray(mem)) {
+    for (let i = 0; i < mem.length; i++) {
+      const one = compactOpenedTab(mem[i]);
+      if (one) into.set(one.tabId, one);
+    }
+  } else if (mem && mem.tabId != null) {
+    into.set(mem.tabId, mem);
+  }
+  collectOpenedFromResults(priorResults, into);
+  return into;
+}
+
+async function resolveDelegateTab(parentTabId, spec, priorResults) {
+  const raw = spec && spec.tab;
+  if (raw != null && raw !== '' && raw !== 'opened') {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return { ok: false, reason: 'invalid-tab' };
+    const tabId = Math.round(n);
+    // 只允许本页有开出记录的 tab，防止误注入、误关用户自己的标签页
+    const recorded = await collectOpenedTabsFor(parentTabId, priorResults);
+    if (!recorded.has(tabId)) return { ok: false, reason: 'tab-not-opened-here' };
+    return { ok: true, tabId: tabId, rec: recorded.get(tabId) };
+  }
+  const fromPrior = findOpenedInResults(priorResults);
+  if (fromPrior) return { ok: true, tabId: fromPrior.tabId, rec: fromPrior };
+  const recorded = await collectOpenedTabsFor(parentTabId, priorResults);
+  if (recorded.size) {
+    const list = Array.from(recorded.values());
+    const chosen = pickOpenedTab(list);
+    if (chosen) return { ok: true, tabId: chosen.tabId, rec: chosen };
+  }
+  return { ok: false, reason: 'no-opened-tab' };
+}
+
+function childDelegatePlaybook(job) {
+  if (!job) return '';
+  const keys = Array.isArray(job.returnKeys) ? job.returnKeys.join(', ') : '';
+  return '\n当前是 delegate 子任务「' + String(job.name || '').slice(0, 40) +
+    '」。凑齐 return 字段后调用 returnToParent。须交回：' + keys + '。';
+}
+
+async function runDelegateOp(parentTabId, spec, origin, priorResults, ctx) {
+  const name = String(spec && spec.name || '').trim() || '子任务';
+  const task = String(spec && spec.task || '').trim();
+  const returnSrc = spec && (Array.isArray(spec.return) ? spec.return : spec.returnKeys);
+  const returnKeys = Array.isArray(returnSrc)
+    ? returnSrc.map(function (k) { return String(k); }).filter(Boolean)
+    : [];
+  if (!task) {
+    return { ok: false, via: 'delegate', reason: 'missing-task', returned: {}, missing: returnKeys };
+  }
+  const resolved = await resolveDelegateTab(parentTabId, spec, priorResults);
+  if (!resolved.ok) {
+    return { ok: false, via: 'delegate', reason: resolved.reason, returned: {}, missing: returnKeys };
+  }
+  const childTabId = resolved.tabId;
+  if (childTabId === parentTabId) {
+    return { ok: false, via: 'delegate', reason: 'same-tab', returned: {}, missing: returnKeys };
+  }
+  if (childJobs.has(childTabId)) {
+    return { ok: false, via: 'delegate', reason: 'busy', returned: {}, missing: returnKeys };
+  }
+  const job = createChildJob({
+    parentTabId: parentTabId,
+    childTabId: childTabId,
+    name: name,
+    task: task,
+    returnKeys: returnKeys
+  });
+  const parentPost = ctx && ctx.postMsg;
+  if (parentPost) {
+    parentPost({ type: 'status', text: '等待子标签页：' + name });
+    parentPost({ type: 'taskState', running: true, text: '等待子标签页：' + name });
+  }
+  const parentCancel = ctx && ctx.cancelRef;
+  try {
+    await waitForPageStable(childTabId, 400, parentCancel);
+    await inject(childTabId);
+  } catch (e) {
+    const payload = {
+      ok: false,
+      via: 'delegate',
+      name: name,
+      childTabId: childTabId,
+      reason: 'inject-failed',
+      error: String(e && e.message || e).slice(0, 160),
+      tabLeftOpen: true,
+      returned: {},
+      missing: returnKeys.slice()
+    };
+    settleJob(job, payload);
+    childJobs.delete(childTabId);
+    try {
+      const rm = chrome.storage.session.remove(childJobSessionKey(childTabId));
+      if (rm && typeof rm.catch === 'function') rm.catch(function () {});
+    } catch (eS) {}
+    return payload;
+  }
+  visibleTabs.add(childTabId);
+  try { chrome.tabs.sendMessage(childTabId, { cmd: 'showPanel' }, function () { void chrome.runtime.lastError; }); } catch (eP) {}
+
+  const childCancel = makeCancelRef();
+  job.childCancelRef = childCancel;
+  function onParentAbort() {
+    abortChildJob(job, 'cancelled');
+  }
+  if (parentCancel && parentCancel.signal) {
+    try { parentCancel.signal.addEventListener('abort', onParentAbort); } catch (eA) {}
+  }
+  if (isCancelledNow(parentCancel)) abortChildJob(job, 'cancelled');
+
+  let childDoneResolve;
+  const childDone = new Promise(function (r) { childDoneResolve = r; });
+  activeTasks.set(childTabId, { cancelRef: childCancel, done: childDone, origin: origin });
+
+  try {
+    try {
+      const t = await chrome.tabs.get(childTabId);
+      job.childUrl = (t && t.url) || '';
+      job.childPageOrigin = deriveOrigin(job.childUrl);
+    } catch (eG) {
+      job.childUrl = '';
+      job.childPageOrigin = origin;
+    }
+    const childPort = panelPorts.get(childTabId) || null;
+    const result = await runStreamingTask({
+      tabId: childTabId,
+      origin: job.childPageOrigin || origin,
+      task: task,
+      files: [],
+      port: childPort,
+      cancelRef: childCancel,
+      childJob: job
+    });
+    if (result === 'ask') {
+      const curAsk = activeTasks.get(childTabId);
+      if (curAsk && curAsk.cancelRef === childCancel) activeTasks.delete(childTabId);
+      if (parentPost) parentPost({ type: 'status', text: '等待子标签页用户回复：' + name });
+      await job.wait;
+    } else if (!job.settled) {
+      settleJob(job, packChildRunEnd(job, result));
+    }
+  } catch (e) {
+    if (!job.settled) {
+      const cancelled = isUserCancelled(e, childCancel) || isUserCancelled(e, parentCancel);
+      settleJob(job, {
+        ok: false,
+        via: 'delegate',
+        name: name,
+        childTabId: childTabId,
+        url: job.childUrl || '',
+        reason: cancelled ? 'cancelled' : 'error',
+        error: cancelled ? undefined : String(e && e.message || e).slice(0, 160),
+        returned: {},
+        missing: returnKeys.slice()
+      });
+    }
+  } finally {
+    if (typeof childDoneResolve === 'function') childDoneResolve();
+    const cur = activeTasks.get(childTabId);
+    if (cur && cur.cancelRef === childCancel) activeTasks.delete(childTabId);
+    if (parentCancel && parentCancel.signal) {
+      try { parentCancel.signal.removeEventListener('abort', onParentAbort); } catch (eR) {}
+    }
+  }
+
+  const payload = job.payload || {
+    ok: false,
+    via: 'delegate',
+    name: name,
+    childTabId: childTabId,
+    reason: 'error',
+    returned: {},
+    missing: returnKeys.slice()
+  };
+  await closeChildAfterDelegate(job);
+  if (parentPost) parentPost({ type: 'taskState', running: true });
+  return payload;
+}
+
 function batchAllSucceeded(resStr) {
   try {
     const v = JSON.parse(String(resStr || ''));
@@ -5151,7 +5808,7 @@ function clearTaskMemory(origin) {
   } catch (e) {}
 }
 
-async function runSessionOp(tabId, opName, args, origin, priorResults) {
+async function runSessionOp(tabId, opName, args, origin, priorResults, ctx) {
   const spec = sessionOpSpec(args);
   const key = String(origin || '');
   if (opName === 'remember') opName = 'memorize';
@@ -5173,6 +5830,55 @@ async function runSessionOp(tabId, opName, args, origin, priorResults) {
       persistTaskMemory(origin);
     }
     return val;
+  }
+  if (opName === 'delegate') {
+    return await runDelegateOp(tabId, spec, origin, priorResults, ctx);
+  }
+  if (opName === 'returnToParent') {
+    const job = await loadChildJob(tabId);
+    if (!job) {
+      return { ok: false, kind: 'query', reason: 'not-child-job' };
+    }
+    const returned = spec && typeof spec === 'object' && !Array.isArray(spec) ? Object.assign({}, spec) : {};
+    const missing = [];
+    const keys = job.returnKeys || [];
+    for (let i = 0; i < keys.length; i++) {
+      if (!Object.prototype.hasOwnProperty.call(returned, keys[i])) missing.push(keys[i]);
+    }
+    job.exitChild = true;
+    settleJob(job, {
+      ok: true,
+      via: 'delegate',
+      name: job.name,
+      childTabId: job.childTabId,
+      url: job.childUrl || '',
+      returned: returned,
+      missing: missing
+    });
+    if (job.resurrected) {
+      // SW 重启后复活的 job 没有等待者，也不会再走 closeChildAfterDelegate，就地关自己
+      await closeChildAfterDelegate(job);
+    }
+    return { ok: true, via: 'returnToParent', returned: returned, missing: missing, yieldBatch: true };
+  }
+  if (opName === 'tabClose') {
+    const resolved = await resolveDelegateTab(tabId, spec, priorResults);
+    if (!resolved.ok) {
+      return { ok: false, via: 'tabClose', reason: resolved.reason };
+    }
+    const closeId = resolved.tabId;
+    if (closeId === tabId) {
+      return { ok: false, via: 'tabClose', reason: 'same-tab' };
+    }
+    const job = childJobs.get(closeId);
+    if (job) abortChildJob(job, 'cancelled');
+    try {
+      await chrome.tabs.remove(closeId);
+      forgetOpenedTab(tabId, closeId);
+      return { ok: true, via: 'tabClose', tabId: closeId };
+    } catch (e) {
+      return { ok: false, via: 'tabClose', reason: String(e && e.message || e).slice(0, 160), tabId: closeId };
+    }
   }
   if (opName !== 'goto') return { ok: false, kind: 'query', reason: 'unsupported' };
   let url = String(spec.url || '').trim();
@@ -5633,6 +6339,21 @@ function compactOneHelperValue(op, val) {
     });
   }
   if (val.yieldBatch) o.yieldBatch = true;
+  if (typeof val.intentUrl === 'string' && val.intentUrl) o.intentUrl = String(val.intentUrl).slice(0, 300);
+  if (typeof val.target === 'string' && /^[_a-zA-Z]/.test(val.target)) o.target = String(val.target).slice(0, 32);
+  if (val.openedTab && typeof val.openedTab === 'object') {
+    const ot = compactOpenedTab(val.openedTab);
+    if (ot) o.openedTab = ot;
+  }
+  if (Array.isArray(val.openedTabs) && val.openedTabs.length) {
+    o.openedTabs = val.openedTabs.map(compactOpenedTab).filter(Boolean);
+  }
+  if (val.returned && typeof val.returned === 'object' && !Array.isArray(val.returned)) o.returned = val.returned;
+  if (Array.isArray(val.missing)) {
+    o.missing = val.missing.slice(0, 24).map(function (k) { return String(k).slice(0, 40); });
+  }
+  if (val.childTabId != null && Number.isFinite(Number(val.childTabId))) o.childTabId = Math.round(Number(val.childTabId));
+  if (val.tabLeftOpen) o.tabLeftOpen = true;
   if (val.via) o.via = String(val.via).slice(0, 40);
   if (val.likelyCaptcha != null) o.likelyCaptcha = !!val.likelyCaptcha;
   if (val.refreshed != null) o.refreshed = !!val.refreshed;
@@ -6687,12 +7408,44 @@ async function runPageOpsBatch(tabId, operations, ctx) {
   }
 
   async function flush() {
-    if (!batch.length) return { ok: true };
+    if (!batch.length) return { ok: true, hadOpenable: false };
     const chunk = batch.slice();
     const world = batchWorld;
+    const hadOpenable = chunk.some(function (it) { return opMayOpenTab(it && it.op); });
     batch = [];
     batchWorld = null;
-    return runChunk(world, chunk);
+    const r = await runChunk(world, chunk);
+    r.hadOpenable = hadOpenable;
+    return r;
+  }
+
+  async function afterFlush(flushed) {
+    if (flushed && flushed.navigated) return { resp: flushed.resp, navigated: true };
+    if (flushed && flushed.stop) {
+      return {
+        resp: {
+          ok: false,
+          error: flushed.resp && flushed.resp.error,
+          result: JSON.stringify({ kind: 'batch', results: results }),
+          probe: lastProbe
+        },
+        navigated: false
+      };
+    }
+    if (flushed && flushed.hadOpenable && ctx && ctx.openerWatch) {
+      const openedNow = await ctx.openerWatch.waitBrief(80, 400);
+      if (attachOpenedToResultList(results, openedNow, tabId)) {
+        return {
+          resp: {
+            ok: true,
+            result: JSON.stringify({ kind: 'batch', results: results }),
+            probe: lastProbe
+          },
+          navigated: navigated
+        };
+      }
+    }
+    return null;
   }
 
   for (let i = 0; i < list.length; i++) {
@@ -6709,23 +7462,20 @@ async function runPageOpsBatch(tabId, operations, ctx) {
     if (op === 'sleep' && batchWorld && batchWorld !== 'upload') world = batchWorld;
     if (batchWorld && world !== batchWorld) {
       const flushed = await flush();
-      if (flushed.navigated) return { resp: flushed.resp, navigated: true };
-      if (flushed.stop) {
-        return {
-          resp: {
-            ok: false,
-            error: flushed.resp && flushed.resp.error,
-            result: JSON.stringify({ kind: 'batch', results: results }),
-            probe: lastProbe
-          },
-          navigated: false
-        };
-      }
+      const early = await afterFlush(flushed);
+      if (early) return early;
     }
     batchWorld = world;
     batch.push(item);
+    if (opMayOpenTab(op) && ctx && ctx.openerWatch) {
+      const flushed = await flush();
+      const early = await afterFlush(flushed);
+      if (early) return early;
+    }
   }
   const last = await flush();
+  const earlyLast = await afterFlush(last);
+  if (earlyLast) return earlyLast;
   if (last.navigated) return { resp: last.resp, navigated: true };
   return {
     resp: {
@@ -6778,7 +7528,8 @@ async function runOperationsSafe(tabId, operations, ctx) {
   function isBackgroundOp(op) {
     const o = String(op || '');
     return o === 'ocr' || o === 'ocrFill' || o === 'remember' || o === 'memorize' ||
-      o === 'recall' || o === 'forget' || o === 'goto';
+      o === 'recall' || o === 'forget' || o === 'goto' ||
+      o === 'delegate' || o === 'returnToParent' || o === 'tabClose';
   }
   if (!list.some((item) => item && isBackgroundOp(item.op))) {
     const pageOnly = await runPageOpsBatch(tabId, list, ctx);
@@ -6867,12 +7618,29 @@ async function runOperationsSafe(tabId, operations, ctx) {
       if (batchResultsStopped(results)) return batchStoppedResult();
       continue;
     }
-    if (opName === 'remember' || opName === 'memorize' || opName === 'recall' || opName === 'forget' || opName === 'goto') {
+    if (opName === 'remember' || opName === 'memorize' || opName === 'recall' || opName === 'forget' ||
+        opName === 'goto' || opName === 'delegate' || opName === 'returnToParent' || opName === 'tabClose') {
       const flushed = await flushPageOps();
       if (flushed !== true) return flushed;
       const sessOp = opName === 'remember' ? 'memorize' : opName;
-      const sessVal = await runSessionOp(tabId, sessOp, item.args, origin, results);
+      const sessVal = await runSessionOp(tabId, sessOp, item.args, origin, results, ctx);
       if (sessVal && sessVal.navigated) navigated = true;
+      if (ctx && ctx.openerWatch && opMayOpenTab(sessOp)) {
+        const openedNow = await ctx.openerWatch.waitBrief(80, 400);
+        if (openedNow && openedNow.length) {
+          const packed = [];
+          for (let oi = 0; oi < openedNow.length; oi++) {
+            const rec = compactOpenedTab(openedNow[oi]);
+            if (rec) packed.push(rec);
+          }
+          if (packed.length) {
+            sessVal.openedTab = pickOpenedTab(packed);
+            if (packed.length > 1) sessVal.openedTabs = packed;
+            sessVal.yieldBatch = true;
+            rememberOpenedTabs(tabId, packed);
+          }
+        }
+      }
       results.push({ op: sessOp, value: sessVal });
       if ((sessVal && sessVal.cancelled) || isUserCancelled(null, cancelRef)) {
         return stoppedResult();
@@ -7283,6 +8051,9 @@ function postToTab(tabId, fallbackPort, obj) {
 const activeTasks = new Map();
 
 function stopActiveTask(tabId, opts) {
+  stopChildJobsForParent(tabId);
+  const asChild = childJobs.get(tabId);
+  if (asChild) abortChildJob(asChild, 'cancelled');
   const a = activeTasks.get(tabId);
   if (a && a.cancelRef) {
     if (typeof a.cancelRef.abort === 'function') a.cancelRef.abort();
@@ -7355,11 +8126,13 @@ async function restorePendingState(tabId) {
 }
 
 // 返回终端状态：'done' | 'ask' | 'error' | 'cancelled' | 'maxsteps'
-async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, continueAsk, keepRunning }) {
+async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, continueAsk, keepRunning, childJob }) {
+  const pageOrigin = origin;
+  if (childJob && childJob.jobId) origin = 'delegate:' + childJob.jobId;
   const postMsg = (obj) => postToTab(tabId, port, obj);
   const apiReporter = makeApiReporter(postMsg);
 
-  const config = await getConfigMerged(origin);
+  const config = await getConfigMerged(pageOrigin);
 
   await hydrateTaskMemory(origin);
 
@@ -7370,9 +8143,9 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
   // 运行时手册强制注入系统消息：剥离历史中的旧版手册，追加当前版本，保证存量用户也生效
   const sysIdx = messages.findIndex((m) => m && m.role === 'system');
   if (sysIdx >= 0) {
-    messages[sysIdx] = { role: 'system', content: withRuntimePlaybook(messages[sysIdx].content) };
+    messages[sysIdx] = { role: 'system', content: withRuntimePlaybook(messages[sysIdx].content) + childDelegatePlaybook(childJob) };
   } else {
-    messages.unshift({ role: 'system', content: RUNTIME_PLAYBOOK });
+    messages.unshift({ role: 'system', content: RUNTIME_PLAYBOOK + childDelegatePlaybook(childJob) });
   }
   let resumeMeta = null;
   const resumeReq = (!continueAsk && parseResumeTask(task)) || null;
@@ -7802,8 +8575,13 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       postMsg({ type: 'step', step: i, summary: parsed.summary || pubNames || ('步骤 ' + i), output: llmText });
 
       // 导航安全执行：结构化操作不依赖 eval/CSP；两种路径均不自动重试，避免重复副作用
+      let openerWatch = null;
+      if ((parsed.operations || []).some(function (o) { return opMayOpenTab(o && o.op); })) {
+        openerWatch = startOpenerWatch(tabId);
+      }
+      try {
       const hintTask = (resumeMeta && resumeMeta.originalTask) || task;
-      const execution = await runOperationsSafe(tabId, attachTaskHintToOps(parsed.operations, hintTask), { postMsg, cancelRef, origin, flags: flagsFromPage(config), skillContext: skillContexts.get(tabId) || null });
+      const execution = await runOperationsSafe(tabId, attachTaskHintToOps(parsed.operations, hintTask), { postMsg, cancelRef, origin, flags: flagsFromPage(config), skillContext: skillContexts.get(tabId) || null, openerWatch: openerWatch });
       const { resp: runResp, navigated } = execution;
       if (cancelRef.cancelled || execution.cancelled) {
         return await notifyCancelled(postMsg, cancelRef, origin, messages);
@@ -7872,6 +8650,17 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
         report.viewChanged = true;
         report.viewAdded = viewDiff.addedTotal || viewDiff.added.length;
         report.anyChange = true;
+      }
+
+      if (openerWatch) {
+        const openedLate = await openerWatch.stop();
+        openerWatch = null;
+        if (runResp) attachOpenedToResp(runResp, openedLate, tabId);
+      }
+      if (childJob && childJob.exitChild) {
+        postMsg({ type: 'done', summary: '已交回父页' });
+        await saveHistory(origin, messages);
+        return 'returned';
       }
 
       let toolText, toolOk, toolStored, outcome, resultRaw = '';
@@ -8005,8 +8794,15 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       }
       if (i >= maxSteps) keepSlotForRetry();
       continue;
+      } finally {
+        if (openerWatch) {
+          try { await openerWatch.stop(); } catch (eW) {}
+          openerWatch = null;
+        }
+      }
     }
     if (action === 'done') {
+      if (childJob) childJob.doneSummary = String(parsed.summary || llmText || '').slice(0, 2000);
       postMsg({ type: 'done', summary: parsed.summary || llmText, output: llmText, running: !!keepRunning });
       await saveHistory(origin, messages);
       clearResumeCheckpoint(origin);
@@ -8895,6 +9691,8 @@ chrome.runtime.onConnect.addListener((port) => {
           stopActiveTask(tabId, { closeOffscreen: false });
           try { await prev.done; } catch (e) {}
         }
+        const liveJob = childJobs.get(tabId);
+        const childContinue = !!(liveJob && !liveJob.settled);
         const cancelRef = makeCancelRef();
         let doneResolve;
         const done = new Promise((r) => { doneResolve = r; });
@@ -8911,7 +9709,7 @@ chrome.runtime.onConnect.addListener((port) => {
           const currentTask = activeTasks.get(tabId);
           if (currentTask && currentTask.cancelRef === cancelRef) currentTask.origin = taskOrigin;
           const incomingSkillCtx = WPA_WEB_SKILL.sanitizeSkillContext(msg.skillContext);
-          const continuing = instructions.length === 1 && (hasPending || wasPaused);
+          const continuing = instructions.length === 1 && (hasPending || wasPaused || childContinue);
           if (incomingSkillCtx) skillContexts.set(tabId, incomingSkillCtx);
           else if (!continuing) skillContexts.delete(tabId);
           const files = await hydrateTaskFiles(taskOrigin, msg.files || []);
@@ -8921,12 +9719,14 @@ chrome.runtime.onConnect.addListener((port) => {
             return;
           }
 
-          if (instructions.length === 1 && (hasPending || wasPaused)) {
+          if (instructions.length === 1 && (hasPending || wasPaused || childContinue)) {
             // 用户在回复 ask 后继续（主输入框或剩余拆条）：不 demote 原任务。
             clearPendingCheckpoint(tabId);
             const replyResult = await runStreamingTask({
-              tabId, origin: taskOrigin, task: msg.task, files, port, cancelRef, continueAsk: true
+              tabId, origin: taskOrigin, task: msg.task, files, port, cancelRef, continueAsk: true,
+              childJob: liveJob || undefined
             });
+            settleChildJobIfNeeded(tabId, replyResult);
             if (replyResult === 'ask') {
               pausedOrigins.set(tabId, taskOrigin);
               persistPendingState(tabId);
@@ -8954,7 +9754,11 @@ chrome.runtime.onConnect.addListener((port) => {
             } else if (cancelRef.cancelled) {
               await notifyCancelled(postMsg, cancelRef, origin, null);
             } else if (instructions.length === 1) {
-              const singleResult = await runStreamingTask({ tabId, origin: taskOrigin, task: instructions[0], files, port, cancelRef });
+              const singleResult = await runStreamingTask({
+                tabId, origin: taskOrigin, task: instructions[0], files, port, cancelRef,
+                childJob: liveJob || undefined
+              });
+              settleChildJobIfNeeded(tabId, singleResult);
               if (singleResult === 'ask') {
                 pausedOrigins.set(tabId, taskOrigin);
                 persistPendingState(tabId);
@@ -9017,6 +9821,12 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 
 // 标签页关闭时清理状态，避免内存泄漏
 chrome.tabs.onRemoved.addListener((tabId) => {
+  const parentJobs = stopChildJobsForParent(tabId);
+  for (let i = 0; i < parentJobs.length; i++) {
+    void closeChildAfterDelegate(parentJobs[i]);
+  }
+  const asChild = childJobs.get(tabId);
+  if (asChild && !asChild.settled) abortChildJob(asChild, 'cancelled');
   visibleTabs.delete(tabId);
   panelPorts.delete(tabId);
   hydratedPanelTabs.delete(tabId);
@@ -9027,6 +9837,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   const draftRun = skillDraftRuns.get(tabId);
   if (draftRun && typeof draftRun.abort === 'function') draftRun.abort();
   skillDraftRuns.delete(tabId);
+  // 被关掉的 tab 可能还挂在某个父页的开出记录里，逐条清掉
+  lastOpenedByOpener.forEach(function (list, parentTabId) {
+    const arr = Array.isArray(list) ? list : (list && list.tabId != null ? [list] : []);
+    if (arr.some(function (r) { return r && r.tabId === tabId; })) {
+      forgetOpenedTab(parentTabId, tabId);
+    }
+  });
   stopActiveTask(tabId, { closeOffscreen: false });
   activeTasks.delete(tabId);
 });

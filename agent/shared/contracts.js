@@ -88,12 +88,16 @@
     memorize: { kind: 'read', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 5000 },
     recall: { kind: 'read', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 5000 },
     forget: { kind: 'read', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 5000 },
-    goto: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 20000 }
+    goto: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 20000 },
+    delegate: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 600000 },
+    returnToParent: { kind: 'read', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 5000 },
+    tabClose: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 5000 }
   };
 
   var PUBLIC_TOOLS = [
     'get', 'type', 'click', 'check', 'select', 'scroll', 'wait', 'upload',
-    'ocr', 'ocrFill', 'officeRead', 'officeFill', 'print', 'memorize', 'recall', 'forget', 'goto'
+    'ocr', 'ocrFill', 'officeRead', 'officeFill', 'print', 'memorize', 'recall', 'forget', 'goto',
+    'delegate', 'returnToParent', 'tabClose'
   ];
   var TOOL_ALIASES = {
     remember: 'memorize',

@@ -40,7 +40,10 @@
     { type: 'function', function: { name: 'memorize', description: '写入记忆表一条。无 value 时取本批已成功 get/print，否则上一拍 lastRead。{} 不是 value。快照 panes 不算。每轮快照只给记忆目录，取全文用 recall。', parameters: { type: 'object', properties: { name: { type: 'string' }, value: { type: 'string' } }, required: ['name'] } } },
     { type: 'function', function: { name: 'recall', description: '按名取出记忆表全文或切片。limit/offset 与 get 相同。历史里已有同 same 且未 truncated 时模型可不调；引擎总会返回。', parameters: { type: 'object', properties: { name: { type: 'string' }, limit: { type: 'integer', description: '正文字数上限' }, offset: { type: 'integer', description: '从第 N 字起，0 起算' } }, required: ['name'] } } },
     { type: 'function', function: { name: 'forget', description: '删除记忆表中的一条或全部。不删聊天、不改技能变量。', parameters: { type: 'object', properties: { name: { type: 'string' }, all: { type: 'boolean' } } } } },
-    { type: 'function', function: { name: 'goto', description: '打开 http(s) 地址，或用记忆表里的 name。须由模型调用，memorize 后不会自动跳转。', parameters: { type: 'object', properties: { url: { type: 'string' }, name: { type: 'string' } } } } }
+    { type: 'function', function: { name: 'goto', description: '打开 http(s) 地址，或用记忆表里的 name。须由模型调用，memorize 后不会自动跳转。', parameters: { type: 'object', properties: { url: { type: 'string' }, name: { type: 'string' } } } } },
+    { type: 'function', function: { name: 'delegate', description: '在 click/goto 回执的 openedTab 上新开一轮子 agent。task 为子指令原文，引擎不改写。return 为子页须用 returnToParent 交回的字段名。', parameters: { type: 'object', properties: { tab: { description: '子 tabId，须为回执 openedTab/openedTabs 之一；省略或 opened 表示最近一条 openedTab' }, name: { type: 'string', description: '子任务短名' }, task: { type: 'string', description: '子 agent 的用户指令原文' }, return: { type: 'array', items: { type: 'string' }, description: '须交回的字段名' } }, required: ['task', 'return'] } } },
+    { type: 'function', function: { name: 'returnToParent', description: '子任务把字段交回父页。仅在 delegate 的子 tab 上调用。引擎关掉子 tab，把对象原样交给父页。', parameters: { type: 'object', properties: {}, additionalProperties: true } } },
+    { type: 'function', function: { name: 'tabClose', description: '关掉本轮 openedTab 或指定 tabId。模型看到新标签页、决定不跟过去时用。', parameters: { type: 'object', properties: { tab: { description: 'tabId，须为回执 openedTab/openedTabs 之一；省略或 opened 表示最近一条 openedTab' } } } } }
   ];
 
   function toOpenAiTools() {
@@ -95,6 +98,16 @@
     if (name === 'recall') return [{ name: obj.name, limit: obj.limit, offset: obj.offset }];
     if (name === 'forget') return [{ name: obj.name, all: obj.all }];
     if (name === 'goto') return [{ url: obj.url, name: obj.name }];
+    if (name === 'delegate') {
+      return [{
+        tab: obj.tab,
+        name: obj.name,
+        task: obj.task,
+        return: obj.return != null ? obj.return : obj.returnKeys
+      }];
+    }
+    if (name === 'returnToParent') return [obj];
+    if (name === 'tabClose') return [{ tab: obj.tab }];
     return [target];
   }
 

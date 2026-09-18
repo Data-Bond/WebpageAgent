@@ -181,11 +181,12 @@ describe('WPA contracts kernel', () => {
     assert.equal(emptyPack.trail[0].p, 'settings');
   });
 
-  it('公开工具 17 个，旧 helper 可映射', () => {
-    assert.equal(C.PUBLIC_TOOLS.length, 17);
+  it('公开工具 20 个，旧 helper 可映射', () => {
+    assert.equal(C.PUBLIC_TOOLS.length, 20);
     assert.deepEqual(C.PUBLIC_TOOLS, [
       'get', 'type', 'click', 'check', 'select', 'scroll', 'wait', 'upload',
-      'ocr', 'ocrFill', 'officeRead', 'officeFill', 'print', 'memorize', 'recall', 'forget', 'goto'
+      'ocr', 'ocrFill', 'officeRead', 'officeFill', 'print', 'memorize', 'recall', 'forget', 'goto',
+      'delegate', 'returnToParent', 'tabClose'
     ]);
     assert.equal(C.resolvePublicTool('setVal'), 'type');
     assert.equal(C.resolvePublicTool('selectOption'), 'select');
@@ -202,9 +203,9 @@ describe('WPA contracts kernel', () => {
 });
 
 describe('toolProtocol hybrid', () => {
-  it('OpenAI tools 为 17 个 function', () => {
+  it('OpenAI tools 为 20 个 function', () => {
     const tools = P.toOpenAiTools();
-    assert.equal(tools.length, 17);
+    assert.equal(tools.length, 20);
     assert.deepEqual(tools.map((t) => t.function.name), C.PUBLIC_TOOLS);
   });
 
@@ -264,6 +265,37 @@ describe('toolProtocol hybrid', () => {
     assert.equal(filled.calls[0].args[0], 9);
     assert.equal(filled.calls[0].args[1], 18);
     assert.equal(filled.calls[0].args[2], undefined);
+  });
+
+  it('delegate / returnToParent / tabClose 参数进 execute', () => {
+    const tools = P.toOpenAiTools();
+    assert.ok(tools.find((t) => t.function.name === 'delegate'));
+    assert.ok(tools.find((t) => t.function.name === 'returnToParent'));
+    assert.ok(tools.find((t) => t.function.name === 'tabClose'));
+    const del = P.parseAssistantMessage({
+      tool_calls: [
+        { function: { name: 'delegate', arguments: '{"tab":"opened","name":"填表","task":"在新页填写并交回","return":["orderId"]}' } }
+      ]
+    });
+    assert.equal(del.calls[0].op, 'delegate');
+    assert.equal(del.calls[0].args[0].tab, 'opened');
+    assert.equal(del.calls[0].args[0].name, '填表');
+    assert.equal(del.calls[0].args[0].task, '在新页填写并交回');
+    assert.deepEqual(del.calls[0].args[0].return, ['orderId']);
+    const ret = P.parseAssistantMessage({
+      tool_calls: [
+        { function: { name: 'returnToParent', arguments: '{"orderId":"A-1","ok":true}' } }
+      ]
+    });
+    assert.equal(ret.calls[0].op, 'returnToParent');
+    assert.equal(ret.calls[0].args[0].orderId, 'A-1');
+    const close = P.parseAssistantMessage({
+      tool_calls: [
+        { function: { name: 'tabClose', arguments: '{"tab":"opened"}' } }
+      ]
+    });
+    assert.equal(close.calls[0].op, 'tabClose');
+    assert.equal(close.calls[0].args[0].tab, 'opened');
   });
 
   it('get.limit 是字数、print.limit 是目录条数', () => {

@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '6.0.0';
+  var BRIDGE_VERSION = '6.1.0';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
   var SNAPSHOT_L0_CAP_FULL = 1500;
@@ -4718,6 +4718,34 @@
       else { fireMouse('click', target); }
     }
 
+    function clickNavHint(el) {
+      var hint = {};
+      if (!el) return hint;
+      try {
+        var a = el;
+        if (String(a.tagName || '').toUpperCase() !== 'A') {
+          a = el.closest ? el.closest('a') : null;
+        }
+        if (a && String(a.tagName || '').toUpperCase() === 'A') {
+          var href = '';
+          try { href = String(a.href || ''); } catch (eH) { href = ''; }
+          if (href) hint.intentUrl = href.slice(0, 500);
+          var tgt = '';
+          try { tgt = String(a.getAttribute('target') || a.target || ''); } catch (eT) { tgt = ''; }
+          if (tgt) hint.target = tgt;
+        }
+      } catch (e) {}
+      return hint;
+    }
+
+    function applyClickNavHint(ret, el) {
+      if (!ret || typeof ret !== 'object') return ret;
+      var h = clickNavHint(el);
+      if (h.intentUrl) ret.intentUrl = h.intentUrl;
+      if (h.target) ret.target = h.target;
+      return ret;
+    }
+
     function dispatchDblclick(el) {
       if (!el) return;
       dispatchClick(el);
@@ -7975,6 +8003,7 @@
               if (lifted.options) clickRet.options = lifted.options;
             }
             applyFilePickerState(clickRet, el, pickerBefore);
+            applyClickNavHint(clickRet, target);
             return withResolved(clickRet, looked);
           },
           select: async function (sel, valOrLabel, opts) {
@@ -8184,6 +8213,7 @@
               if (nameLift.options) nameClickRet.options = nameLift.options;
             }
             applyFilePickerState(nameClickRet, el, namePickerBefore);
+            applyClickNavHint(nameClickRet, el);
             return withResolved(nameClickRet, { resolved: 'name', idx: hitIdx || undefined });
           },
           // 按容器查看可见后代短文本（去包装）。文案不在 L0 或用户给了容器时用。
@@ -8742,7 +8772,7 @@
             try { if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
             await waitElementStable(el);
             dispatchDblclick(el);
-            return {
+            var dblRet = {
               ok: true,
               kind: 'action',
               via: 'dblclick',
@@ -8750,6 +8780,8 @@
               catalog: nearbyPointerCatalog(el),
               idxRoundOnly: true
             };
+            applyClickNavHint(dblRet, el);
+            return dblRet;
           },
           hover: async function (target) {
             var self = this;

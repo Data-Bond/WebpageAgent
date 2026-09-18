@@ -19,6 +19,7 @@ bin-release/
 
 # Local planning notes, not tracked
 PLAN.md
+AGENTS.md
 
 # Installer outputs next to the scripts
 WebpageAgent-*/

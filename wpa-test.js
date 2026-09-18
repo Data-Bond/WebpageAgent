@@ -338,6 +338,9 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
     '手册：type 列表变化停批，下一轮再点');
   ok(/带勾选控件的行时回执 selection/.test(pbSrc),
     '手册：勾选行 click/check 回执带 selection');
+  ok(/delegate returnToParent tabClose/.test(pbSrc), '手册列出委托工具');
+  ok(/openedTab 则本批停/.test(pbSrc) && /下一轮 delegate 或 tabClose/.test(pbSrc),
+    '手册：开出新 tab 后本批停');
   ok(!/预览、ESC/.test(pbSrc) && !/button=hover 只悬停，button=right 只右键；菜单项、预览/.test(pbSrc),
     '手册不写预览/ESC 任务例子');
   ok(!/abstractContent/.test(pbSrc) && !/审批按钮/.test(pbSrc), '手册不写审核字段名');
@@ -346,6 +349,77 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
 }
 ok(/function stripFossilPrompt/.test(bg) && /withRuntimePlaybook/.test(bg),
   '存量系统提示会剥离 plan/script/page.q 化石段落后再拼短手册');
+ok(/function startOpenerWatch/.test(bg) && /openerTabId/.test(bg), '按 openerTabId 观测新 tab');
+ok(/parentWindowId/.test(extractFn(bg, 'startOpenerWatch')) && /windowReady/.test(extractFn(bg, 'startOpenerWatch')),
+  '无 openerTabId 时按同窗口候选记录新 tab');
+ok(/tab-not-opened-here/.test(extractFn(bg, 'resolveDelegateTab')),
+  'delegate/tabClose 只允许本页有开出记录的 tab');
+ok(/tabLeftOpen/.test(extractFn(bg, 'runDelegateOp')), 'inject 失败回执声明子 tab 仍开着');
+ok(/function sweepOrphanChildJobs/.test(bg) && /sweepOrphanChildJobs\(\)/.test(bg),
+  'SW 启动时清理父 tab 已消失的子任务');
+ok(/resurrected/.test(extractFn(bg, 'loadChildJob')) && /job\.resurrected/.test(extractFn(bg, 'runSessionOp')),
+  '复活的 job 交回后就地关子 tab');
+ok(/forgetOpenedTab/.test(extractFn(bg, 'closeChildAfterDelegate')), '关子 tab 后清掉父页开出记录');
+ok(/function pickOpenedTab/.test(bg), 'openedTab 优先取确定归属的记录');
+ok(/'childJob:' \+ /.test(bg) || /"childJob:" \+ /.test(bg) || /childJob:/.test(bg), 'session 键 childJob:');
+ok(/function runDelegateOp/.test(bg) && /function closeChildAfterDelegate/.test(bg), 'delegate 结束后关子 tab');
+ok(!/window\.close\s*\(/.test(extractFn(bg, 'runSessionOp')), 'returnToParent 不调用 window.close');
+ok(/chrome\.tabs\.remove/.test(extractFn(bg, 'closeChildAfterDelegate')), '关子 tab 走 chrome.tabs.remove');
+ok(!/"side_panel"/.test(manifestSrc) && !/default_popup/.test(manifestSrc), '无 side_panel / default_popup');
+ok(!/activeOrigins/.test(bg) && !/activeOrigins/.test(bridge) && !/activeOrigins/.test(panelSrc), '无按 origin 自动 start');
+ok(/function applyClickNavHint/.test(bridge) && /intentUrl/.test(extractFn(bridge, 'applyClickNavHint')),
+  'click 回执可附 intentUrl');
+ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
+{
+  const a0 = bg.indexOf('function compactOpenedTab');
+  const a1 = bg.indexOf('function startOpenerWatch');
+  const box = {
+    lastOpenedByOpener: new Map(),
+    chrome: { storage: { session: {
+      set: function () { return Promise.resolve(); },
+      get: function () { return Promise.resolve({}); },
+      remove: function () { return Promise.resolve(); }
+    } } },
+    WPA_CONTRACTS: {
+      resolvePublicTool: function (n) {
+        if (n === 'clickByText' || n === 'dblclick' || n === 'clickOptionByText') return 'click';
+        return n;
+      }
+    }
+  };
+  try {
+    vm.runInNewContext(
+      bg.slice(a0, a1) +
+        '\nthis.attachOpenedToResultList = attachOpenedToResultList;\nthis.compactOpenedTab = compactOpenedTab;' +
+        '\nthis.pickOpenedTab = pickOpenedTab;\nthis.rememberOpenedTabs = rememberOpenedTabs;\nthis.forgetOpenedTab = forgetOpenedTab;',
+      box
+    );
+    ok(typeof box.attachOpenedToResultList === 'function', 'attachOpenedToResultList 可在测试中加载');
+  } catch (e) {
+    ok(false, '加载 attachOpenedToResultList 失败: ' + (e && e.message));
+  }
+  const results = [{ op: 'click', value: { ok: true } }, { op: 'get', value: { ok: true, text: 'x' } }];
+  const attached = box.attachOpenedToResultList(results, [
+    { tabId: 9, url: 'https://a.example/p', title: 'A', windowId: 1 }
+  ], 3);
+  ok(attached && results[0].value.openedTab.tabId === 9 && results[0].value.yieldBatch === true,
+    'openedTab 挂到最后一次 click 并 yieldBatch');
+  ok(results[1].value.yieldBatch !== true, '后一步 get 不改成 openedTab');
+  const picked = box.pickOpenedTab([
+    { tabId: 11, url: 'https://b.example/', title: 'B' },
+    { tabId: 12, url: 'https://c.example/', title: 'C', openerTabId: 3 }
+  ]);
+  ok(picked && picked.tabId === 12, '有 openerTabId 的确定记录优先于同窗口候选');
+  const pickedFallback = box.pickOpenedTab([{ tabId: 13, url: 'https://d.example/', title: 'D' }]);
+  ok(pickedFallback && pickedFallback.tabId === 13, '只有候选时取最后一条候选');
+  box.rememberOpenedTabs(3, [{ tabId: 14, url: 'https://e.example/', title: 'E' }]);
+  box.rememberOpenedTabs(3, [{ tabId: 15, url: 'https://f.example/', title: 'F' }]);
+  ok((box.lastOpenedByOpener.get(3) || []).length === 3, '同一父页的开出记录逐条累积');
+  box.forgetOpenedTab(3, 14);
+  const remain = box.lastOpenedByOpener.get(3) || [];
+  ok(remain.length === 2 && !remain.some(function (r) { return r.tabId === 14; }),
+    'forgetOpenedTab 只清指定 tab 的记录');
+}
 {
   const fossilBox = {};
   const fossilStart = bg.indexOf('const PLAYBOOK_BEGIN');
@@ -2012,7 +2086,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '6.0.0', '锁步版本为 6.0.0');
+ok(manifestVer === '6.1.0', '锁步版本为 6.1.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -4332,6 +4406,10 @@ ok(/详细的使用手册见/.test(readmeSrc) && /doc\/user-guide\.md/.test(read
   const guideSrc = fs.readFileSync(path.join(__dirname, 'doc/user-guide.md'), 'utf8');
   ok(/### `get`/.test(guideSrc) && /### `goto`/.test(guideSrc) && /### `click`/.test(guideSrc),
     '使用说明列出公开工具 get/click/goto');
+  ok(/### `delegate`/.test(guideSrc) && /### `returnToParent`/.test(guideSrc) && /### `tabClose`/.test(guideSrc),
+    '使用说明列出 delegate/returnToParent/tabClose');
+  ok(/openedTab/.test(guideSrc) && /openerTabId/.test(guideSrc),
+    '使用说明写明 click 回执 openedTab');
   ok(/button/.test(guideSrc) && /hover/.test(guideSrc) && /yieldBatch/.test(guideSrc),
     '使用说明写明 click.button 与悬停后停批');
   ok(!/clickByText\("预览"/.test(guideSrc) && !/预览、ESC/.test(guideSrc),
