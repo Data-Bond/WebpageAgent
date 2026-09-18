@@ -158,6 +158,20 @@ function extractFn(src, name) {
   }
   return '';
 }
+function extractAsyncMethod(src, name) {
+  const start = src.indexOf(name + ': async function');
+  if (start < 0) return '';
+  const brace = src.indexOf('{', start);
+  let depth = 0;
+  for (let i = brace; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') {
+      depth--;
+      if (depth === 0) return src.slice(start, i + 1);
+    }
+  }
+  return '';
+}
 const llmHelpers = [
   extractFn(panelSrc, 'llmCallBadgeText'),
   extractFn(panelSrc, 'llmCallBadgeClass'),
@@ -341,6 +355,8 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
   ok(/delegate returnToParent tabClose/.test(pbSrc), '手册列出委托工具');
   ok(/openedTab 则本批停/.test(pbSrc) && /下一轮 delegate 或 tabClose/.test(pbSrc),
     '手册：开出新 tab 后本批停');
+  ok(/until=enabled 等可用/.test(pbSrc) && /只给 timeout 则等这么久/.test(pbSrc),
+    '手册：wait 等可用或按毫秒等待');
   ok(!/预览、ESC/.test(pbSrc) && !/button=hover 只悬停，button=right 只右键；菜单项、预览/.test(pbSrc),
     '手册不写预览/ESC 任务例子');
   ok(!/abstractContent/.test(pbSrc) && !/审批按钮/.test(pbSrc), '手册不写审核字段名');
@@ -2086,7 +2102,7 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '6.1.0', '锁步版本为 6.1.0');
+ok(manifestVer === '6.2.0', '锁步版本为 6.2.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -2519,8 +2535,8 @@ ok(/function clearWpaIdxAttrs\(/.test(bridge)
 ok(/isNumericIdx\(rawSel\) != null/.test(extractFn(bridge, 'captureImage'))
   && /resolveTarget\(rawSel\)/.test(extractFn(bridge, 'captureImage')),
   'captureImage 接受本轮快照 idx（resolveTarget + data-wpa-i 回退）');
-ok(/op === 'sleep' && batchWorld/.test(extractFn(bg, 'runPageOpsBatch')),
-  'sleep 沿用当前批次 world，不拆 watchTraffic 的 MAIN chunk');
+ok(/op === 'sleep' \|\| waitDuration/.test(extractFn(bg, 'runPageOpsBatch')),
+  'sleep 与无 target 的 wait 沿用当前批次 world，不拆 watchTraffic 的 MAIN chunk');
 ok(/worldDefault: 'main'/.test(String(srcs['shared/contracts.js'].match(/scriptHints: \{[^}]*\}/) || '')),
   'scriptHints 默认页面 world（vueMethods 依赖页面 expando）');
 ok(/worldDefault: 'main'/.test(String(srcs['shared/contracts.js'].match(/listOptions: \{[^}]*\}/) || '')),
@@ -2552,6 +2568,10 @@ ok(/function runScript\(/.test(bridge) && /runScript 已禁用/.test(bridge), 'p
 ok(!/new Function\(/.test(bridge), 'pagebridge 无 new Function 求值面');
 ok(/resolveTarget\(sel\)/.test(bridge), 'createPageApi.q 走 resolveTarget');
 ok(/lastSampleAt/.test(bridge) && /want - elapsed/.test(bridge), 'sleep 按距上次 snapshot/probe 缩短等待');
+ok(/WAIT_TIMEOUT_MAX_MS = 8000/.test(bridge), 'wait 超时上限 8000ms');
+ok(/until !== 'enabled' && until !== 'gone'/.test(bridge), 'wait 支持 until=enabled/gone');
+ok(/op !== 'wait' && op !== 'waitFor' && op !== 'sleep'/.test(bridge), 'wait 不自动贴 fieldState');
+ok(/!hasTarget/.test(bridge) && /await sleepMs\(timeout\)/.test(bridge), '无 target 的 wait 按 timeout 等待');
 
 ok(/uploadInIsolatedWorld/.test(contentSrc), 'upload 在隔离 world 写 input.files');
 ok(/item\.op !== 'upload'/.test(contentSrc), '非 upload 不由 content 转发 MAIN 事件');
@@ -3502,6 +3522,21 @@ if (runCompactBox.compactRunResult) {
   const truncOut = runCompactBox.compactRunResult(truncPacked);
   ok(truncOut.indexOf('"truncated":true') >= 0 && truncOut.indexOf('fieldState') >= 0,
     '选项被截断时回执中性保留 truncated');
+  const waitPacked = JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'wait',
+      value: {
+        ok: true, kind: 'query', via: 'wait', until: 'enabled', found: true,
+        disabled: true, busy: true, elapsedMs: 0, timeout: 8000, extra: 'drop-wait'
+      }
+    }]
+  });
+  const waitOut = runCompactBox.compactRunResult(waitPacked);
+  ok(waitOut.indexOf('"until":"enabled"') >= 0 && waitOut.indexOf('"disabled":true') >= 0 &&
+    waitOut.indexOf('"busy":true') >= 0 && waitOut.indexOf('"elapsedMs":0') >= 0 &&
+    waitOut.indexOf('drop-wait') < 0,
+    'wait 回执压缩保留 until/disabled/busy/elapsedMs');
   const ocrPacked = JSON.stringify({
     kind: 'batch',
     results: [{
@@ -4429,6 +4464,43 @@ ok(/详细的使用手册见/.test(readmeSrc) && /doc\/user-guide\.md/.test(read
 }
 ok(/max-width:100%/.test(readmeSrc), 'README 截图随页面宽度缩放');
 
+async function runWaitBehaviorTests() {
+  const waitBody = extractAsyncMethod(bridge, 'wait');
+  ok(!!waitBody && waitBody.indexOf('snapshotWait') >= 0, '可抽出 page.wait');
+  if (!waitBody) return;
+  const src = [
+    'var WAIT_TIMEOUT_MAX_MS = 8000;',
+    'var scriptAborted = false;',
+    'function sleepMs(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }',
+    'function isDisabledTree(el){ return !!(el && el.disabled); }',
+    'function describeTarget(t){ return t == null ? "" : String(t); }',
+    'var liveEl = { disabled: true, getAttribute: function(){ return null; }, closest: function(){ return null; } };',
+    'function resolveTarget(sel){ return sel === 10 ? liveEl : null; }',
+    'var api = { ' + waitBody + ' };',
+    'this.api = api;'
+  ].join('\n');
+  const box = { setTimeout: setTimeout, Date: Date };
+  try {
+    vm.runInNewContext(src, box);
+  } catch (e) {
+    ok(false, 'page.wait 可在 vm 中执行: ' + (e && e.message));
+    return;
+  }
+  const dur = await box.api.wait(null, { timeout: 80 });
+  ok(dur.ok === true && dur.found === false && dur.slept >= 70 && dur.elapsedMs >= 70,
+    '行为：无 target 的 wait 按 timeout 等待');
+  const tPresent = Date.now();
+  const instant = await box.api.wait(10, { timeout: 8000 });
+  ok(instant.ok === true && instant.found === true && instant.disabled === true && (Date.now() - tPresent) < 80,
+    '行为：已出现的禁用 idx 立刻返回并带 disabled');
+  const en = await box.api.wait(10, { until: 'enabled', timeout: 120 });
+  ok(en.ok === false && en.timedOut === true && en.found === true && en.disabled === true && en.until === 'enabled',
+    '行为：until=enabled 在仍禁用时超时并交回观察');
+  const gone = await box.api.wait(99, { until: 'gone', timeout: 8000 });
+  ok(gone.ok === true && gone.found === false && gone.elapsedMs < 80 && gone.until === 'gone',
+    '行为：until=gone 在节点不存在时立刻返回');
+}
+
 function runCancelPrimitiveTests() {
   return new Promise(function (resolve, reject) {
     const start = bg.indexOf('function cancelledError');
@@ -4531,7 +4603,7 @@ function runCancelPrimitiveTests() {
   });
 }
 
-runCancelPrimitiveTests().then(function () {
+runWaitBehaviorTests().then(runCancelPrimitiveTests).then(function () {
   if (failures) {
     console.error('\n' + failures + ' 项断言失败');
     process.exit(1);

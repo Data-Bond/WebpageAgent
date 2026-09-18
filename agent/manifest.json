@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "网页智能体助手",
-    "version": "6.1.0",
+    "version": "6.2.0",
   "description": "网页智能体（Webpage Agent）：通过大模型自动操作当前网页，理解页面、填写表单、点击、上传已附加文件等。",
   "minimum_chrome_version": "109",
   "permissions": ["activeTab", "scripting", "storage", "tabs", "offscreen", "downloads", "unlimitedStorage", "alarms"],

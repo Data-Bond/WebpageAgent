@@ -200,6 +200,43 @@ describe('WPA contracts kernel', () => {
     assert.equal(C.resolvePublicTool('memorize'), 'memorize');
     assert.equal(C.resolvePublicTool('recall'), 'recall');
   });
+
+  it('wait 无 target 为按毫秒等待，until 进 args', () => {
+    assert.equal(C.getOp('wait').timeoutMs, 8000);
+    assert.equal(C.getOp('sleep').timeoutMs, 8000);
+    assert.equal(C.getOp('waitFor').timeoutMs, 8000);
+    const tools = P.toOpenAiTools();
+    const wait = tools.find((t) => t.function.name === 'wait');
+    assert.ok(wait);
+    assert.equal(wait.function.parameters.required, undefined);
+    assert.deepEqual(wait.function.parameters.properties.until.enum, ['present', 'enabled', 'gone']);
+    const dur = P.parseAssistantMessage({
+      tool_calls: [
+        { function: { name: 'wait', arguments: '{"timeout":3000}' } }
+      ]
+    });
+    assert.equal(dur.calls[0].op, 'wait');
+    assert.equal(dur.calls[0].args[0], null);
+    assert.equal(dur.calls[0].args[1].timeout, 3000);
+    const en = P.parseAssistantMessage({
+      tool_calls: [
+        { function: { name: 'wait', arguments: '{"target":10,"until":"enabled","timeout":8000}' } }
+      ]
+    });
+    assert.equal(en.calls[0].args[0], 10);
+    assert.equal(en.calls[0].args[1].until, 'enabled');
+    assert.equal(en.calls[0].args[1].timeout, 8000);
+    const sl = C.validateOperations([{ op: 'sleep', args: [3000] }]);
+    assert.equal(sl.ok, true);
+    assert.equal(sl.operations[0].op, 'wait');
+    assert.deepEqual(sl.operations[0].args, [null, { timeout: 3000 }]);
+    const fromSleepTool = P.parseAssistantMessage(
+      '{"action":"execute","calls":[{"tool":"sleep","args":{"timeout":2000}}]}'
+    );
+    assert.equal(fromSleepTool.calls[0].op, 'wait');
+    assert.equal(fromSleepTool.calls[0].args[0], null);
+    assert.equal(fromSleepTool.calls[0].args[1].timeout, 2000);
+  });
 });
 
 describe('toolProtocol hybrid', () => {

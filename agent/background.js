@@ -263,6 +263,7 @@ const RUNTIME_PLAYBOOK =
   'ocr/ocrFill 只读当前像素，不点图；换图先 click。submit 仅当传入才点。\n' +
   'click button=right 只开菜单，不改选中。click / check 点带勾选控件的行时回执 selection 为当前勾选/高亮条目；确认框看 statusMessages 再点。\n' +
   'click 下拉 trigger 会切换列表。committed 为 shown 展示字，filter 为可写框，open/optionsTop 为当前所属可见弹层。\n' +
+  'wait：等句柄出现、until=enabled 等可用、until=gone 等消失；只给 timeout 则等这么久（上限 8000ms）。超时是观察。已出现的 idx 立刻返回。\n' +
   '技能变量 {{name}} 须原样输出，由引擎替换本地值。\n' +
   PLAYBOOK_END;
 
@@ -3633,6 +3634,13 @@ function operationsFromLoose(obj) {
   if (name === 'probe' || name === 'sleep') {
     return [{ op: name, args: obj.value != null ? [obj.value] : [] }];
   }
+  if (name === 'wait' && (obj.timeout != null || obj.until)) {
+    const w = {};
+    if (obj.timeout != null) w.timeout = obj.timeout;
+    if (obj.until) w.until = obj.until;
+    const tgt = obj.target != null ? obj.target : (obj.idx != null ? obj.idx : obj.selector);
+    return [{ op: 'wait', args: (tgt == null || tgt === '') ? [null, w] : [tgt, w] }];
+  }
   return null;
 }
 
@@ -6304,6 +6312,15 @@ function compactOneHelperValue(op, val) {
   if (val.navigated) o.navigated = true;
   if (val.timedOut) o.timedOut = true;
   if (val.found === false) o.found = false;
+  if (op === 'wait' || op === 'waitFor') {
+    if (val.until) o.until = String(val.until).slice(0, 16);
+    if (val.found != null) o.found = !!val.found;
+    if (val.disabled != null) o.disabled = !!val.disabled;
+    if (val.busy != null) o.busy = !!val.busy;
+    if (val.elapsedMs != null && Number.isFinite(Number(val.elapsedMs))) o.elapsedMs = Math.max(0, Math.round(Number(val.elapsedMs)));
+    if (val.timeout != null && Number.isFinite(Number(val.timeout))) o.timeout = Math.max(0, Math.round(Number(val.timeout)));
+    if (val.slept != null && Number.isFinite(Number(val.slept))) o.slept = Math.max(0, Math.round(Number(val.slept)));
+  }
   if (val.inputMissing) o.inputPresent = false;
   if (val.inputPresent === false) o.inputPresent = false;
   else if (val.inputPresent === true) o.inputPresent = true;
@@ -7457,9 +7474,16 @@ async function runPageOpsBatch(tabId, operations, ctx) {
       const w = WPA_CONTRACTS.resolveWorld(op, flags);
       world = w === 'isolated' ? 'ISOLATED' : 'MAIN';
     }
-    // sleep 两个 world 皆可：沿用当前批次，避免把 watchTraffic start→click→sleep→stop
+    // sleep 与无 target 的 wait 两个 world 皆可：沿用当前批次，避免把 watchTraffic start→click→sleep→stop
     // 拆成多个 chunk（MAIN chunk 结束会 autoStop 拆掉流量钩子，stop 就收不到请求了）。
-    if (op === 'sleep' && batchWorld && batchWorld !== 'upload') world = batchWorld;
+    let waitDuration = false;
+    if (op === 'wait') {
+      var wa = Array.isArray(item.args) ? item.args[0] : null;
+      waitDuration = wa == null || wa === '' ||
+        !!(wa && typeof wa === 'object' && !Array.isArray(wa) &&
+          wa.idx == null && wa.selector == null && wa.text == null && wa.target == null);
+    }
+    if ((op === 'sleep' || waitDuration) && batchWorld && batchWorld !== 'upload') world = batchWorld;
     if (batchWorld && world !== batchWorld) {
       const flushed = await flush();
       const early = await afterFlush(flushed);
@@ -7721,7 +7745,7 @@ function findWaitTimeout(raw) {
       for (let i = 0; i < v.results.length; i++) {
         const item = v.results[i];
         const val = item && item.value;
-        if (item && item.op === 'waitFor' && val && val.timedOut) {
+        if (item && (item.op === 'waitFor' || item.op === 'wait') && val && val.timedOut) {
           return { selector: String(val.selector || '').slice(0, 120), timeout: val.timeout || 0 };
         }
       }

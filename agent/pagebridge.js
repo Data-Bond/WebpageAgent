@@ -4,8 +4,9 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '6.1.0';
+  var BRIDGE_VERSION = '6.2.0';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
+  var WAIT_TIMEOUT_MAX_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
   var SNAPSHOT_L0_CAP_FULL = 1500;
   var SNAPSHOT_PANE_MAX = 6;
@@ -8695,7 +8696,7 @@
             var poll = o.poll || 200;
             var timeout = Number(o.timeout);
             if (!(timeout > 0)) timeout = 5000;
-            if (timeout > 8000) timeout = 8000;
+            if (timeout > WAIT_TIMEOUT_MAX_MS) timeout = WAIT_TIMEOUT_MAX_MS;
             var deadline = Date.now() + timeout;
             var sel = (typeof test === 'string') ? String(test) : '';
             function check() {
@@ -8977,13 +8978,92 @@
             return await page.setChecked(target, want);
           },
           wait: async function (sel, opts) {
-            var r = await page.waitFor(sel, opts);
-            if (r && typeof r === 'object') {
-              r.reason = r.reason || (r.timedOut ? 'timeout' : '');
-              r.continueBatch = true;
-              return r;
+            var t0 = Date.now();
+            if (sel && typeof sel === 'object' && !Array.isArray(sel) &&
+                sel.idx == null && sel.selector == null && sel.text == null && sel.target == null &&
+                (sel.timeout != null || sel.until != null || sel.ms != null)) {
+              opts = sel;
+              sel = null;
             }
-            return { ok: true, kind: 'query', via: 'wait', found: !!r };
+            opts = opts && typeof opts === 'object' && !Array.isArray(opts) ? opts : {};
+            var timeout = Number(opts.timeout != null ? opts.timeout : opts.ms);
+            if (!(timeout > 0)) timeout = 5000;
+            if (timeout > WAIT_TIMEOUT_MAX_MS) timeout = WAIT_TIMEOUT_MAX_MS;
+            var until = String(opts.until || '').toLowerCase();
+            if (until !== 'enabled' && until !== 'gone') until = 'present';
+            var hasTarget = sel != null && sel !== '';
+            var poll = Number(opts.poll);
+            if (!(poll > 0)) poll = 200;
+
+            function snapshotWait(el, extra) {
+              extra = extra || {};
+              var disabled = false;
+              var busy = false;
+              if (el) {
+                try { disabled = !!isDisabledTree(el); } catch (eD) { disabled = false; }
+                try {
+                  busy = !!(el.getAttribute && el.getAttribute('aria-busy') === 'true');
+                  if (!busy && el.closest) busy = !!el.closest('[aria-busy="true"]');
+                } catch (eB) { busy = false; }
+              }
+              var out = {
+                ok: extra.timedOut ? false : true,
+                kind: 'query',
+                via: 'wait',
+                until: hasTarget ? until : '',
+                found: !!el,
+                disabled: disabled,
+                busy: busy,
+                elapsedMs: Date.now() - t0,
+                timeout: timeout,
+                continueBatch: true
+              };
+              if (extra.timedOut) {
+                out.timedOut = true;
+                out.reason = 'timeout';
+                out.selector = describeTarget(sel).slice(0, 200);
+              }
+              if (!hasTarget) {
+                out.slept = out.elapsedMs;
+                out.found = false;
+              }
+              return out;
+            }
+
+            function currentEl() {
+              if (!hasTarget) return null;
+              try { return resolveTarget(sel) || null; } catch (e) { return null; }
+            }
+
+            function reached(el) {
+              if (!hasTarget) return false;
+              if (until === 'gone') return !el;
+              if (!el) return false;
+              if (until === 'enabled') {
+                try { return !isDisabledTree(el); } catch (eEn) { return false; }
+              }
+              return true;
+            }
+
+            if (!hasTarget) {
+              await sleepMs(timeout);
+              return snapshotWait(null);
+            }
+
+            var el = currentEl();
+            if (reached(el)) return snapshotWait(el);
+
+            var deadline = t0 + timeout;
+            while (Date.now() < deadline) {
+              if (scriptAborted) throw new Error('已停止');
+              var remain = deadline - Date.now();
+              if (remain <= 0) break;
+              await sleepMs(remain < poll ? remain : poll);
+              el = currentEl();
+              if (reached(el)) return snapshotWait(el);
+            }
+            el = currentEl();
+            return snapshotWait(el, { timedOut: true });
           },
           print: function (query, opts) {
             opts = opts && typeof opts === 'object' ? opts : {};
@@ -9051,7 +9131,9 @@
           }
           var args = Array.isArray(item.args) ? item.args : [];
           var value = await page[op].apply(page, args);
-          if (value && typeof value === 'object' && !value.fieldState && op !== 'print' && !pageMetaTarget(args[0])) {
+          if (value && typeof value === 'object' && !value.fieldState &&
+              op !== 'print' && op !== 'wait' && op !== 'waitFor' && op !== 'sleep' &&
+              !pageMetaTarget(args[0])) {
             try {
               var fsEl = page.q(args[0]);
               if (fsEl && !fileRowOf(fsEl)) value.fieldState = collectFieldState(fsEl, { harvest: true });

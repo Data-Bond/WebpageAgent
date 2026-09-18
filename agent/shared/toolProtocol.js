@@ -30,7 +30,7 @@
     { type: 'function', function: { name: 'check', description: '幂等勾选或取消复选/单选。带勾选控件的行回执带当前 selection。', parameters: { type: 'object', properties: { target: TARGET, value: { type: 'boolean' } }, required: ['target'] } } },
     { type: 'function', function: { name: 'select', description: '打开本控件并在当前选项里唯一匹配。不唯一则返回 options，不瞎点。', parameters: { type: 'object', properties: { target: TARGET, value: { type: 'string' }, filter: { type: 'string' } }, required: ['target', 'value'] } } },
     { type: 'function', function: { name: 'scroll', description: '滚动字段祖先或整页。', parameters: { type: 'object', properties: { target: TARGET, direction: { type: 'string' } }, required: ['target'] } } },
-    { type: 'function', function: { name: 'wait', description: '等待 idx/选择器出现，超时是观察不是崩溃。', parameters: { type: 'object', properties: { target: TARGET, timeout: { type: 'integer' } }, required: ['target'] } } },
+    { type: 'function', function: { name: 'wait', description: '等句柄出现、变为可用、消失，或只给 timeout 等一段时间。超时是观察不是崩溃。已出现的 idx 立刻返回并带 disabled/busy/elapsedMs；等加载结束用 until=enabled。timeout 上限 8000ms。', parameters: { type: 'object', properties: { target: TARGET, timeout: { type: 'integer', description: '毫秒，上限 8000。无 target 时为等待时长。' }, until: { type: 'string', enum: ['present', 'enabled', 'gone'], description: '有 target 时：出现（默认）、变为可用、消失。' } } } } },
     { type: 'function', function: { name: 'upload', description: '把已附加文件上传到文件控件，禁止弹出系统文件框。', parameters: { type: 'object', properties: { target: TARGET, key: { description: '附件 key 或 key 数组' } }, required: ['target', 'key'] } } },
     { type: 'function', function: { name: 'ocr', description: '识别页面图片或 canvas 当前像素。不点击、不换图。禁止用来读在线表格。', parameters: { type: 'object', properties: { target: TARGET }, required: ['target'] } } },
     { type: 'function', function: { name: 'ocrFill', description: '识别图片当前像素并写入输入框。不点图换新。submit 仅当传入才点。', parameters: { type: 'object', properties: { image: TARGET, input: TARGET, submit: TARGET }, required: ['image', 'input'] } } },
@@ -77,7 +77,15 @@
     if (name === 'wait') {
       var w = {};
       if (obj.timeout != null) w.timeout = obj.timeout;
+      if (obj.until != null && String(obj.until) !== '') w.until = obj.until;
+      if (target == null || target === '') {
+        return Object.keys(w).length ? [null, w] : [];
+      }
       return Object.keys(w).length ? [target, w] : [target];
+    }
+    if (name === 'sleep') {
+      var ms = obj.timeout != null ? obj.timeout : (obj.ms != null ? obj.ms : obj.value);
+      return [null, { timeout: ms }];
     }
     if (name === 'upload') return [target, obj.key];
     if (name === 'ocr') return [target];
@@ -114,14 +122,17 @@
   function callFromNameArgs(name, rawArgs) {
     var op = String(name || '');
     if (op === 'remember') op = 'memorize';
+    var args = Array.isArray(rawArgs) ? rawArgs.slice() : [];
+    if (!Array.isArray(rawArgs) && rawArgs && typeof rawArgs === 'object') {
+      args = argsFromObject(op, rawArgs);
+    } else if (op === 'sleep' && Array.isArray(rawArgs)) {
+      args = [null, { timeout: rawArgs[0] }];
+    }
+    if (op === 'sleep') op = 'wait';
     if (C && typeof C.resolvePublicTool === 'function') {
       if (C.PUBLIC_TOOLS && C.PUBLIC_TOOLS.indexOf(op) < 0 && C.TOOL_ALIASES && C.TOOL_ALIASES[op]) {
         /* keep internal alias op for execution */
       }
-    }
-    var args = Array.isArray(rawArgs) ? rawArgs : [];
-    if (!Array.isArray(rawArgs) && rawArgs && typeof rawArgs === 'object') {
-      args = argsFromObject(op, rawArgs);
     }
     return { op: op, args: args };
   }
