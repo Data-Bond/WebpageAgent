@@ -487,6 +487,8 @@
       pdfTextMaxChars: clampInt($('pdfTextMaxChars').value, 10000, 500000, 150000),
       ocrCacheMaxChars: clampInt($('ocrCacheMaxChars').value, 50000, 2000000, 500000),
       attachContextMaxChars: clampInt($('attachContextMaxChars').value, 10000, 800000, 300000),
+      contextTokenSoft: clampInt($('contextTokenSoft').value, 64000, 750000, 500000),
+      contextTokenHard: clampInt($('contextTokenHard').value, 64000, 800000, 700000),
       busyMaskEnabled: !!$('busyMaskEnabled').checked,
       snapshotPiiMask: !!$('snapshotPiiMask').checked,
       archiveRedactHint: String($('archiveRedactHint').value || '').slice(0, 2000),
@@ -533,6 +535,13 @@
     if ($('pdfTextMaxChars')) $('pdfTextMaxChars').value = String(clampInt(cfg.pdfTextMaxChars, 10000, 500000, 150000));
     if ($('ocrCacheMaxChars')) $('ocrCacheMaxChars').value = String(clampInt(cfg.ocrCacheMaxChars, 50000, 2000000, 500000));
     if ($('attachContextMaxChars')) $('attachContextMaxChars').value = String(clampInt(cfg.attachContextMaxChars, 10000, 800000, 300000));
+    if ($('contextTokenSoft')) $('contextTokenSoft').value = String(clampInt(cfg.contextTokenSoft, 64000, 750000, 500000));
+    if ($('contextTokenHard')) {
+      let hard = clampInt(cfg.contextTokenHard, 64000, 800000, 700000);
+      const soft = clampInt(cfg.contextTokenSoft, 64000, 750000, 500000);
+      if (hard < soft) hard = soft;
+      $('contextTokenHard').value = String(hard);
+    }
     $('busyMaskEnabled').checked = cfg.busyMaskEnabled === true;
     $('snapshotPiiMask').checked = cfg.snapshotPiiMask === true;
     const hintEl = $('archiveRedactHint');

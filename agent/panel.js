@@ -2558,14 +2558,20 @@
     return o;
   }
 
+  let usageMillionWarned = false;
+
   function llmCallStatusLine(state) {
     const bits = [state.label || '模型'];
     if (state.model) bits.push(state.model);
     if (state.fileName) bits.push(state.fileName);
-    if (state.chars != null && state.outputChars != null) {
-      bits.push('发' + state.chars + '字·收' + state.outputChars + '字');
-    } else if (state.outputChars != null) {
-      bits.push('收' + state.outputChars + '字');
+    const outChars = state.outputChars != null ? state.outputChars : 0;
+    const compTok = state.usage && state.usage.completion != null ? Number(state.usage.completion) : 0;
+    if (state.chars != null && outChars > 0) {
+      bits.push('发' + state.chars + '字·收' + outChars + '字');
+    } else if (compTok > 0 && outChars === 0) {
+      bits.push('收 tool_call · 出' + compTok + ' token');
+    } else if (outChars > 0) {
+      bits.push('收' + outChars + '字');
     } else if (state.chars != null) {
       bits.push('上下文 ' + state.chars + ' 字');
     }
@@ -2659,6 +2665,10 @@
       state.outputChars = state.output.length;
     }
     if (ui) ui.state = state;
+    if (state.usageTotal && state.usageTotal.total >= 1000000 && !usageMillionWarned) {
+      usageMillionWarned = true;
+      addBubble('status', '本任务累计 token 已达 ' + state.usageTotal.total + '（≥100 万），请注意步数与重复操作');
+    }
     const badgeCls = llmCallBadgeClass(state);
     ui.badge.className = 'llm-call-badge ' + badgeCls;
     ui.badge.textContent = llmCallBadgeText(state);
@@ -3115,7 +3125,10 @@
   }
 
   function setRunning(v) {
-    if (v) setStandby(false);
+    if (v) {
+      setStandby(false);
+      usageMillionWarned = false;
+    }
     running = v;
     if (!v) {
       stopping = false;

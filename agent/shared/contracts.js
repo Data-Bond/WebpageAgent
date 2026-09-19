@@ -29,10 +29,10 @@
   var GET_TEXT_DEDUP_HEAD = 80;
   var ATTACHMENT_CONTEXT_MAX_CHARS = 300000;
   var ATTACHMENT_CONTEXT_MAX_CHARS_CAP = 800000;
-  var CONTEXT_TOKEN_SOFT = 750000;
-  var CONTEXT_TOKEN_HARD = 800000;
+  var CONTEXT_TOKEN_SOFT = 500000;
+  var CONTEXT_TOKEN_HARD = 700000;
   var CONTEXT_PACK_STAGES = [
-    'history-result', 'dup-history', 'pane', 'attach',
+    'dup-result', 'history-result', 'dup-history', 'pane', 'attach',
     'outline-rest', 'memory', 'outline-field', 'last'
   ];
 
@@ -357,8 +357,23 @@
 
   function applyFoldToTextField(obj, seen) {
     if (!obj || typeof obj.text !== 'string') return false;
-    var r = foldLongText(obj.text, seen, { chars: obj.chars, same: obj.same, name: obj.name });
-    if (r.first) return false;
+    var bag = seen || makeTextDedupSeen();
+    var sameKey = obj.same ? String(obj.same) : '';
+    if (sameKey && bag.hashes[sameKey]) {
+      var tDup = obj.text;
+      delete obj.text;
+      obj.same = sameKey;
+      if (obj.chars == null) obj.chars = tDup.length;
+      var ptr = textDedupPointer(tDup, sameKey, { chars: obj.chars, name: obj.name });
+      obj.head = ptr.head;
+      obj.tail = ptr.tail;
+      return true;
+    }
+    var r = foldLongText(obj.text, bag, { chars: obj.chars, same: obj.same, name: obj.name });
+    if (r.first) {
+      if (sameKey) bag.hashes[sameKey] = true;
+      return false;
+    }
     delete obj.text;
     obj.same = r.same;
     if (obj.chars == null) obj.chars = r.chars;
@@ -376,26 +391,129 @@
     for (i = 0; i < list.length; i++) {
       var r = list[i];
       if (!r || typeof r !== 'object') continue;
-      if (r.op === 'get' && applyFoldToTextField(r, seen)) changed = true;
+      var row = r.value != null && typeof r.value === 'object' ? Object.assign({ op: r.op }, r.value) : r;
+      if ((r.op === 'get' || row.op === 'get') && applyFoldToTextField(row, seen)) {
+        if (r.value != null && typeof r.value === 'object') r.value = row;
+        else list[i] = row;
+        changed = true;
+      }
     }
     return changed;
   }
 
-  function foldDuplicateBodiesInText(content, seen) {
-    var s = String(content || '');
-    if (!s) return s;
-    var mark = '【执行结果】\n';
-    var ei = s.indexOf(mark);
-    if (ei < 0) return s;
-    var prefix = s.slice(0, ei + mark.length);
-    var jsonPart = s.slice(ei + mark.length);
-    try {
-      var v = JSON.parse(jsonPart);
-      if (!foldBatchResults(v, seen)) return s;
-      return prefix + JSON.stringify(v);
-    } catch (e) {
-      return s;
+  function batchResultRowFingerprint(row) {
+    if (!row || typeof row !== 'object') return '';
+    var v = row.value != null && typeof row.value === 'object' ? row.value : row;
+    var op = row.op != null ? String(row.op) : (v.op != null ? String(v.op) : '');
+    var ok = v.ok === false ? '0' : '1';
+    var same = v.same != null ? String(v.same) : '';
+    var reason = v.reason != null ? String(v.reason) : '';
+    return op + '|' + ok + '|' + same + '|' + reason;
+  }
+
+  function batchResultFingerprint(batch) {
+    if (!batch || typeof batch !== 'object') return '';
+    var list = Array.isArray(batch.results) ? batch.results : [batch];
+    var parts = [];
+    var i;
+    for (i = 0; i < list.length; i++) {
+      var fp = batchResultRowFingerprint(list[i]);
+      if (fp) parts.push(fp);
     }
+    return parts.join(';');
+  }
+
+  function batchOpsLabel(batch) {
+    if (!batch || typeof batch !== 'object') return '';
+    var list = Array.isArray(batch.results) ? batch.results : [];
+    var ops = [];
+    var i;
+    for (i = 0; i < list.length; i++) {
+      if (list[i] && list[i].op) ops.push(String(list[i].op));
+    }
+    return ops.join(',');
+  }
+
+  function isNavBreakUserContent(content) {
+    var s = String(content || '');
+    if (s.indexOf('页面已跳转') >= 0) return true;
+    if (s.indexOf('url已变化') >= 0) return true;
+    if (s.indexOf('【页面信号】') >= 0 && s.indexOf('url已变化') >= 0) return true;
+    if (s.indexOf('yieldBatch') >= 0 && s.indexOf('openedTab') >= 0) return true;
+    return false;
+  }
+
+  function dupResultFoldLine(firstRound, fp, ops) {
+    var h = hashTextBody(fp).slice(0, 16);
+    return '【执行结果】（与第' + firstRound + '轮相同 sameBatch=' + h + ' ops=' + ops + '）';
+  }
+
+  function foldDuplicateResultRoundsInMessages(messages) {
+    var list = messages || [];
+    var firstRound = Object.create(null);
+    var roundNo = 0;
+    var changed = false;
+    var i;
+    for (i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (!m || m.role !== 'user') continue;
+      var c = String(m.content || '');
+      if (isNavBreakUserContent(c)) {
+        firstRound = Object.create(null);
+        continue;
+      }
+      if (c.indexOf('【执行结果】') < 0) continue;
+      if (c.indexOf('sameBatch=') >= 0) continue;
+      var parsed = parseResultJson(c);
+      if (!parsed || !parsed.obj) continue;
+      var fp = batchResultFingerprint(parsed.obj);
+      if (!fp) continue;
+      roundNo++;
+      if (firstRound[fp] != null) {
+        list[i] = Object.assign({}, m, {
+          content: dupResultFoldLine(firstRound[fp], fp, batchOpsLabel(parsed.obj))
+        });
+        changed = true;
+      } else {
+        firstRound[fp] = roundNo;
+      }
+    }
+    return changed;
+  }
+
+  function packStageDupResultRound(messages) {
+    var list = messages || [];
+    var firstRound = Object.create(null);
+    var roundNo = 0;
+    var i;
+    for (i = 0; i < list.length; i++) {
+      if (list[i].role !== 'user') continue;
+      var c = String(list[i].content || '');
+      if (isNavBreakUserContent(c)) {
+        firstRound = Object.create(null);
+        continue;
+      }
+      if (c.indexOf('【执行结果】') < 0) continue;
+      if (c.indexOf('sameBatch=') >= 0) continue;
+      var parsed = parseResultJson(c);
+      if (!parsed || !parsed.obj) continue;
+      var fp = batchResultFingerprint(parsed.obj);
+      if (!fp) continue;
+      roundNo++;
+      if (firstRound[fp] != null) {
+        list[i].content = dupResultFoldLine(firstRound[fp], fp, batchOpsLabel(parsed.obj));
+        return true;
+      }
+      firstRound[fp] = roundNo;
+    }
+    return false;
+  }
+
+  function foldDuplicateBodiesInText(content, seen) {
+    var parsed = parseResultJson(content);
+    if (!parsed) return String(content || '');
+    if (!foldBatchResults(parsed.obj, seen)) return String(content || '');
+    return writeResultPayload(parsed);
   }
 
   function isCjkCode(c) {
@@ -579,18 +697,34 @@
     return body;
   }
 
+  function parseJsonWithSuffix(rest) {
+    var t = String(rest || '');
+    if (!t) return null;
+    try {
+      return { obj: JSON.parse(t), suffix: '' };
+    } catch (e0) {}
+    var cut = t.indexOf('\n【');
+    if (cut < 0) return null;
+    try {
+      return { obj: JSON.parse(t.slice(0, cut)), suffix: t.slice(cut) };
+    } catch (e1) {
+      return null;
+    }
+  }
+
   function parseResultJson(content) {
     var s = String(content || '');
     var mark = '【执行结果】\n';
     var i = s.indexOf(mark);
     if (i < 0) return null;
-    var prefix = s.slice(0, i + mark.length);
-    var jsonPart = s.slice(i + mark.length);
-    try {
-      return { prefix: prefix, obj: JSON.parse(jsonPart) };
-    } catch (e) {
-      return null;
-    }
+    var parsed = parseJsonWithSuffix(s.slice(i + mark.length));
+    if (!parsed) return null;
+    return { prefix: s.slice(0, i + mark.length), obj: parsed.obj, suffix: parsed.suffix };
+  }
+
+  function writeResultPayload(parsed) {
+    if (!parsed) return '';
+    return parsed.prefix + JSON.stringify(parsed.obj) + (parsed.suffix || '');
   }
 
   function eachResultValue(obj, fn) {
@@ -642,7 +776,7 @@
         }
       });
       if (changed) {
-        list[i].content = parsed.prefix + JSON.stringify(parsed.obj);
+        list[i].content = writeResultPayload(parsed);
         return true;
       }
     }
@@ -818,6 +952,7 @@
       return { messages: out, tokens: tokens, truncated: false, stagesApplied: stagesApplied };
     }
     var stageFns = {
+      'dup-result': function () { return packStageDupResultRound(out); },
       'history-result': function () { return packStageHistoryResult(out); },
       'dup-history': function () { return packStageDupHistory(out); },
       'pane': function () { return packStagePanes(out, Math.min(SNAPSHOT_PANE_CHARS, 8000)); },
@@ -1242,10 +1377,17 @@
     clampGetTextOffset: clampGetTextOffset,
     sliceGetText: sliceGetText,
     hashTextBody: hashTextBody,
+    taskCanonicalBody: taskCanonicalBody,
     makeTextDedupSeen: makeTextDedupSeen,
     foldLongText: foldLongText,
     applyFoldToTextField: applyFoldToTextField,
     foldDuplicateBodiesInText: foldDuplicateBodiesInText,
+    parseResultJson: parseResultJson,
+    writeResultPayload: writeResultPayload,
+    batchResultFingerprint: batchResultFingerprint,
+    foldDuplicateResultRoundsInMessages: foldDuplicateResultRoundsInMessages,
+    packStageDupResultRound: packStageDupResultRound,
+    isNavBreakUserContent: isNavBreakUserContent,
     classifyOpOutcome: classifyOpOutcome,
     shouldEngineRetry: shouldEngineRetry,
     panelStoreKeyAllowed: panelStoreKeyAllowed,

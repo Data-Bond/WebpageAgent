@@ -433,8 +433,8 @@ describe('toolProtocol hybrid', () => {
     assert.equal(C.STATUS_MSG_MAX, 12);
     assert.equal(C.GET_TEXT_DEDUP_MIN, 800);
     assert.equal(C.ATTACHMENT_CONTEXT_MAX_CHARS, 300000);
-    assert.equal(C.CONTEXT_TOKEN_SOFT, 750000);
-    assert.equal(C.CONTEXT_TOKEN_HARD, 800000);
+    assert.equal(C.CONTEXT_TOKEN_SOFT, 500000);
+    assert.equal(C.CONTEXT_TOKEN_HARD, 700000);
     const bg = fs.readFileSync(path.join(ROOT, 'background.js'), 'utf8');
     const pb = fs.readFileSync(path.join(ROOT, 'pagebridge.js'), 'utf8');
     assert.match(bg, /SNAPSHOT_MAX_CHARS = WPA_CONTRACTS\.SNAPSHOT_MAX_CHARS/);
@@ -452,6 +452,7 @@ describe('toolProtocol hybrid', () => {
     assert.match(pb, /SNAPSHOT_L0_CAP_FULL = 1500/);
     assert.match(pb, /SNAPSHOT_PANE_MAX = 6/);
     assert.match(pb, /SNAPSHOT_PANE_CHARS = 100000/);
+    assert.match(pb, /PREVIEW_PANE_CHARS = 50000/);
     assert.match(pb, /SNAPSHOT_HIDDEN_ICON_MAX = 160/);
     assert.match(pb, /TEXT_ACTION_MAX = 400/);
     assert.match(pb, /TEXT_ACTION_MAX_LEN = 80/);
@@ -555,6 +556,86 @@ describe('toolProtocol hybrid', () => {
     assert.equal(fallback.name, '');
   });
 
+  it('batchResultFingerprint 与 dup round 导航护栏', () => {
+    const fp = C.batchResultFingerprint({
+      kind: 'batch',
+      results: [{ op: 'get', value: { ok: true, same: 'x' } }]
+    });
+    assert.ok(fp.length > 0);
+    const msgs = [
+      {
+        role: 'user',
+        content: '【执行结果】\n' + JSON.stringify({
+          kind: 'batch',
+          results: [{ op: 'get', value: { ok: true, same: 'x', text: 'a' } }]
+        })
+      },
+      {
+        role: 'user',
+        content: '【执行结果】\n' + JSON.stringify({
+          kind: 'batch',
+          results: [{ op: 'get', value: { ok: true, same: 'x', text: 'a' } }]
+        })
+      }
+    ];
+    C.foldDuplicateResultRoundsInMessages(msgs);
+    assert.match(String(msgs[1].content), /sameBatch=/);
+    const nav = [
+      { role: 'user', content: '【执行结果】\n{"kind":"batch","results":[{"op":"get","value":{"ok":true}}]}' },
+      { role: 'user', content: 'url已变化' },
+      { role: 'user', content: '【执行结果】\n{"kind":"batch","results":[{"op":"get","value":{"ok":true}}]}' }
+    ];
+    C.foldDuplicateResultRoundsInMessages(nav);
+    assert.doesNotMatch(String(nav[2].content), /sameBatch=/);
+    const liveSuffix = '\n【页面信号】url未变化；无探针差异';
+    const liveJson = JSON.stringify({
+      kind: 'batch',
+      results: [{ op: 'get', value: { ok: true, same: 'x', text: 'a' } }]
+    });
+    const live = [
+      { role: 'user', content: '【执行结果】\n' + liveJson + liveSuffix },
+      { role: 'user', content: '【执行结果】\n' + liveJson + liveSuffix }
+    ];
+    C.foldDuplicateResultRoundsInMessages(live);
+    assert.match(String(live[0].content), /【页面信号】/);
+    assert.match(String(live[1].content), /sameBatch=/);
+  });
+
+  it('parseResultJson 切开引擎后缀并保留页面信号', () => {
+    const batch = {
+      kind: 'batch',
+      results: [{ op: 'get', value: { ok: true, same: 'x', text: 'a.pdf', chars: 5 } }]
+    };
+    const suffix = '\n【页面信号】url未变化；无探针差异\n【输出】tools 或 JSON';
+    const raw = '【执行结果】\n' + JSON.stringify(batch) + suffix;
+    const parsed = C.parseResultJson(raw);
+    assert.ok(parsed);
+    assert.equal(parsed.obj.results[0].op, 'get');
+    assert.equal(parsed.suffix, suffix);
+    const rewritten = C.writeResultPayload(parsed);
+    assert.match(rewritten, /【页面信号】url未变化/);
+    assert.match(rewritten, /【输出】/);
+    assert.equal(C.parseResultJson('【执行结果】\nERROR: boom\n【页面信号】url未变化'), null);
+  });
+
+  it('短 same 折叠与 CONTEXT_TOKEN 默认', () => {
+    assert.equal(C.CONTEXT_TOKEN_SOFT, 500000);
+    assert.equal(C.CONTEXT_TOKEN_HARD, 700000);
+    const seen = C.makeTextDedupSeen();
+    const h = C.hashTextBody('tiny');
+    const body = '【执行结果】\n' + JSON.stringify({
+      kind: 'batch',
+      results: [{ op: 'get', value: { ok: true, text: 'tiny', same: h, chars: 4 } }]
+    });
+    const suffix = '\n【页面信号】url未变化；无探针差异';
+    const liveBody = body + suffix;
+    C.foldDuplicateBodiesInText(liveBody, seen);
+    const folded = C.foldDuplicateBodiesInText(liveBody, seen);
+    assert.doesNotMatch(folded, /"text":"tiny"/);
+    assert.match(folded, /"same"/);
+    assert.match(folded, /【页面信号】url未变化/);
+  });
+
   it('packer 按阶段裁大正文并写截断尾注', () => {
     const paneText = 'P'.repeat(20000);
     const snap = {
@@ -572,7 +653,7 @@ describe('toolProtocol hybrid', () => {
         content: '【执行结果】\n' + JSON.stringify({
           kind: 'batch',
           results: [{ op: 'get', value: { ok: true, text: 'G'.repeat(5000), chars: 5000, limit: 10000 } }]
-        })
+        }) + '\n【页面信号】url未变化；无探针差异'
       },
       {
         role: 'user',
@@ -589,6 +670,7 @@ describe('toolProtocol hybrid', () => {
     assert.match(String(hist && hist.content), /same=/);
     const result = packed.messages.find((m) => String(m.content || '').indexOf('【执行结果】') >= 0);
     assert.match(String(result && result.content), /"via":"history"/);
+    assert.match(String(result && result.content), /【页面信号】url未变化/);
     assert.doesNotMatch(String(result && result.content), /"text":"G{100}/);
     const snapMsg = packed.messages.find((m) => m.kind === 'snapshot');
     const blob = String(snapMsg && snapMsg.content || '');

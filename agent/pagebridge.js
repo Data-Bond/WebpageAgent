@@ -4,13 +4,14 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '6.2.2';
+  var BRIDGE_VERSION = '6.3.0';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
   var WAIT_TIMEOUT_MAX_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
   var SNAPSHOT_L0_CAP_FULL = 1500;
   var SNAPSHOT_PANE_MAX = 6;
   var SNAPSHOT_PANE_CHARS = 100000;
+  var PREVIEW_PANE_CHARS = 50000;
   var SNAPSHOT_HIDDEN_ICON_MAX = 160;
   var SNAPSHOT_FILE_NAME_MAX = 80;
   var GET_TEXT_DEFAULT = 10000;
@@ -4257,13 +4258,14 @@
           try { text = String(readableTextOf(el) || '').trim(); } catch (eT) { text = ''; }
           if (text.length < 40) return;
           var pidx = registerSnapEl(el);
+          var paneCap = (via === 'dialog' || via === 'pre') ? PREVIEW_PANE_CHARS : SNAPSHOT_PANE_CHARS;
           out.push({
             idx: pidx,
             via: via,
             tag: String(el.tagName || '').toUpperCase(),
             chars: text.length,
-            text: text.slice(0, SNAPSHOT_PANE_CHARS),
-            truncated: text.length > SNAPSHOT_PANE_CHARS
+            text: text.slice(0, paneCap),
+            truncated: text.length > paneCap
           });
           kept.pane++;
         }
@@ -9174,7 +9176,9 @@
             try { label = fieldLabelOf(el) || ''; } catch (eLb) {}
             var sec = '';
             try { sec = nearestSectionTitle(el, label) || ''; } catch (eSec) {}
-            return withResolved({
+            var textKind = '';
+            try { if (isFileNameEl(el)) textKind = 'filename-label'; } catch (eTk) {}
+            var getOut = {
               ok: true,
               kind: 'query',
               tool: 'get',
@@ -9189,7 +9193,9 @@
               optionsCount: fs.optionsCount,
               label: label,
               sec: sec
-            }, looked);
+            };
+            if (textKind) getOut.textKind = textKind;
+            return withResolved(getOut, looked);
           },
           type: async function (sel, val) {
             return await page.setVal(sel, val);

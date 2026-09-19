@@ -2168,7 +2168,82 @@ ok(changeSandbox.changeSummary({ anyChange: false }) === '页面无变化',
 ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, viewAdded: 3, countDelta: 0 })).indexOf('建议/选项+3') >= 0,
   '变化摘要含新增建议卡');
 
-ok(manifestVer === '6.2.2', '锁步版本为 6.2.2');
+ok(C.CONTEXT_TOKEN_SOFT === 500000 && C.CONTEXT_TOKEN_HARD === 700000,
+  'CONTEXT_TOKEN soft/hard 默认 500000/700000');
+ok(C.CONTEXT_PACK_STAGES[0] === 'dup-result', 'pack 首阶段为 dup-result');
+{
+  const fpA = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'get', value: { ok: true, same: 'abc' } }]
+  });
+  const fpB = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'get', value: { ok: true, same: 'abc' } }]
+  });
+  ok(fpA === fpB && fpA.length > 0, 'batchResultFingerprint 相同 batch 同指纹');
+  const dupRound = [
+    {
+      role: 'user',
+      content: '【执行结果】\n' + JSON.stringify({
+        kind: 'batch',
+        results: [{ op: 'get', value: { ok: true, same: 'h1', text: 'a.pdf' } }]
+      })
+    },
+    {
+      role: 'user',
+      content: '【执行结果】\n' + JSON.stringify({
+        kind: 'batch',
+        results: [{ op: 'get', value: { ok: true, same: 'h1', text: 'a.pdf' } }]
+      })
+    }
+  ];
+  C.foldDuplicateResultRoundsInMessages(dupRound);
+  ok(dupRound[1].content.indexOf('sameBatch=') >= 0, 'foldDuplicateResultRounds 折叠重复整轮');
+  const navRound = [
+    { role: 'user', content: '【执行结果】\n{"kind":"batch","results":[{"op":"get","value":{"ok":true}}]}' },
+    { role: 'user', content: '页面已跳转' },
+    { role: 'user', content: '【执行结果】\n{"kind":"batch","results":[{"op":"get","value":{"ok":true}}]}' }
+  ];
+  C.foldDuplicateResultRoundsInMessages(navRound);
+  ok(navRound[2].content.indexOf('sameBatch=') < 0, '导航中断后不折叠 dup round');
+  const seenShort = C.makeTextDedupSeen();
+  const sameH = C.hashTextBody('file.pdf');
+  const shortBody = '【执行结果】\n' + JSON.stringify({
+    kind: 'batch',
+    results: [{ op: 'get', value: { ok: true, text: 'file.pdf', same: sameH, chars: 8 } }]
+  });
+  const liveSuffix = '\n【页面信号】url未变化；无探针差异\n【输出】tools 或 JSON';
+  const parsedLive = C.parseResultJson(shortBody + liveSuffix);
+  ok(parsedLive && parsedLive.obj.results[0].op === 'get' && parsedLive.suffix.indexOf('【页面信号】') >= 0,
+    'parseResultJson 切开页面信号后缀');
+  const liveDup = [
+    { role: 'user', content: shortBody + liveSuffix },
+    { role: 'user', content: shortBody + liveSuffix }
+  ];
+  C.foldDuplicateResultRoundsInMessages(liveDup);
+  ok(liveDup[1].content.indexOf('sameBatch=') >= 0, '带页面信号的重复整轮仍折叠');
+  C.foldDuplicateBodiesInText(shortBody + liveSuffix, seenShort);
+  const shortFold2 = C.foldDuplicateBodiesInText(shortBody + liveSuffix, seenShort);
+  ok(shortFold2.indexOf('"text":"file.pdf"') < 0 && shortFold2.indexOf('"same"') >= 0,
+    '短 same 二次折叠删 text');
+  ok(shortFold2.indexOf('【页面信号】') >= 0, '短 same 折叠保留页面信号后缀');
+}
+ok(/PREVIEW_PANE_CHARS = 50000/.test(bridge), 'PREVIEW_PANE_CHARS=50000');
+ok(/textKind.*filename-label/.test(bridge), 'page.get 打 textKind=filename-label');
+ok(/val\.textKind/.test(extractFn(bg, 'compactOneHelperValue')), 'compactOneHelperValue 透传 textKind');
+ok(/filename-label/.test((bg.match(/RUNTIME_PLAYBOOK =[\s\S]*?PLAYBOOK_END;/) || [''])[0]),
+  'PLAYBOOK 含 filename-label 说明');
+ok(/function compressTaskRefInContext/.test(bg) && /compressTaskRefInContext\(foldedHistory/.test(bg),
+  'step 上下文任务引用化');
+ok(/repeatStreak/.test(bg) && /domLen变化极大/.test(bg), 'pageSignalBlock repeatStreak 与 domDelta');
+ok(/contextTokenSoft/.test(bg) && /contextTokenHard/.test(bg), 'DEFAULT_CONFIG 含 contextToken');
+ok(/id="contextTokenSoft"/.test(settingsHtml) && /id="contextTokenHard"/.test(settingsHtml),
+  '设置页上下文预算表单项');
+ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
+ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
+ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
+
+ok(manifestVer === '6.3.0', '锁步版本为 6.3.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');

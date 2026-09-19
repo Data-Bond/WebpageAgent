@@ -47,6 +47,8 @@ const DEFAULT_CONFIG = {
   pdfTextMaxChars: 150000,
   ocrCacheMaxChars: 500000,
   attachContextMaxChars: WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS,
+  contextTokenSoft: WPA_CONTRACTS.CONTEXT_TOKEN_SOFT,
+  contextTokenHard: WPA_CONTRACTS.CONTEXT_TOKEN_HARD,
   uiOpacity: 80,
   panelScaleX: 50,
   panelScaleY: 90,
@@ -174,10 +176,14 @@ function applyPdfTextCap(cfg) {
 
 function applyAttachBudgetKnobs(cfg) {
   const src = cfg || {};
-  return {
+  const out = {
     ocrCacheMaxChars: clampInt(src.ocrCacheMaxChars, 50000, 2000000, DEFAULT_CONFIG.ocrCacheMaxChars),
-    attachContextMaxChars: clampInt(src.attachContextMaxChars, 10000, WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS_CAP, DEFAULT_CONFIG.attachContextMaxChars)
+    attachContextMaxChars: clampInt(src.attachContextMaxChars, 10000, WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS_CAP, DEFAULT_CONFIG.attachContextMaxChars),
+    contextTokenSoft: clampInt(src.contextTokenSoft, 64000, 750000, DEFAULT_CONFIG.contextTokenSoft),
+    contextTokenHard: clampInt(src.contextTokenHard, 64000, 800000, DEFAULT_CONFIG.contextTokenHard)
   };
+  if (out.contextTokenHard < out.contextTokenSoft) out.contextTokenHard = out.contextTokenSoft;
+  return out;
 }
 
 function pdfPageSpecFromConfig(cfg) {
@@ -258,7 +264,7 @@ const RUNTIME_PLAYBOOK =
   '页面正文用 get。跨步保留用 memorize；{} 或缺 value 从本批成功 get/print 或上一拍 lastRead 回填，快照 panes 不算。每轮【记忆】只给目录（name/chars/same/短头），不倒全文。取槽里全文或续读用 recall；若本段历史【执行结果】或先前 get 已有同 same、未 truncated、字段已够当前判断，不必再 recall。看回执 chars。forget 删槽。goto 打开记住的页。读 URL 用 get(target=url) 再 memorize。\n' +
   'print 搜控件打目录进对话，不算字数。type 只打字，不自动点选项。若附近列表出现或选项变了则本批停，按回执 catalog 或下一轮快照再点。check 只用于真正复选/单选。\n' +
   'click 的 button：省略或 left 为左键；hover 只移指针不点击；right 只发右键菜单；dblclick 为双击。移上去才出现的控件：本轮快照已有（常 hidden）用本轮 idx 点；没有则 hover，本批停，按回执 catalog 或下一轮快照再点。不要同批点刚出现的项。覆盖层/iframe 正文在快照 panes 或 <PANE>，用其 idx get/scroll。\n' +
-  '快照优先当前覆盖层、文件名、隐藏操作与大块正文；truncated 则 get/print/scroll。\n' +
+  '快照优先当前覆盖层、文件名、隐藏操作与大块正文；truncated 则 get/print/scroll。get 回执 textKind=filename-label 表示只读到文件名标签，不是文件正文；需打开预览 pane 或 upload 后再 get。\n' +
   '多轮完不成：换 print/get/scroll。get.limit 默认 10000 字，offset 从第 N 字起；truncated 则加大 limit 或设 offset 再 get，见截断尾注，勿换 CSS 重点。print.limit 是目录条数。\n' +
   '上一轮无法解析时按观察改写；回答用户用 done（summary 为回答）或 ask。\n' +
   '缺用户才有的信息才 ask。上传用 upload(控件, 附件key)，禁止 click 上传按钮弹系统框。\n' +
@@ -970,6 +976,8 @@ function configPayload(cfg) {
     pdfTextMaxChars: clampPdfTextMaxChars(cfg.pdfTextMaxChars),
     ocrCacheMaxChars: clampInt(cfg.ocrCacheMaxChars, 50000, 2000000, DEFAULT_CONFIG.ocrCacheMaxChars),
     attachContextMaxChars: clampInt(cfg.attachContextMaxChars, 10000, WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS_CAP, DEFAULT_CONFIG.attachContextMaxChars),
+    contextTokenSoft: clampInt(cfg.contextTokenSoft, 64000, 750000, DEFAULT_CONFIG.contextTokenSoft),
+    contextTokenHard: clampInt(cfg.contextTokenHard, 64000, 800000, DEFAULT_CONFIG.contextTokenHard),
     uiOpacity: cfg.uiOpacity,
     panelScaleX: cfg.panelScaleX,
     panelScaleY: cfg.panelScaleY,
@@ -1005,7 +1013,7 @@ function pickExportPayload(full, pick) {
     'maxSteps', 'snapshotPiiMask', 'llmCallGapMs', 'newTabOpenGapMs', 'busyMaskEnabled',
     'llmTimeoutRetry', 'llmErrorRetry', 'pageQuietMs', 'suggestWaitMs',
     'pdfParseMode', 'pdfParsePages', 'pdfTextMaxChars',
-    'ocrCacheMaxChars', 'attachContextMaxChars'
+    'ocrCacheMaxChars', 'attachContextMaxChars', 'contextTokenSoft', 'contextTokenHard'
   ]);
   take(pick.archiveRedact, ['archiveRedactHint']);
   take(pick.textPrompt, ['systemPromptText']);
@@ -1147,6 +1155,8 @@ function validateImportConfig(obj, current) {
     pdfTextMaxChars: cur.pdfTextMaxChars != null ? cur.pdfTextMaxChars : DEFAULT_CONFIG.pdfTextMaxChars,
     ocrCacheMaxChars: cur.ocrCacheMaxChars != null ? cur.ocrCacheMaxChars : DEFAULT_CONFIG.ocrCacheMaxChars,
     attachContextMaxChars: cur.attachContextMaxChars != null ? cur.attachContextMaxChars : DEFAULT_CONFIG.attachContextMaxChars,
+    contextTokenSoft: cur.contextTokenSoft != null ? cur.contextTokenSoft : DEFAULT_CONFIG.contextTokenSoft,
+    contextTokenHard: cur.contextTokenHard != null ? cur.contextTokenHard : DEFAULT_CONFIG.contextTokenHard,
     archiveRedactHint: typeof cur.archiveRedactHint === 'string'
       ? cur.archiveRedactHint
       : (typeof DEFAULT_CONFIG.archiveRedactHint === 'string' ? DEFAULT_CONFIG.archiveRedactHint : '')
@@ -1198,6 +1208,9 @@ function validateImportConfig(obj, current) {
   importClamped('pdfTextMaxChars', 10000, 500000, DEFAULT_CONFIG.pdfTextMaxChars);
   importClamped('ocrCacheMaxChars', 50000, 2000000, DEFAULT_CONFIG.ocrCacheMaxChars);
   importClamped('attachContextMaxChars', 10000, WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS_CAP, DEFAULT_CONFIG.attachContextMaxChars);
+  importClamped('contextTokenSoft', 64000, 750000, DEFAULT_CONFIG.contextTokenSoft);
+  importClamped('contextTokenHard', 64000, 800000, DEFAULT_CONFIG.contextTokenHard);
+  if (merged.contextTokenHard < merged.contextTokenSoft) merged.contextTokenHard = merged.contextTokenSoft;
   if ('busyMaskEnabled' in obj) {
     merged.busyMaskEnabled = obj.busyMaskEnabled === true;
   }
@@ -5102,6 +5115,44 @@ function foldOutgoingMessages(messages, seen) {
     }
     out.push(copy);
   }
+  if (WPA_CONTRACTS && typeof WPA_CONTRACTS.foldDuplicateResultRoundsInMessages === 'function') {
+    WPA_CONTRACTS.foldDuplicateResultRoundsInMessages(out);
+  }
+  return out;
+}
+
+function batchOpsSig(operations) {
+  const list = Array.isArray(operations) ? operations : [];
+  const parts = [];
+  for (let i = 0; i < list.length; i++) {
+    const o = list[i];
+    if (!o) continue;
+    parts.push(String(o.op || ''));
+  }
+  return parts.join(',');
+}
+
+function compressTaskRefInContext(messages, stepIndex) {
+  if (stepIndex < 2) return messages;
+  if (!WPA_CONTRACTS || typeof WPA_CONTRACTS.taskCanonicalBody !== 'function' ||
+      typeof WPA_CONTRACTS.hashTextBody !== 'function') return messages;
+  const out = [];
+  let taskDone = false;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m || typeof m !== 'object') { out.push(m); continue; }
+    if (!taskDone && m.role === 'user' &&
+        (m.kind === 'task' || m.kind === 'resume' || m.kind === 'continue' ||
+          isCurrentTaskMessage(m.content))) {
+      const body = WPA_CONTRACTS.taskCanonicalBody(m.content);
+      const h = WPA_CONTRACTS.hashTextBody(body).slice(0, 16);
+      out.push(cloneChatMessage(m,
+        '【当前指令】见任务same=' + h + '（chars=' + body.length + '，全文已在首步给出，禁止从头重做）'));
+      taskDone = true;
+    } else {
+      out.push(cloneChatMessage(m));
+    }
+  }
   return out;
 }
 
@@ -6556,6 +6607,7 @@ function compactOneHelperValue(op, val) {
   if (val.actual != null) o.actual = String(val.actual).slice(0, 80);
   if (val.sec) o.sec = String(val.sec).slice(0, 40);
   if (val.label && (op === 'get' || op === 'print')) o.label = String(val.label).slice(0, 80);
+  if (val.textKind) o.textKind = String(val.textKind).slice(0, 32);
   if (op === 'get' || op === 'recall') {
     let textCap = Number(val.limit);
     if (!Number.isFinite(textCap) || textCap <= 0) textCap = WPA_CONTRACTS.GET_TEXT_DEFAULT || 10000;
@@ -8042,8 +8094,9 @@ function changeSummary(report, resultInfo) {
   return '页面已变化：' + parts.join(', ');
 }
 
-function pageSignalBlock(report) {
+function pageSignalBlock(report, extra) {
   if (!report) return '';
+  const sig = extra && typeof extra === 'object' ? extra : {};
   if (report.probeError) return '【页面信号】探测失败：' + String(report.probeError).slice(0, 80);
   const facts = [];
   if (report.urlChanged) facts.push('url已变化');
@@ -8053,6 +8106,16 @@ function pageSignalBlock(report) {
   if (report.contentChanged) facts.push('domDigest已变化');
   if (report.titleChanged) facts.push('title已变化');
   if (!report.anyChange) facts.push('无探针差异');
+  const domDelta = Number(report.domChanged);
+  if (Number.isFinite(domDelta) && Math.abs(domDelta) >= 500000) {
+    facts.push('domLen变化极大，可能为新开预览或大段正文注入');
+  }
+  if (sig.repeatStreak >= 2) {
+    let rep = '重复执行 streak=' + sig.repeatStreak;
+    if (sig.resultFp) rep += ' resultFp=' + sig.resultFp;
+    if (sig.batchSig) rep += ' batchSig=' + sig.batchSig;
+    facts.push(rep);
+  }
   let s = '【页面信号】' + facts.join('；');
   const msgs = Array.isArray(report.newStatusMessages) ? report.newStatusMessages : [];
   if (msgs.length) {
@@ -8424,6 +8487,8 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
   // 正文只在本步确实要抽字段时钉入对话一次，且不写入持久化历史。
   let attachPinned = new Set();
   let lastOps = [];
+  let repeatStreak = 0;
+  let lastResultFp = '';
 
   function filesToPin(opts) {
     const force = !!(opts && opts.force);
@@ -8633,11 +8698,13 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       kind: 'snapshot',
       content: snapLead + wrappedSnap + '\n步骤 ' + i + '/' + maxSteps + '；URL相对上步：' + urlNote
     };
-    let contextMessages = foldedHistory.concat([snapshotUser]);
+    let contextMessages = compressTaskRefInContext(foldedHistory.concat([snapshotUser]), i);
     if (WPA_CONTRACTS && typeof WPA_CONTRACTS.packContextToTokenBudget === 'function') {
+      const ctxSoft = config.contextTokenSoft != null ? config.contextTokenSoft : WPA_CONTRACTS.CONTEXT_TOKEN_SOFT;
+      const ctxHard = config.contextTokenHard != null ? config.contextTokenHard : WPA_CONTRACTS.CONTEXT_TOKEN_HARD;
       const packed = WPA_CONTRACTS.packContextToTokenBudget(contextMessages, {
-        soft: WPA_CONTRACTS.CONTEXT_TOKEN_SOFT,
-        hard: WPA_CONTRACTS.CONTEXT_TOKEN_HARD
+        soft: ctxSoft,
+        hard: ctxHard >= ctxSoft ? ctxHard : ctxSoft
       });
       if (packed && Array.isArray(packed.messages)) contextMessages = packed.messages;
     }
@@ -8972,7 +9039,28 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       if (urlChanged || documentChanged) formSessionTargets = [];
       else formSessionTargets = formSessionTargets.concat(thisTargets);
 
-      toolStored += '\n' + (pageSignalBlock(report) || '【页面信号】');
+      let resultFp = '';
+      if (resultRaw) {
+        try {
+          const batchObj = JSON.parse(compactRunResult(resultRaw));
+          if (WPA_CONTRACTS && typeof WPA_CONTRACTS.batchResultFingerprint === 'function') {
+            resultFp = WPA_CONTRACTS.batchResultFingerprint(batchObj);
+          }
+        } catch (eFp) {}
+      }
+      const batchSig = batchOpsSig(parsed.operations);
+      if (resultFp && resultFp === lastResultFp && report && !report.anyChange) {
+        repeatStreak += 1;
+      } else {
+        repeatStreak = 0;
+      }
+      if (resultFp) lastResultFp = resultFp;
+
+      toolStored += '\n' + (pageSignalBlock(report, {
+        repeatStreak: repeatStreak,
+        resultFp: resultFp ? resultFp.slice(0, 16) : '',
+        batchSig: batchSig
+      }) || '【页面信号】');
       if (viewDiff && (viewHasAdded || (viewDiff.changed && viewDiff.changed.length) || (viewDiff.removed && viewDiff.removed.length))) {
         toolStored += '\n【视图变化】\n' + stringifyViewDiff(viewDiff, 14000);
       }
