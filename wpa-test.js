@@ -2235,6 +2235,61 @@ ok(C.CONTEXT_PACK_STAGES[0] === 'dup-result', 'pack 首阶段为 dup-result');
   ];
   C.foldDuplicateResultRoundsInMessages(liveDup);
   ok(liveDup[1].content.indexOf('sameBatch=') >= 0, '带页面信号的重复整轮仍折叠');
+  ok(liveDup[1].content.indexOf('【页面信号】') >= 0, '折叠行保留本轮页面信号');
+  const clickFpA = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'click', value: { ok: true, name: '下载' } }]
+  });
+  const clickFpB = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'click', value: { ok: true, name: '提交' } }]
+  });
+  ok(clickFpA !== clickFpB, '不同 click name 指纹不同');
+  const clickRound = [
+    {
+      role: 'user',
+      content: '【执行结果】\n' + JSON.stringify({
+        kind: 'batch',
+        results: [{ op: 'click', value: { ok: true, name: '下载' } }]
+      })
+    },
+    {
+      role: 'user',
+      content: '【执行结果】\n' + JSON.stringify({
+        kind: 'batch',
+        results: [{ op: 'click', value: { ok: true, name: '提交' } }]
+      })
+    }
+  ];
+  C.foldDuplicateResultRoundsInMessages(clickRound);
+  ok(clickRound[1].content.indexOf('sameBatch=') < 0, '不同 click 不整轮折叠');
+  const catFpA = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'get', value: { ok: true, catalog: ['[1] a'] } }]
+  });
+  const catFpB = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'get', value: { ok: true, catalog: ['[2] b'] } }]
+  });
+  ok(catFpA !== catFpB, '不同 catalog 的 get 指纹不同');
+  const bodyFp = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'get', value: { ok: true, same: sameH, text: 'file.pdf', chars: 8 } }]
+  });
+  const ptrFp = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'get', value: { ok: true, same: sameH, chars: 8 } }]
+  });
+  ok(bodyFp === ptrFp, '带 text 与只留 same 的 get 指纹相同');
+  const waitFpA = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'wait', value: { ok: true, found: true, elapsedMs: 100 } }]
+  });
+  const waitFpB = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'wait', value: { ok: true, found: true, elapsedMs: 800 } }]
+  });
+  ok(waitFpA !== waitFpB, 'wait 不同 elapsedMs 指纹不同');
   C.foldDuplicateBodiesInText(shortBody + liveSuffix, seenShort);
   const shortFold2 = C.foldDuplicateBodiesInText(shortBody + liveSuffix, seenShort);
   ok(shortFold2.indexOf('"text":"file.pdf"') < 0 && shortFold2.indexOf('"same"') >= 0,
@@ -2256,7 +2311,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.3.1', '锁步版本为 6.3.1');
+ok(manifestVer === '6.3.2', '锁步版本为 6.3.2');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -4588,19 +4643,24 @@ ok(/stillRunning && item && item.type === 'done'/.test(bg),
 ok(/if \(!running\) setRunning\(true\);\s*upsertLlmCallCard/.test(panelSrc),
   '任务过程中的模型调用会把停止按钮拉回来');
 ok(/type 只打字，不自动点选项/.test(bg), '短手册：type 不劫持为 select');
+const readmeCnSrc = fs.readFileSync(path.join(__dirname, 'README-cn.md'), 'utf8');
 const readmeSrc = fs.readFileSync(path.join(__dirname, 'README.md'), 'utf8');
-ok(/<img src="doc\/screenshot1\.png"[\s\S]*\*\*图1\. 六句指令完成发布软件流程自动化\*\*/.test(readmeSrc)
-  && !/记录首页/.test(readmeSrc),
-  'README 图1 解说在图片下方且无流程长句');
-ok(/技能\r?\n\r?\n<img src="doc\/screenshot1\.png"/.test(readmeSrc), 'README 截图前空一行');
-ok(/\*\*图1\. 六句指令完成发布软件流程自动化\*\*\r?\n\r?\n## 安装/.test(readmeSrc), 'README 图注后空一行');
-ok(/doc\/screenshot1\.png/.test(readmeSrc) && fs.existsSync(path.join(__dirname, 'doc/screenshot1.png')),
-  'README 引用 doc/screenshot1.png 且文件存在');
-ok(/详细的使用手册见/.test(readmeSrc) && /doc\/user-guide\.md/.test(readmeSrc) &&
-    fs.existsSync(path.join(__dirname, 'doc/user-guide.md')),
-  'README 写明详细使用手册见 doc/user-guide.md');
+ok(/<img src="doc\/screenshot1\.png"[\s\S]*\*\*图1\. 六句指令完成发布软件流程自动化\*\*/.test(readmeCnSrc)
+  && !/记录首页/.test(readmeCnSrc),
+  'README-cn 图1 解说在图片下方且无流程长句');
+ok(/技能\r?\n\r?\n<img src="doc\/screenshot1\.png"/.test(readmeCnSrc), 'README-cn 截图前空一行');
+ok(/\*\*图1\. 六句指令完成发布软件流程自动化\*\*\r?\n\r?\n## 安装/.test(readmeCnSrc), 'README-cn 图注后空一行');
+ok(/doc\/screenshot1\.png/.test(readmeCnSrc) && fs.existsSync(path.join(__dirname, 'doc/screenshot1.png')),
+  'README-cn 引用 doc/screenshot1.png 且文件存在');
+ok(/详细的使用手册见/.test(readmeCnSrc) && /doc\/user-guide-cn\.md/.test(readmeCnSrc) &&
+    fs.existsSync(path.join(__dirname, 'doc/user-guide-cn.md')),
+  'README-cn 写明详细使用手册见 doc/user-guide-cn.md');
+ok(/Full user guide:/.test(readmeSrc) && /doc\/user-guide\.md/.test(readmeSrc) &&
+    /\*\*Figure 1\./.test(readmeSrc),
+  'README 英文版链到 user-guide.md 且含 Figure 1');
 {
-  const guideSrc = fs.readFileSync(path.join(__dirname, 'doc/user-guide.md'), 'utf8');
+  const guideSrc = fs.readFileSync(path.join(__dirname, 'doc/user-guide-cn.md'), 'utf8');
+  const guideEnSrc = fs.readFileSync(path.join(__dirname, 'doc/user-guide.md'), 'utf8');
   ok(/### `get`/.test(guideSrc) && /### `goto`/.test(guideSrc) && /### `click`/.test(guideSrc),
     '使用说明列出公开工具 get/click/goto');
   ok(/### `delegate`/.test(guideSrc) && /### `returnToParent`/.test(guideSrc) && /### `tabClose`/.test(guideSrc),
@@ -4623,8 +4683,13 @@ ok(/详细的使用手册见/.test(readmeSrc) && /doc\/user-guide\.md/.test(read
     '使用说明：勾选行 click/check 回执带 selection');
   ok(/创建\/新建/.test(guideSrc) && /不会/.test(guideSrc) && /自动点/.test(guideSrc),
     '使用说明：select 不自动点创建');
+  ok(/### `get`/.test(guideEnSrc) && /### `delegate`/.test(guideEnSrc) &&
+    /openedTab/.test(guideEnSrc) && /yieldBatch/.test(guideEnSrc) &&
+    /README\.md/.test(guideEnSrc) && /README-cn\.md/.test(guideEnSrc),
+    'user-guide 英文版含工具与 README 链');
 }
-ok(/max-width:100%/.test(readmeSrc), 'README 截图随页面宽度缩放');
+ok(/max-width:100%/.test(readmeCnSrc) && /max-width:100%/.test(readmeSrc),
+  'README 中英文截图随页面宽度缩放');
 
 async function runWaitBehaviorTests() {
   const waitBody = extractAsyncMethod(bridge, 'wait');

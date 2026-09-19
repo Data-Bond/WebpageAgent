@@ -401,26 +401,47 @@
     return changed;
   }
 
-  function batchResultRowFingerprint(row) {
-    if (!row || typeof row !== 'object') return '';
-    var v = row.value != null && typeof row.value === 'object' ? row.value : row;
-    var op = row.op != null ? String(row.op) : (v.op != null ? String(v.op) : '');
-    var ok = v.ok === false ? '0' : '1';
-    var same = v.same != null ? String(v.same) : '';
-    var reason = v.reason != null ? String(v.reason) : '';
-    return op + '|' + ok + '|' + same + '|' + reason;
+  function stripSameBodyFields(obj) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+    if (obj.same == null || obj.same === '') return obj;
+    var o = Object.assign({}, obj);
+    delete o.text;
+    delete o.head;
+    delete o.tail;
+    return o;
+  }
+
+  function canonicalResultRow(row) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+    var copy = Object.assign({}, row);
+    if (copy.value != null && typeof copy.value === 'object' && !Array.isArray(copy.value)) {
+      copy.value = stripSameBodyFields(copy.value);
+      return copy;
+    }
+    return stripSameBodyFields(copy);
+  }
+
+  function canonicalBatchResult(batch) {
+    if (!batch || typeof batch !== 'object') return null;
+    if (Array.isArray(batch.results)) {
+      var out = Object.assign({}, batch);
+      var rows = [];
+      var i;
+      for (i = 0; i < batch.results.length; i++) {
+        rows.push(canonicalResultRow(batch.results[i]));
+      }
+      out.results = rows;
+      return out;
+    }
+    return canonicalResultRow(batch);
   }
 
   function batchResultFingerprint(batch) {
-    if (!batch || typeof batch !== 'object') return '';
-    var list = Array.isArray(batch.results) ? batch.results : [batch];
-    var parts = [];
-    var i;
-    for (i = 0; i < list.length; i++) {
-      var fp = batchResultRowFingerprint(list[i]);
-      if (fp) parts.push(fp);
-    }
-    return parts.join(';');
+    var canon = canonicalBatchResult(batch);
+    if (!canon) return '';
+    var s = JSON.stringify(canon);
+    if (!s) return '';
+    return hashTextBody(s);
   }
 
   function batchOpsLabel(batch) {
@@ -443,9 +464,9 @@
     return false;
   }
 
-  function dupResultFoldLine(firstRound, fp, ops) {
-    var h = hashTextBody(fp).slice(0, 16);
-    return '【执行结果】（与第' + firstRound + '轮相同 sameBatch=' + h + ' ops=' + ops + '）';
+  function dupResultFoldLine(firstRound, fp, ops, suffix) {
+    var h = String(fp || '').slice(0, 16);
+    return '【执行结果】（与第' + firstRound + '轮相同 sameBatch=' + h + ' ops=' + ops + '）' + (suffix || '');
   }
 
   function foldDuplicateResultRoundsInMessages(messages) {
@@ -471,7 +492,7 @@
       roundNo++;
       if (firstRound[fp] != null) {
         list[i] = Object.assign({}, m, {
-          content: dupResultFoldLine(firstRound[fp], fp, batchOpsLabel(parsed.obj))
+          content: dupResultFoldLine(firstRound[fp], fp, batchOpsLabel(parsed.obj), parsed.suffix)
         });
         changed = true;
       } else {
@@ -501,7 +522,7 @@
       if (!fp) continue;
       roundNo++;
       if (firstRound[fp] != null) {
-        list[i].content = dupResultFoldLine(firstRound[fp], fp, batchOpsLabel(parsed.obj));
+        list[i].content = dupResultFoldLine(firstRound[fp], fp, batchOpsLabel(parsed.obj), parsed.suffix);
         return true;
       }
       firstRound[fp] = roundNo;

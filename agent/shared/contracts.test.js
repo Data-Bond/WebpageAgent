@@ -562,6 +562,42 @@ describe('toolProtocol hybrid', () => {
       results: [{ op: 'get', value: { ok: true, same: 'x' } }]
     });
     assert.ok(fp.length > 0);
+    const clickDl = C.batchResultFingerprint({
+      kind: 'batch',
+      results: [{ op: 'click', value: { ok: true, name: '下载' } }]
+    });
+    const clickSub = C.batchResultFingerprint({
+      kind: 'batch',
+      results: [{ op: 'click', value: { ok: true, name: '提交' } }]
+    });
+    assert.notEqual(clickDl, clickSub);
+    const catA = C.batchResultFingerprint({
+      kind: 'batch',
+      results: [{ op: 'get', value: { ok: true, catalog: ['[1] a'] } }]
+    });
+    const catB = C.batchResultFingerprint({
+      kind: 'batch',
+      results: [{ op: 'get', value: { ok: true, catalog: ['[2] b'] } }]
+    });
+    assert.notEqual(catA, catB);
+    const withText = C.batchResultFingerprint({
+      kind: 'batch',
+      results: [{ op: 'get', value: { ok: true, same: 'x', text: 'hello', chars: 5 } }]
+    });
+    const sameOnly = C.batchResultFingerprint({
+      kind: 'batch',
+      results: [{ op: 'get', value: { ok: true, same: 'x', chars: 5 } }]
+    });
+    assert.equal(withText, sameOnly);
+    const waitA = C.batchResultFingerprint({
+      kind: 'batch',
+      results: [{ op: 'wait', value: { ok: true, found: true, elapsedMs: 100 } }]
+    });
+    const waitB = C.batchResultFingerprint({
+      kind: 'batch',
+      results: [{ op: 'wait', value: { ok: true, found: true, elapsedMs: 800 } }]
+    });
+    assert.notEqual(waitA, waitB);
     const msgs = [
       {
         role: 'user',
@@ -574,12 +610,30 @@ describe('toolProtocol hybrid', () => {
         role: 'user',
         content: '【执行结果】\n' + JSON.stringify({
           kind: 'batch',
-          results: [{ op: 'get', value: { ok: true, same: 'x', text: 'a' } }]
+          results: [{ op: 'get', value: { ok: true, same: 'x' } }]
         })
       }
     ];
     C.foldDuplicateResultRoundsInMessages(msgs);
     assert.match(String(msgs[1].content), /sameBatch=/);
+    const clickMsgs = [
+      {
+        role: 'user',
+        content: '【执行结果】\n' + JSON.stringify({
+          kind: 'batch',
+          results: [{ op: 'click', value: { ok: true, name: '下载' } }]
+        })
+      },
+      {
+        role: 'user',
+        content: '【执行结果】\n' + JSON.stringify({
+          kind: 'batch',
+          results: [{ op: 'click', value: { ok: true, name: '提交' } }]
+        })
+      }
+    ];
+    C.foldDuplicateResultRoundsInMessages(clickMsgs);
+    assert.doesNotMatch(String(clickMsgs[1].content), /sameBatch=/);
     const nav = [
       { role: 'user', content: '【执行结果】\n{"kind":"batch","results":[{"op":"get","value":{"ok":true}}]}' },
       { role: 'user', content: 'url已变化' },
@@ -599,6 +653,7 @@ describe('toolProtocol hybrid', () => {
     C.foldDuplicateResultRoundsInMessages(live);
     assert.match(String(live[0].content), /【页面信号】/);
     assert.match(String(live[1].content), /sameBatch=/);
+    assert.match(String(live[1].content), /【页面信号】url未变化/);
   });
 
   it('parseResultJson 切开引擎后缀并保留页面信号', () => {

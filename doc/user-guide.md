@@ -1,575 +1,476 @@
-# 网页智能体助手：使用说明
+# Webpage Agent: User Guide
 
-你在面板里写的是**给大模型看的任务**。模型根据本轮页面快照调用工具；插件（Harness）只做可泛化的操作，并如实回传页面状态。插件不会替你分析「该点哪个按钮」，也不会执行任意脚本。
+Chinese edition: [user-guide-cn.md](user-guide-cn.md).
 
-本文说明：怎样把任务写清楚，以及模型实际能调用的 20 个公开工具（参数、分支、回执）。内部旧名（如 `clickByText`、`setVal`）会映射到这些工具，你不必写它们。
+Tasks you type in the panel are **instructions for the language model**. The model calls tools based on each round’s page snapshot; the extension (Harness) performs generic operations and returns honest page state. The Harness does not decide “which button to click” for you, and it does not run arbitrary scripts.
 
-## 1. 写指令：你负责目标，模型负责点哪里
+This document explains how to write clear tasks and documents all **20 public tools** the model can call (parameters, branches, and return fields). Legacy internal names (e.g. `clickByText`, `setVal`) map to these tools—you do not need to use them.
 
-### 1.1 一条好指令长什么样
+## 1. Writing instructions: you state the goal, the model picks targets
 
-写**要完成什么**、**成功长什么样**、**缺什么必须问你**。用页面上能看见的称呼（按钮字、栏目标题、文件名），不要写浏览器「复制选择器」得到的 CSS。
+### 1.1 What a good instruction looks like
 
-适合：
+State **what to accomplish**, **what success looks like**, and **what must be asked if missing**. Use labels visible on the page (button text, section titles, file names), not CSS from “Copy selector”.
 
-- 在当前页把软件发布表填完：名称用附件里的正式名，简介不超过页面提示的字数。缺邮箱就问我，不要编。
-- 打开这份材料的菜单位置后停下来，把附近能点的项列给我，我再决定点哪一个。
-- 把结果页的下载地址记下来，不要跳转。
+Good:
 
-不适合：
+- On this page, complete the software release form: use the official name from the attachment for the title, keep the summary within the page’s limit. If email is missing, ask me—do not invent it.
+- Open the menu for this material and stop; list nearby clickable items so I can choose.
+- Record the download URL on the results page; do not navigate away.
 
-- 点 `div.el-dropdown-menu > li:nth-child(3)`（选择器每轮都会变，也不是句柄）。
-- 先悬停再点「预览」，同批做完（悬停后才会出现的项，模型当时还没看见；应先悬停看回执，下一轮再点）。
-- 「你自己判断选哪个相关分类」（那是让插件或模型瞎猜；应写可核对的条件，或允许它 `ask`）。
+Bad:
 
+- Click `div.el-dropdown-menu > li:nth-child(3)` (selectors change every round and are not handles).
+- Hover then click “Preview” in one batch (items that appear only after hover are not visible yet; hover first, then click in the next round).
+- “Pick the relevant category yourself” (forces guessing; write verifiable conditions or allow `ask`).
 
+### 1.2 Principles
 
-### 1.2 原则
+1. **One goal per message, or split by causality.** Independent fields can share one message; “open menu then click an item inside” should wait for the receipt or the next snapshot.
+2. **Name things with on-page text.** “Next”, “Submit”, “Software name” under “Basic info”. When names collide, add card title or section—not CSS.
+3. **Put personal data in attachments or skill variables, not skill body text.** Use placeholders like `{{name}}` for local substitution.
+4. **When only you know a value, tell the model to ask.** Write “ask if missing”; do not force fabrication.
+5. **Uploads use attached files only.** Attach in the panel first, then instruct “upload to the file field named …”; do not click “Choose file” to open the OS dialog.
+6. **Log in on the target site before opening the panel.** The extension only operates the current tab.
 
-1. **一事一条，或按因果关系拆开。** 无依赖的填空可以写在同一条里；「先打开菜单再点里面的项」应让模型先看回执或下一轮快照。
-2. **用页面原文点名。** 「下一步」「提交」「基本信息」里的「软件名称」。同名很多时补卡片标题或栏目，不要补 CSS。
-3. **个人数据放附件或技能变量，不要写死在技能正文里。** 技能里用 `{{姓名}}` 这种占位，由本地替换。
-4. **缺只有你知道的信息时，应让它问。** 写明「缺则询问」，不要逼它编造。
-5. **上传只用已附加文件。** 先在面板附上文件，指令里写「传到名为××的文件框」，可不让它去点「选择文件」弹系统框。
-6. **先登录目标站，再开面板。** 扩展只操作当前页。
+### 1.3 How the model sees the page
 
+Each request includes a **snapshot** (`outline`): interactive controls as `[idx]<role name=accessible-name …>`. **idx is renumbered every round**; cross-round idx is invalid. Catalog idx in a tool receipt matches **the previous snapshot’s batch** only for the immediately following round.
 
+When the snapshot is truncated (`truncated`), have the model `get` / `print` / `scroll` to explore—not switch to a new CSS hunt.
 
-### 1.3 模型怎么看见页面
+Overlay and iframe content appear in snapshot `panes` or `<PANE>` lines; use those idx values for `get` / `scroll`.
 
-每轮请求会带上**本轮快照**（outline）：可点、可填的控件编成 `[序号]<角色 name=无障碍名 …>`。序号（idx）**每轮重排**，跨轮作废。回执里的 catalog 编号与**上轮快照同一批**，只能在紧接着的那一轮当句柄。
+Captcha images appear in the outline (e.g. `[n]<IMG captcha w=… h=…>`) and in `images[]` (with round idx). `print` searching “captcha” lists images, not only inputs.
 
-快照被截断（`truncated`）时，应让模型 `get` / `print` / `scroll` 继续探，而不是换一套 CSS 重找。
+### 1.4 Targeting: idx, name—do not use CSS as a handle
 
-覆盖层、iframe 正文出现在快照的 panes 或 `<PANE>` 行，用那些行上的 idx 去 `get` / `scroll`。
+The model locates a control with three kinds of input (tool parameter `target`):
 
-验证码一类图会出现在 outline（如 `[n]<IMG captcha w=… h=…>`）和 `images[]`（带本轮 idx）。`print` 按「验证码」等词搜时也会列出图，不只是输入框。
+| Form | Meaning | When to use |
+| --- | --- | --- |
+| Integer, e.g. `12` | idx in this round’s snapshot | Preferred when idx or catalog is visible |
+| Short text, e.g. `"Next"` | Match accessible name / visible text | When name appears in the snapshot |
+| `{ "text": "Enter", "within": "…" }` | Search by name inside a subtree | Many same-named buttons; container visible in snapshot |
+| `"url"` / `"title"` | `get` only: read address or title | When you need the current URL |
 
-### 1.4 定位：idx、name、不要把 CSS 当句柄
+Objects may also use `idx`, `selector`, `text`, `within`. CSS in skills or chat is **for comparing to this round’s snapshot only**—not a stable handle for `click` / `get` / `type`; use idx or name instead.
 
-模型定位一个控件，只有三类输入（工具参数里统称 `target`）：
+**click** short-text lookup and **get** short-text lookup use **different** tables: click searches this round’s indexed names (including `hidden` in the snapshot); get can live-lookup after truncation. On miss or ambiguity, the receipt includes a catalog for the next round.
 
+## 2. Public tools the model can call
 
-| 写法                                | 含义              | 何时用                     |
-| --------------------------------- | --------------- | ----------------------- |
-| 整数，如 `12`                         | 本轮快照 idx        | 优先。快照或 catalog 里已经看见的句柄 |
-| 短文本，如 `"下一步"`                     | 按无障碍名 / 自身可见字匹配 | 快照里能对上 name 时           |
-| `{ "text": "进入", "within": "…" }` | 只在某容器子树里按名找     | 同名按钮很多，且容器能在本轮快照里对上     |
-| `"url"` / `"title"`               | 仅 `get`：读地址或标题  | 要记当前页链接时                |
-
-
-对象还可以写 `idx`、`selector`、`text`、`within`。技能或聊天里出现的 CSS **只用来对照本轮快照**，不要当作 `click` / `get` / `type` 的稳定句柄；应改交 idx 或 name。
-
-**click 短文**与 **get 短文**不是同一张表：click 先查本轮已编号的 name（含快照里标了 `hidden` 的项）；get 在快照截断后仍可 live 反查控件。点不到或不止一个时，回执带本轮 catalog，由模型下一轮选 idx。
-
-## 2. 模型可调用的公开工具
-
-模型通过函数调用使用下列工具。接口不支持 tools 时，可回退为一段 JSON：
+The model uses function calling for these tools. When tools are unsupported, it may fall back to JSON:
 
 ```json
-{"action":"execute","calls":[{"tool":"type","args":{"target":5,"value":"张三"}}]}
+{"action":"execute","calls":[{"tool":"type","args":{"target":5,"value":"Alice"}}]}
 ```
 
-另外两个**不是工具**、而是收尾动作：
+Two **non-tool** closing actions:
 
-- `ask`：只缺用户才能提供的信息时提问（`question`）。
-- `done`：回答用户或收工（`summary` 为给用户看的话）。
+- `ask`: ask when only the user can supply information (`question`).
+- `done`: answer the user or finish (`summary` for the user).
 
-一轮最多约 20 个工具调用。无因果依赖、且页面已清楚时可以一批多个；否则一次一个，看回执再走。
-
----
-
-
-
-### `get` — 读控件、子树或页元信息
-
-读已定位节点的可见正文和字段状态（是否已写入、过滤框里有没有字、下拉是否打开、当前可见选项、校验提示）。不改页面（`open: true` 时会先展开下拉再读，这是为了收选项）。
-
-**参数**
-
-
-| 名        | 类型                                  | 必填  | 说明                           |
-| -------- | ----------------------------------- | --- | ---------------------------- |
-| `target` | idx / 文本 / 对象 / `"url"` / `"title"` | 是   | 要读的句柄；`url`、`title` 读地址或标题   |
-| `limit`  | 整数                                  | 否   | 正文字数上限，省略约 10000，硬顶 500000   |
-| `offset` | 整数                                  | 否   | 从第 N 个字起，0 起算。与 `limit` 组成切片 |
-| `open`   | 布尔                                  | 否   | 为真时先打开下拉/级联再读可见选项            |
-
-
-**分支**
-
-- `target` 为 `url` 或 `title`：返回地址或标题文本，不找控件。
-- 定位到 **1** 个节点：返回 `text`、`chars`、`fieldState`、可见 `options`、`label`、`sec`（所在栏目）。
-- `fieldState.committed` 是控件上的 shown 展示字（selection items / 只读区 innerText / 框里的字），**不是**「已经选好」的判定。`filter` 是可写过滤框的 `value`；只读 combobox 没有可写框时 `filter` 为空，`committed` 仍是展示字。`open` / `optionsTop` 只描述**这个 trigger 所属的可见弹层**；选项上的 `sel` 来自 DOM 的 `aria-selected` / `--selected` 等，不是引擎拿字符串比对出来的。
-- 定位到 **0** 或 **多** 个：`ok: false`，`reason` 为 `not-found` 或 `ambiguous`，`catalog` 为本轮目录。短文走 live 反查（截断后仍可能读到未画出 outline 的控件）。
-- `truncated: true`：正文被切片截断。加大 `limit`，或设 `offset` 再 `get`，不要换 CSS 重读。
-
-读到的正文若要跨步留着，用 `memorize`；快照里的 panes 正文不算记忆来源。
+Up to ~20 tool calls per round. Batch when there is no causal dependency and the page is clear; otherwise one at a time, read receipts, then continue.
 
 ---
 
+### `get` — read control, subtree, or page metadata
 
+Read visible text and field state (written value, filter box text, dropdown open, visible options, validation hints). Does not mutate the page (`open: true` expands a dropdown first to harvest options).
 
-### `type` — 只打字，不点选项
+**Parameters**
 
-向可编辑节点或过滤框写入字符串。只负责把字打进去，**不会**自动点下拉项或「创建xxx」。
-
-**参数**
-
-
-| 名        | 类型            | 必填  | 说明                   |
-| -------- | ------------- | --- | -------------------- |
-| `target` | idx / 文本 / 对象 | 是   | 输入框或可编辑节点            |
-| `value`  | 字符串           | 是   | 要写入的全文。`{}` 或缺省不是合法值 |
-
-
-**分支**
-
-- 普通输入 / 多行 / 可编辑区：写入后回传实际值与是否校验通过。
-- 过滤型下拉：只打过滤字，标「未提交选项」一类状态，等你或下一轮再 `click` / `select`。
-- 打字后附近列表出现或选项变了：标 `typed-not-committed`，**本批停**（`yieldBatch`）。选项目录在回执 `options` / `fieldState.optionsTop`；新出现的项用下一轮快照 idx 再 `click`。
-- 目标禁用或找不到：失败并带 catalog，本批后续操作会停（除非引擎标明可继续）。
-
-指令里写「把××填进名为××的框」即可；不要写「输入后自动选第一个」。
-
----
-
-
-
-### `click` — 左键、悬停、右键、双击
-
-默认左键激活。`button` 换成指针姿态，而不是再发明一套工具。
-
-**参数**
-
-
-| 名        | 类型                                      | 必填  | 说明                          |
-| -------- | --------------------------------------- | --- | --------------------------- |
-| `target` | idx / 文本 / 对象                           | 是   | 要点的句柄                       |
-| `button` | `left` / `hover` / `right` / `dblclick` | 否   | 省略或 `left` 为左键              |
-| `within` | 字符串                                     | 否   | 只在该容器子树里按 name 找（不改变 0/1/多） |
-
-
-`button` **分支**
-
-
-| 值          | 行为                      | 之后能不能同批再点新出现的项                                          |
-| ---------- | ----------------------- | ------------------------------------------------------- |
-| `left` 或省略 | 左键。可见建议项、级联叶子都可以点。带勾选控件的行左键回执 `selection` 为当前勾选条目 | 左键一般不停批（失败除外）。`type` 停批后请在下一轮再点新出现的选项。若开出新标签页则回执带 `openedTab`，**本批停** |
-| `hover`    | 只把指针移上去，**不点击、不代点菜单项**  | **本批停**（`yieldBatch`）。新节点见回执 catalog 或下一轮快照，再单独 `click` |
-| `right`    | 只发上下文菜单，**不先左键、不改当前选中集** | 同上，本批停。回执 `selection` 为当前勾选/高亮的条目名；确认弹窗原文在 `statusMessages` |
-| `dblclick` | 双击                      | 按普通动作回执；若开出新标签页则同样带 `openedTab` 并停批                                           |
-
-
-点击若打开了新标签页，回执含：
-
-- `openedTab`：`{ tabId, url, title, windowId }`。同一步开出多个时还有 `openedTabs`，`openedTab` 取最后一条确定归属的记录。
-- 记录带 `openerTabId` 字段时为 Service Worker 按 `openerTabId` 确认的归属；不带该字段的记录是点击前后同窗口新开的候选页（`target=_blank` 的链接按浏览器规则不带 opener），归属由你按 url/title 与 `intentUrl` 旁证判断。
-- `yieldBatch: true`：本批已停，把新页事实交给下一轮。
-- `intentUrl` / `target`（例如 `_blank`）：来自链接节点的旁证。
-
-下一轮调用 `delegate` 把任务交给该页，或调用 `tabClose` 关掉它。
-
-**按** `target` **查找（左键短文）**
-
-- **idx**：点本轮该号，包括 outline 里已收录、标了 `hidden` 的项（例如悬停才露出来、但快照已经给了号的按钮）。
-- **短文 name**：先在本轮 idx 上按 name 查（精确优于前缀、优于包含；同文包装只留最内层；互不包含算多个）。
-  - **1**：执行点击（含已收录的 hidden）。
-  - **多**：失败，`reason: ambiguous`，catalog 为带 idx / name / hidden / sec 的行，**停批**。
-  - **0**：再扫**可见**节点，仍是 0/1/多；仍 0 则给覆盖层短名目录，**停批**。不会把页面上无关杂字当成目录。
-- **CSS**：仅当它像选择器且能在页上找到节点；技能里的长选择器不要当常规句柄。
-
-不要在指令里写「悬停后立刻点预览」。应写：若项还没出现，先悬停，根据列出的项再点。
-
----
-
-
-
-### `check` — 勾选或取消真正的复选/单选
-
-只用于 checkbox / radio 这类控件，幂等：已经是目标状态则不再点。点带勾选控件的行时回执同样带当前 `selection`。
-
-**参数**
-
-
-| 名        | 类型            | 必填  | 说明                         |
-| -------- | ------------- | --- | -------------------------- |
-| `target` | idx / 文本 / 对象 | 是   | 复选或单选                      |
-| `value`  | 布尔            | 否   | 省略视为勾选（`true`）。`false` 为取消 |
-
-
-不要用来点普通按钮或菜单项。
-
----
-
-
-
-### `select` — 在本控件当前选项里唯一匹配
-
-打开该控件，在**当前已展开/已收割**的选项里按文案匹配。不唯一则返回选项目录，不瞎点。
-
-**参数**
-
-
-| 名        | 类型            | 必填  | 说明             |
-| -------- | ------------- | --- | -------------- |
-| `target` | idx / 文本 / 对象 | 是   | 下拉、级联或自定义选择器宿主 |
-| `value`  | 字符串           | 是   | 要选中的选项文案       |
-| `filter` | 字符串           | 否   | 先在过滤框打这些字再匹配   |
-
-
-**分支**
-
-- 唯一命中：选中并回传实际文案。
-- 多个不同候选 / 未打开 / 未找到：`ok: false`，带 `options` 或 catalog，由模型改词或先 `get(..., open: true)`。
-- 列表里的「创建/新建」只作为选项出现，**不会**自动点。
-- 空状态文案（如「暂无数据」）仍出现在 `options` 里，不当成「没有选项」。
-- `type` 打进过滤框 **不会** 自动走到本工具。
-
-指令写「在××下拉里选『上海市』」；选项会变少时可以写「可先按市名过滤」。
-
----
-
-
-
-### `scroll` — 滚字段所在区域或整页
-
-**参数**
-
-
-| 名           | 类型                               | 必填  | 说明                                |
-| ----------- | -------------------------------- | --- | --------------------------------- |
-| `target`    | idx / 文本 / `"page"` / `"window"` | 是   | 要滚的盒子；`page` / `window` 为整页       |
-| `direction` | `up` / `down`                    | 否   | 省略为 `down`。其他值失败（`bad-direction`） |
-
-
-快照截断、列表在折叠区域时，用滚动露出更多节点，再看下一轮快照或 `print`。
-
----
-
-
-
-### `wait` — 等句柄出现、变为可用、消失，或按毫秒等待
-
-超时是观察结果，不是崩溃；默认仍允许本批继续。
-
-**参数**
-
-
-| 名         | 类型                      | 必填  | 说明 |
-| --------- | ----------------------- | --- | --- |
-| `target`  | idx / 选择器风格文本           | 否   | 等到谁。省略则按 `timeout` 等待一段时间 |
-| `until`   | `present` / `enabled` / `gone` | 否   | 有 `target` 时：出现（默认）、变为可用、消失 |
-| `timeout` | 整数（毫秒）                  | 否   | 等待上限，最大 8000。无 `target` 时为等待时长 |
-
-
-已在页面上的 idx 会立刻返回，并带 `found` / `disabled` / `busy` / `elapsedMs`。要等按钮从加载中恢复，用 `until=enabled`。
-
-指令里写「提交后等到成功提示出现」「等 3 秒」即可。
-
----
-
-
-
-### `upload` — 把已附加文件送到文件控件
-
-**禁止**用 `click` 去点「上传」来弹操作系统文件框。必须先在面板附加文件，再用本工具把附件 key 填进控件。
-
-**参数**
-
-
-| 名        | 类型            | 必填  | 说明                                |
-| -------- | ------------- | --- | --------------------------------- |
-| `target` | idx / 文本 / 对象 | 是   | `<input type="file">` 或站点用来收文件的控件 |
-| `key`    | 字符串或字符串数组     | 是   | 面板附件的 key（可多个）                    |
-
-
-指令示例：「把刚附加的说明书传到『选择数据文件』那个框。」
-
----
-
-
-
-### `ocr` — 识别页上的图或 canvas 当前像素
-
-用来读图或 canvas 里的字。**只读当前像素，不点击、不换图。** 换一张新图须先 `click` 该图，再 `ocr`。**不要**用来读在线表格（用 `officeRead`）。
-
-**参数**
-
-
-| 名        | 类型            | 必填  | 说明                                      |
-| -------- | ------------- | --- | --------------------------------------- |
-| `target` | idx / 文本 / 对象 | 是   | 优先本轮 idx。也可写 `captcha`：在页上按打分挑一张最像验证码的图来识别（仍不点、不换图） |
-
-
-指令示例：「把现在屏幕上的验证码认出来给我看，不要点图换新。」模型可将 `target` 写成 `captcha`（或快照里的 `[n]<IMG captcha …>` idx）。要换一张须另写：「先点验证码图换新，再认。」
-
-**分支**
-
-- 定位到 1 张图：返回识别文本、`likelyCaptcha`、`refreshed: false`（引擎没有替你点图）。
-- 裸标签 `IMG` / `CANVAS` 且页上多张可见：`ok: false`，`reason: ambiguous`，带本轮目录；不会默认识第一张（常是 logo）。
-- 输入框仍在、只是要填字：用下面的 `ocrFill`，不必先 `ocr` 再 `type`。
-
----
-
-
-
-### `ocrFill` — 识别当前图并写入输入框
-
-识别图片**当前像素**并写入输入框。**不点图换新。** `submit` **仅当传入才点**；省略则只填不提交（登录按钮应另用 `click`）。
-
-**参数**
-
-
-| 名        | 类型            | 必填  | 说明                                                |
-| -------- | ------------- | --- | ------------------------------------------------- |
-| `image`  | idx / 文本 / 对象 | 是   | 与 `ocr` 的 target 相同；优先本轮 idx。`captcha` 只选图、不点击     |
-| `input`  | target        | 是   | 要写入的输入框                                           |
-| `submit` | target        | 否   | 传入才点。不要默认把登录按钮塞进这里                                  |
-
-
-指令示例：「把现在这张验证码填进『验证码』框，不要点图换新，填完不要点登录。」看不清再写：「先点验证码图换一张，再认、再填，填完点登录。」
-
-**分支**
-
-- 输入框已不在页上：直接拒绝（`inputMissing`），不猜「已登录」，也不再 OCR。
-- 图有多张可见、目标是裸 `IMG`：与 `ocr` 相同，交目录。
-- 回执含 `filled`、`submitted`、`text`、`refreshed`、`likelyCaptcha`；页上有提示则带 `statusMessages`。不发明 `loginError`。
-
-
----
-
-
-
-### `officeRead` — 读在线表格 / 文档
-
-仅当页面是插件能对接的在线表格或文档。普通网页正文用 `get`。
-
-**参数**
-
-
-| 名       | 类型  | 必填  | 说明              |
-| ------- | --- | --- | --------------- |
-| `addr`  | 字符串 | 否   | 表格单元格，如 `A1`    |
-| `range` | 字符串 | 否   | 表格范围，如 `A1:C10` |
-
-
-不传地址时读当前选区或实现所支持的默认视图。页不是 office 表面则 `office-missing`。
-
----
-
-
-
-### `officeFill` — 写在线表格格或向文档选区插字
-
-**参数**（三种用法，不要混用）
-
-
-| 用法  | 参数                        | 说明     |
-| --- | ------------------------- | ------ |
-| 单格  | `addr`（必须像 `A1`）+ `value` | 写入一格   |
-| 多格  | `cells` 对象                | 一次写多格  |
-| 文档  | 仅 `value`                 | 插入当前选区 |
-
-
-表格必须带 A1 风格地址。不要对普通网页的输入框用这个工具（用 `type`）。
-
----
-
-
-
-### `print` — 按关键词打出本轮定位目录
-
-在对话里列出匹配控件的 outline 行，**不占 get 那种正文字数预算**，也不写入记忆表。`idx` 仅本轮有效。
-
-**参数**
-
-
-| 名       | 类型  | 必填  | 说明                            |
-| ------- | --- | --- | ----------------------------- |
-| `query` | 字符串 | 是   | 关键词或 name                     |
-| `limit` | 整数  | 否   | **目录条数**（不是正文字数），默认约 20，最大 80 |
-
-
-和 `get` 的区别：`print` 给目录；`get` 给某个节点的正文切片。找不到时也会尽量给覆盖层短名，避免空白。
-
-指令可写：「先把名称里带『附件』的控件目录打出来。」
-
----
-
-
-
-### `memorize` — 写入任务记忆表一条
-
-跨步骤保存一段文本（地址、读到的正文、用户确认过的值）。每轮快照头只给记忆**目录**（name / 字数 / 指纹 `same` / 短头），不倒全文。
-
-**参数**
-
-
-| 名       | 类型  | 必填  | 说明                       |
-| ------- | --- | --- | ------------------------ |
-| `name`  | 字符串 | 是   | 槽名，最长约 40 字              |
-| `value` | 字符串 | 否   | 要存的全文。空、缺省或 `{}` **不是**值 |
-
-
-**分支（无合法 value 时的回填，按顺序）**
-
-1. 本批已经成功的 `get` / `print` 正文；
-2. 否则上一拍 `lastRead`；
-3. 再没有则失败（`missing-source`）。
-
-快照 panes 不会被当成回填来源。最多约 32 条；超长截到与 `get` 相同的硬顶。同名则覆盖。
-
----
-
-
-
-### `recall` — 按名取出记忆全文或切片
-
-**参数**
-
-
-| 名        | 类型  | 必填  | 说明                 |
-| -------- | --- | --- | ------------------ |
-| `name`   | 字符串 | 是   | 槽名                 |
-| `limit`  | 整数  | 否   | 与 `get` 相同的字数上限    |
-| `offset` | 整数  | 否   | 与 `get` 相同，从第 N 字起 |
-
-
-历史【执行结果】或先前 `get` 已有同一 `same`、未截断、且字段已够判断时，模型**可以不调**；你若写「必须引用记忆里的全文」，它仍应 `recall`。引擎只要被调用就会返回。看回执 `chars` / `truncated`。
-
----
-
-
-
-### `forget` — 删除记忆槽
-
-不删聊天记录，不改技能变量。
-
-**参数**
-
-
-| 名      | 类型  | 必填  | 说明              |
-| ------ | --- | --- | --------------- |
-| `name` | 字符串 | 二选一 | 要删的槽            |
-| `all`  | 布尔  | 二选一 | `true` 清空该站任务记忆 |
-
-
----
-
-
-
-### `goto` — 打开记住的或写明的地址
-
-须由模型显式调用；`memorize` 之后**不会**自动跳转。
-
-**参数**
-
-
-| 名      | 类型  | 必填            | 说明                   |
-| ------ | --- | ------------- | -------------------- |
-| `url`  | 字符串 | 与 `name` 至少其一 | 必须是 `http` 或 `https` |
-| `name` | 字符串 | 与 `url` 至少其一  | 从记忆表该槽取出 URL         |
-
-
-读当前地址：`get` 且 `target` 为 `url`，再 `memorize`，需要时再 `goto`。`goto` 若另外开出新标签页，回执同样带 `openedTab` 并停批。
-
----
-
-
-
-### `delegate` — 把任务交给新开的标签页
-
-父页模型写下子任务原文；引擎在指定 tab 注入面板并新开一轮 agent。父页这一步会一直等到子页交回。
-
-**参数**
-
-
-| 名 | 类型 | 必填 | 说明 |
+| Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `task` | 字符串 | 是 | 子 agent 的用户指令原文。引擎不改写、不补站点步骤 |
-| `return` | 字符串数组 | 是 | 子页必须用 `returnToParent` 交回的字段名 |
-| `name` | 字符串 | 否 | 子任务短名（面板标题/日志） |
-| `tab` | 数字或 `"opened"` | 否 | 子 `tabId`，必须是本页回执 `openedTab`/`openedTabs` 里的记录；省略或 `"opened"` 表示最近一条 `openedTab` |
+| `target` | idx / text / object / `"url"` / `"title"` | yes | Handle to read; `url` / `title` for address or title |
+| `limit` | integer | no | Max body chars, default ~10000, hard cap 500000 |
+| `offset` | integer | no | Start at char N (0-based); slice with `limit` |
+| `open` | boolean | no | If true, open dropdown/cascade before reading options |
 
+**Branches**
 
-引擎只检查 `return` 列出的键是否都出现，不核对值对不对。父面板在等待期间显示「等待子标签页：{name}」。父页点停止会同时取消并关掉尚未交回的子页。注入失败时回执 `reason: inject-failed` 且带 `tabLeftOpen: true`，表示该子 tab 仍开着，可再 `delegate` 或 `tabClose`。
+- `target` is `url` or `title`: returns URL or title text.
+- **One** node: `text`, `chars`, `fieldState`, visible `options`, `label`, `sec` (section).
+- `fieldState.committed` is **shown display text** (selection chips / read-only innerText / box value)—**not** a “already selected” verdict. `filter` is the writable filter box value; read-only combobox has empty `filter`, `committed` still shows display text. `open` / `optionsTop` describe **this trigger’s visible popup**; option `sel` comes from DOM `aria-selected` / `--selected`, not string comparison by the engine.
+- **Zero** or **many** nodes: `ok: false`, `reason` `not-found` or `ambiguous`, `catalog` for this round. Short text may live-lookup after truncation.
+- `truncated: true`: increase `limit` or set `offset` and `get` again—do not re-target with CSS.
 
----
-
-
-
-### `returnToParent` — 子页交回字段
-
-仅在 `delegate` 的子标签页上调用。参数对象原样交给父页，随后引擎关掉子 tab，并把焦点带回父页。
-
-缺键时仍关子 tab，父页回执带已交对象和 `missing` 列表。子轮 `done` 却未调用本工具时，父页会收到 `returned.summary`（来自 `done.summary`），`missing` 为全部 `return` 字段名。
-
-不要在页面脚本里关标签页。
+Use `memorize` to keep text across steps; snapshot pane bodies are not memory sources.
 
 ---
 
+### `type` — type only; does not pick options
 
+Write a string into an editable node or filter box. Does **not** auto-click dropdown items or “Create …”.
 
-### `tabClose` — 关掉多余的新标签页
+**Parameters**
 
-模型看到 `openedTab`、决定不跟过去时调用。引擎不会自行关掉新 tab。
-
-**参数**
-
-
-| 名 | 类型 | 必填 | 说明 |
+| Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `tab` | 数字或 `"opened"` | 否 | 要关的 `tabId`，必须是本页回执 `openedTab`/`openedTabs` 里的记录；省略或 `"opened"` 表示最近一条 `openedTab` |
+| `target` | idx / text / object | yes | Input or editable node |
+| `value` | string | yes | Full text to write. `{}` or omit is not valid |
 
+**Branches**
+
+- Normal input / textarea / contenteditable: returns actual value and verification.
+- Filter dropdown: types filter text, marks not-submitted state; you or a later round `click` / `select`.
+- If a nearby list appears or options change: `typed-not-committed`, **`yieldBatch` stops the batch**. Options in receipt `options` / `fieldState.optionsTop`; click new items via next snapshot idx.
+- Disabled or missing target: failure with catalog; batch stops unless engine marks continue.
+
+Do not write “auto-pick first after typing”.
 
 ---
 
+### `click` — left click, hover, right click, double click
 
+Default is left activation. `button` selects pointer behavior.
 
-## 3. 回执里常见字段（方便你读面板、也方便写「看回执再继续」）
+**Parameters**
 
-工具结果会压缩后出现在对话的【执行结果】里，常见字段：
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `target` | idx / text / object | yes | Handle to act on |
+| `button` | `left` / `hover` / `right` / `dblclick` | no | Omit or `left` for left click |
+| `within` | string | no | Search by name only inside this container |
 
+**`button` branches**
 
-| 字段                             | 含义                                                          |
-| ------------------------------ | ----------------------------------------------------------- |
-| `ok`                           | 这步是否做成                                                      |
-| `reason`                       | `not-found` / `ambiguous` / `disabled` / `missing-source` 等 |
-| `catalog`                      | 本轮可点条目，行内有 `[idx]`、`name=`、`hidden`、`sec=`                  |
-| `idxRoundOnly`                 | 这些编号只在本轮有效                                                  |
-| `yieldBatch`                   | 悬停、右键、开出新标签页等情况下本批已停，后面的调用没有执行                  |
-| `openedTab` / `openedTabs`     | 本步开出的新标签页；带 `openerTabId` 的为确定归属，不带的为同窗口候选。多个时 `openedTab` 为最后一条确定归属的记录 |
-| `returned` / `missing`         | `delegate` 交回的字段对象，以及 `return` 列表里尚未出现的键名                 |
-| `text` / `chars` / `truncated` | 读到的正文与是否被切片                                                 |
-| `fieldState`                   | `committed` 为 shown 展示字，`filter` 为可写框，`open`/`optionsTop` 为所属可见弹层；不是「已选中」判定 |
-| `resolved`                     | 实际按 `idx` / `name` / `selector` 的哪一种对上                      |
-| `filled` / `submitted`         | `ocrFill`：字是否写入、是否点了传入的 submit                              |
-| `refreshed` / `likelyCaptcha`  | 截图前是否点过图（现为 false）；引擎是否按验证码清洗了识别结果                       |
-| `statusMessages`               | 页上当时的提示/弹窗原文，不是引擎判定的对错                                     |
-| `selection`                    | 当前勾选或高亮的条目（名 + 本轮 idx）。右键菜单往往作用于这个集合，不是只作用于刚指向的那一个 |
+| Value | Behavior | Same-batch follow-up on new items |
+| --- | --- | --- |
+| `left` or omit | Left click. Suggestions and cascade leaves OK. Rows with checkboxes return `selection` | Usually continues batch. After `type` stop-batch, click options next round. New tab → `openedTab`, **batch stops** |
+| `hover` | Move pointer only; **no click, no menu pick** | **Batch stops** (`yieldBatch`). Use catalog or next snapshot, then `click` |
+| `right` | Context menu only; **no prior left click, selection unchanged** | Batch stops. `selection` = current checked/highlighted rows; confirm dialogs in `statusMessages` |
+| `dblclick` | Double click | Normal receipt; new tab same as left |
 
+When a new tab opens, receipt includes:
 
-你在指令里可以写：「若回执说匹配到多处，停下来把目录念给我」或「按 catalog 里带某栏目名的那一条继续」。不要写死过期的 idx。
+- `openedTab`: `{ tabId, url, title, windowId }`. Multiple: `openedTabs`; `openedTab` is last record with confirmed opener.
+- Records with `openerTabId` are confirmed by the service worker; records without are same-window candidates (`target=_blank` links often lack opener)—you judge via url/title and `intentUrl`.
+- `yieldBatch: true`: batch stopped; hand off to next round.
+- `intentUrl` / `target` (e.g. `_blank`): from the link node.
 
-## 4. 技能与 `{{变量}}`
+Next round: `delegate` to that tab or `tabClose`.
 
-面板可以把做成功的步骤收成 WEB-SKILL。技能正文里的 `{{姓名}}` 必须**原样**出现在模型输出的工具参数里，由引擎换成你在技能里保存的本地值。不要让模型把花括号里的名字改掉或提前展开。
+**Lookup by `target` (left short text)**
 
-个人数据放在技能的变量表，不要写进可分享的步骤描述。
+- **idx**: click this round’s number, including `hidden` in outline.
+- **Short name**: search idx by name (exact > prefix > contains; innermost wrapper; disjoint names = multiple).
+  - **1**: click (including hidden).
+  - **Many**: fail `ambiguous`, catalog with idx / name / hidden / sec, **stop batch**.
+  - **0**: scan **visible** nodes; still 0/1/many; 0 gives overlay short-name catalog, **stop batch**.
+- **CSS**: only when it looks like a selector and matches a node; do not use long skill selectors as routine handles.
 
-## 5. 插件不会做的事
+Do not write “hover then immediately click Preview”. Write: if item not visible, hover first, then click from the list.
 
-- 执行模型编造的 JavaScript 或 `page.q(...)` 脚本。
-- 把 CSS 当作跨页、跨轮的稳定句柄。
-- 在多个同名按钮里按「任务里像标题的那几个字」擅自消歧后点击。
-- 悬停后在同一批里替你点刚冒出来的菜单项。
-- 在识别前替你点击验证码图换新；或在未传入 `submit` 时自动点登录/提交。
-- 右键时先左键改选中集。选中了谁以回执 `selection` 和确认框原文为准。
-- 代替你决定业务上选哪一个分类、哪一份文件；能做的是列出诚实目录，或在你写清唯一条件后执行。
+---
 
+### `check` — toggle real checkbox / radio
 
+For checkbox/radio only; idempotent if already in target state. Row clicks also return `selection`.
 
-## 6. 与安装、配置的关系
+**Parameters**
 
-安装、模型接口、OCR、技能导入导出见仓库根目录 [README.md](../README.md)。先在目标网站登录，再点扩展图标打开面板；文本附件直接进上下文，PDF / 图片会先识别再交给文本模型。
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `target` | idx / text / object | yes | Checkbox or radio |
+| `value` | boolean | no | Omit = check (`true`). `false` = uncheck |
+
+Not for ordinary buttons or menu items.
+
+---
+
+### `select` — unique match among current options
+
+Opens the control and matches text among **currently expanded/harvested** options. Not unique → catalog, no random click.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `target` | idx / text / object | yes | Dropdown, cascade, or custom select host |
+| `value` | string | yes | Option label to select |
+| `filter` | string | no | Type into filter box before matching |
+
+**Branches**
+
+- Unique hit: selected, returns actual text.
+- Multiple candidates / not open / not found: `ok: false`, `options` or catalog.
+- “Create/New” entries appear as options; **not** auto-clicked.
+- Empty-state text (e.g. “No data”) still in `options`.
+- `type` into filter does **not** auto-invoke `select`.
+
+---
+
+### `scroll` — scroll field region or page
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `target` | idx / text / `"page"` / `"window"` | yes | Scroll container; `page` / `window` = whole page |
+| `direction` | `up` / `down` | no | Default `down`. Other values fail (`bad-direction`) |
+
+Use when snapshot is truncated or lists are collapsed.
+
+---
+
+### `wait` — wait for present, enabled, gone, or elapsed time
+
+Timeout is an observation, not a crash; batch usually continues.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `target` | idx / selector-like text | no | What to wait for. Omit = wait `timeout` ms |
+| `until` | `present` / `enabled` / `gone` | no | With `target`: appear (default), become enabled, disappear |
+| `timeout` | integer (ms) | no | Max wait, cap 8000. Without `target`, sleep duration |
+
+Existing idx returns immediately with `found` / `disabled` / `busy` / `elapsedMs`. Use `until=enabled` for loading buttons.
+
+---
+
+### `upload` — send attached files to file input
+
+**Do not** `click` “Upload” to open the OS file dialog. Attach in the panel first, then pass attachment keys.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `target` | idx / text / object | yes | `<input type="file">` or site file control |
+| `key` | string or string[] | yes | Panel attachment key(s) |
+
+---
+
+### `ocr` — read pixels from image or canvas
+
+Reads text from current pixels. **Does not click or change the image.** To change image, `click` it first, then `ocr`. Not for online spreadsheets (`officeRead`).
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `target` | idx / text / object | yes | Prefer round idx. `captcha`: pick best captcha-like visible image (still no click) |
+
+Example: “Read the captcha on screen; do not click to refresh.” Use `captcha` or snapshot `[n]<IMG captcha …>` idx. To refresh: “Click captcha image, then read.”
+
+**Branches**
+
+- One image: text, `likelyCaptcha`, `refreshed: false`.
+- Multiple bare `IMG`/`CANVAS`: `ambiguous` + catalog; does not default to first (often logo).
+- Input still on page: use `ocrFill` below.
+
+---
+
+### `ocrFill` — OCR current image and fill input
+
+Reads **current pixels** and fills input. **No click to refresh.** `submit` **only if passed**; omit = fill only (use `click` for login separately).
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | idx / text / object | yes | Same as `ocr` target; `captcha` selects without click |
+| `input` | target | yes | Input to fill |
+| `submit` | target | no | Click only if provided |
+
+Example: “Fill captcha into ‘Captcha’ field; do not refresh image; do not click Login.” If unclear: “Click captcha to refresh, then read, fill, then click Login.”
+
+**Branches**
+
+- Input gone: reject `inputMissing`—no guess “already logged in”, no OCR.
+- Multiple images: same as `ocr`.
+- Receipt: `filled`, `submitted`, `text`, `refreshed`, `likelyCaptcha`, `statusMessages`.
+
+---
+
+### `officeRead` — read online sheet / document
+
+Only when the page is a supported online office surface. Web body uses `get`.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `addr` | string | no | Cell, e.g. `A1` |
+| `range` | string | no | Range, e.g. `A1:C10` |
+
+Default view when addr omitted. `office-missing` if not an office surface.
+
+---
+
+### `officeFill` — write cells or insert at selection
+
+**Parameters** (one mode per call)
+
+| Mode | Parameters | Description |
+| --- | --- | --- |
+| Single cell | `addr` (A1-style) + `value` | Write one cell |
+| Multi cell | `cells` object | Write many |
+| Document | `value` only | Insert at current selection |
+
+Use `type` for normal web inputs.
+
+---
+
+### `print` — keyword catalog in chat
+
+Lists matching outline rows; **does not consume get body budget** or memory. idx valid this round only.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `query` | string | yes | Keyword or name |
+| `limit` | integer | no | **Catalog row count** (not body chars), default ~20, max 80 |
+
+`print` = catalog; `get` = body slice for one node.
+
+---
+
+### `memorize` — store one task-memory slot
+
+Cross-step text (URL, read body, confirmed values). Each snapshot header lists memory **directory** only (name / chars / `same` / short head)—not full text.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | Slot name, ~40 chars max |
+| `value` | string | no | Full text. Empty, omit, or `{}` is **not** a value |
+
+**Backfill when value missing (in order)**
+
+1. Successful `get` / `print` in this batch;
+2. Else `lastRead`;
+3. Else fail (`missing-source`).
+
+Snapshot panes are not backfill sources. ~32 slots max; long text truncated like `get`. Same name overwrites.
+
+---
+
+### `recall` — read memory by name (full or slice)
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | Slot name |
+| `limit` | integer | no | Same as `get` |
+| `offset` | integer | no | Same as `get` |
+
+If history or prior `get` already has same `same`, not truncated, and fields suffice, model **may skip** `recall`. If you require full memory text, say so. Engine returns when called. Check `chars` / `truncated`.
+
+---
+
+### `forget` — delete memory slot(s)
+
+Does not delete chat or skill variables.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | one of | Slot to delete |
+| `all` | boolean | one of | `true` clears all task memory for this origin |
+
+---
+
+### `goto` — open remembered or explicit URL
+
+Model must call explicitly; `memorize` does **not** auto-navigate.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | at least one | Must be `http` or `https` |
+| `name` | string | at least one | Load URL from memory slot |
+
+Read current URL: `get` with `target` `url`, then `memorize`, then `goto` if needed. New tab from `goto` includes `openedTab` and stops batch.
+
+---
+
+### `delegate` — run sub-agent in opened tab
+
+Parent model writes child task text; engine injects panel on tab and runs a new agent round. Parent blocks until child returns.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `task` | string | yes | Child user instruction verbatim |
+| `return` | string[] | yes | Field names child must pass to `returnToParent` |
+| `name` | string | no | Short child task name |
+| `tab` | number or `"opened"` | no | Child `tabId` from this page’s `openedTab`/`openedTabs`; omit/`"opened"` = latest `openedTab` |
+
+Engine checks keys exist in `return`, not value correctness. Parent panel shows “Waiting for child tab: {name}”. Parent stop cancels and closes pending child. Inject failure: `inject-failed`, `tabLeftOpen: true`.
+
+---
+
+### `returnToParent` — child returns fields
+
+Only on a `delegate` child tab. Payload goes to parent; engine closes child tab and focuses parent.
+
+Missing keys still close child; parent receipt has partial `returned` and `missing`. Child `done` without this tool: parent gets `returned.summary` from `done.summary`, `missing` = all `return` keys.
+
+Do not close tabs from page scripts.
+
+---
+
+### `tabClose` — close extra opened tab
+
+When model sees `openedTab` and chooses not to follow. Engine does not auto-close.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `tab` | number or `"opened"` | no | `tabId` from `openedTab`/`openedTabs`; omit/`"opened"` = latest |
+
+---
+
+## 3. Common receipt fields
+
+Compressed tool results appear under 【执行结果】. Common fields:
+
+| Field | Meaning |
+| --- | --- |
+| `ok` | Step succeeded |
+| `reason` | `not-found` / `ambiguous` / `disabled` / `missing-source` etc. |
+| `catalog` | Clickable rows with `[idx]`, `name=`, `hidden`, `sec=` |
+| `idxRoundOnly` | Numbers valid this round only |
+| `yieldBatch` | Batch stopped (hover, right-click, new tab, …) |
+| `openedTab` / `openedTabs` | New tabs; `openerTabId` = confirmed; without = candidate |
+| `returned` / `missing` | `delegate` payload and missing `return` keys |
+| `text` / `chars` / `truncated` | Body and slice state |
+| `fieldState` | `committed` shown text, `filter` writable box, `open`/`optionsTop` popup—not “selected” verdict |
+| `resolved` | Matched via `idx` / `name` / `selector` |
+| `filled` / `submitted` | `ocrFill` write/submit |
+| `refreshed` / `likelyCaptcha` | Image clicked before capture (false now); captcha cleanup |
+| `statusMessages` | On-page toasts/dialog text—not engine judgment |
+| `selection` | Current checked/highlighted rows (name + idx) |
+
+You may write: “If ambiguous, stop and show catalog” or “Pick the row with sec=…”. Do not hard-code stale idx.
+
+## 4. Skills and `{{variables}}`
+
+Successful steps can be saved as WEB-SKILLS. `{{name}}` in skill text must appear **verbatim** in tool args; the engine substitutes local values. Do not let the model rename or pre-expand placeholders.
+
+Keep personal data in skill variable tables, not shareable step descriptions.
+
+## 5. What the Harness does not do
+
+- Run model-invented JavaScript or `page.q(...)` scripts.
+- Treat CSS as stable cross-page handles.
+- Disambiguate same-named buttons by guessing from task prose.
+- Click menu items in the same batch right after hover.
+- Click captcha to refresh before read; or auto-submit without `submit`.
+- Left-click before right-click to change selection—use `selection` and dialog text.
+- Choose business categories or files for you—it lists honest catalogs or executes when you state unique conditions.
+
+## 6. Install and configuration
+
+Install, model APIs, OCR, and skill import/export: repo root [README.md](../README.md). Chinese: [README-cn.md](../README-cn.md). Log in on the target site before opening the panel; text attachments enter context directly; PDFs and images are recognized first.
