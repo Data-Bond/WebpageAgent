@@ -703,12 +703,18 @@
       border-bottom-left-radius: 4px;
       box-shadow: 0 2px 8px rgba(35, 40, 58, 0.05);
     }
-    .bubble.assistant.has-detail {
-      padding-bottom: 26px;
-    }
     .bubble.assistant .bubble-text {
       white-space: pre-wrap;
       word-break: break-word;
+    }
+    .assistant-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .assistant-head .bubble-text {
+      flex: 1 1 auto;
+      min-width: 0;
     }
     .bubble.system {
       align-self: center;
@@ -833,18 +839,17 @@
       align-self: stretch;
     }
     .assistant-detail-btn {
-      position: absolute;
-      right: 8px;
-      bottom: 5px;
+      flex: 0 0 auto;
       border: none;
       background: transparent;
       color: #8a90a0;
       font-size: 14px;
       cursor: pointer;
-      padding: 1px 6px;
+      padding: 1px 0 1px 6px;
       font-family: inherit;
-      line-height: 1.4;
+      line-height: 1.5;
       border-radius: 4px;
+      white-space: nowrap;
     }
     .assistant-detail-btn:hover {
       color: #4f7cff;
@@ -2360,7 +2365,10 @@
   function addBubble(role, text) {
     if (text == null || text === '') return;
     if ((role === 'status' || role === 'system') && isSilentAttachStatus(text)) return;
-    renderRoleBubble(role, String(text));
+    const node = renderRoleBubble(role, String(text));
+    if (node && (role === 'status' || role === 'error')) {
+      syncOpenAssistantDetailWidthsForToolBubble(node);
+    }
     scrollDown();
     transcript.push({ role: role, text: String(text), at: nowIso() });
     persistTranscript();
@@ -2408,6 +2416,80 @@
     });
   }
 
+  function isInterimStatusBubble(el) {
+    if (!el || !el.classList.contains('bubble') || !el.classList.contains('status')) return false;
+    const t = String(el.textContent || '').trim();
+    return /^检测到页面跳转/.test(t) || /^正在停止/.test(t);
+  }
+
+  function findToolResultBubble(afterEl) {
+    let el = afterEl.nextElementSibling;
+    while (el) {
+      if (el.classList.contains('assistant-block')) return null;
+      if (el.classList.contains('bubble')) {
+        if (el.classList.contains('status') && !isInterimStatusBubble(el)) return el;
+        if (el.classList.contains('error')) return el;
+        if (el.classList.contains('user') || el.classList.contains('assistant') || el.classList.contains('llm-call')) return null;
+      }
+      el = el.nextElementSibling;
+    }
+    return null;
+  }
+
+  function clearAssistantDetailWidth(wrap) {
+    if (!wrap) return;
+    if (wrap._detailWidthObs) {
+      wrap._detailWidthObs.disconnect();
+      wrap._detailWidthObs = null;
+    }
+    wrap._detailWidthTarget = null;
+    wrap.style.width = '';
+    wrap.style.maxWidth = '';
+  }
+
+  function syncAssistantDetailWidth(wrap) {
+    if (!wrap || !wrap.classList.contains('assistant-block')) return;
+    const detail = wrap.querySelector('.assistant-output');
+    if (!detail || !detail.classList.contains('open')) {
+      clearAssistantDetailWidth(wrap);
+      return;
+    }
+    const target = findToolResultBubble(wrap);
+    if (!target) {
+      wrap.style.width = '';
+      wrap.style.maxWidth = '';
+      return;
+    }
+    const w = target.getBoundingClientRect().width;
+    if (w > 0) {
+      wrap.style.width = Math.ceil(w) + 'px';
+      wrap.style.maxWidth = Math.ceil(w) + 'px';
+    }
+    if (wrap._detailWidthTarget !== target) {
+      if (wrap._detailWidthObs) wrap._detailWidthObs.disconnect();
+      if (typeof ResizeObserver === 'function') {
+        wrap._detailWidthObs = new ResizeObserver(function () {
+          syncAssistantDetailWidth(wrap);
+        });
+        wrap._detailWidthObs.observe(target);
+      }
+      wrap._detailWidthTarget = target;
+    }
+  }
+
+  function syncOpenAssistantDetailWidthsForToolBubble(toolBubble) {
+    if (!toolBubble || !els.messages) return;
+    const blocks = els.messages.querySelectorAll('.assistant-block');
+    for (let i = 0; i < blocks.length; i++) {
+      const wrap = blocks[i];
+      const detail = wrap.querySelector('.assistant-output');
+      if (!detail || !detail.classList.contains('open')) continue;
+      if (findToolResultBubble(wrap) === toolBubble) {
+        requestAnimationFrame(function () { syncAssistantDetailWidth(wrap); });
+      }
+    }
+  }
+
   function renderAssistantBubble(text, output) {
     const summary = String(text == null ? '' : text);
     const rawOut = output == null ? '' : String(output);
@@ -2420,6 +2502,7 @@
     }
     const wrap = mk('div', 'assistant-block');
     const bubble = mk('div', 'bubble assistant has-detail');
+    const head = mk('div', 'assistant-head');
     const body = mk('div', 'bubble-text', { textContent: summary || '模型返回' });
     const toggle = mk('button', 'assistant-detail-btn', { type: 'button', textContent: '详情' });
     toggle.setAttribute('aria-expanded', 'false');
@@ -2428,14 +2511,20 @@
     const pre = mk('pre', null, { textContent: display });
     detail.appendChild(copyBtn);
     detail.appendChild(pre);
-    bubble.appendChild(body);
-    bubble.appendChild(toggle);
+    head.appendChild(body);
+    head.appendChild(toggle);
+    bubble.appendChild(head);
     wrap.appendChild(bubble);
     wrap.appendChild(detail);
     toggle.addEventListener('click', function () {
       const open = detail.classList.toggle('open');
       toggle.textContent = open ? '收起' : '详情';
       toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) {
+        requestAnimationFrame(function () { syncAssistantDetailWidth(wrap); });
+      } else {
+        clearAssistantDetailWidth(wrap);
+      }
     });
     copyBtn.addEventListener('click', function () { copyTextToClipboard(display, copyBtn); });
     els.messages.appendChild(wrap);
@@ -3222,6 +3311,7 @@
     } catch (e) {}
     clearMessagesDOM();
     transcript = [];
+    if (canPersist()) storeSet({ [trKey()]: [] });
     if (!keepFiles) {
       attachedFiles.length = 0;
       renderChips();

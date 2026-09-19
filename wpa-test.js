@@ -133,10 +133,10 @@ ok(!/下载 JSON 含本次请求的完整输入/.test(panelSrc), '展开区不�
 ok(!/textContent: '展开'/.test(panelSrc), '模型调用卡片不再提供展开按钮');
 ok(/textContent: '下载详情'/.test(panelSrc), '模型调用卡片保留下载详情');
 ok(/assistant-detail-btn/.test(panelSrc), '助手回复提供详情按钮');
-ok(/bubble\.appendChild\(toggle\)/.test(extractFn(panelSrc, 'renderAssistantBubble')), '详情按钮放在助手消息卡内部');
-ok(/right: 8px/.test((panelSrc.match(/\.assistant-detail-btn \{[\s\S]*?\n    \}/) || [''])[0]) &&
-  /bottom: 5px/.test((panelSrc.match(/\.assistant-detail-btn \{[\s\S]*?\n    \}/) || [''])[0]),
-  '详情是消息卡右下角的透明文字');
+ok(/head\.appendChild\(toggle\)/.test(extractFn(panelSrc, 'renderAssistantBubble')), '详情按钮与摘要文字同一行');
+ok(/\.assistant-head \{[\s\S]*display: flex/.test(panelSrc), '摘要与详情按钮横向排列');
+ok(/function findToolResultBubble/.test(panelSrc), '助手详情宽度对齐后续 result 卡片');
+ok(/syncAssistantDetailWidth\(wrap\)/.test(extractFn(panelSrc, 'renderAssistantBubble')), '展开详情时同步 result 卡片宽度');
 ok(/assistant-output-copy/.test(panelSrc), '详情文本框右上角有复制按钮');
 ok(/function formatModelOutput/.test(panelSrc), '助手详情展示完整 output JSON');
 ok(/llm-call-note:empty/.test(panelSrc), '空备注不占行');
@@ -1082,9 +1082,22 @@ ok(/function rememberResumeCheckpoint/.test(bg) && /function rememberLlmTrace/.t
   '内部记账 rememberResumeCheckpoint/rememberLlmTrace 不随工具改名');
 {
   const clearHist = bg.slice(bg.indexOf("cmd === 'clearHistory'"), bg.indexOf("cmd === 'cancel'"));
-  ok(/clearTaskMemory\(origin\)/.test(clearHist) && /clearResumeCheckpoint\(origin\)/.test(clearHist),
+  ok(/discardOriginSession\(origin\)/.test(clearHist) &&
+    /clearTaskMemory\(origin\)/.test(extractFn(bg, 'discardOriginSession')) &&
+    /clearResumeCheckpoint\(origin\)/.test(extractFn(bg, 'discardOriginSession')),
     '清空对话同时清记忆表与 resume 检查点');
   ok(/lastReads\.delete/.test(extractFn(bg, 'clearTaskMemory')), 'clearTaskMemory 清 lastRead');
+  ok(/pausedOrigins\.delete\(tabId\)/.test(clearHist) && /clearPendingCheckpoint\(tabId\)/.test(clearHist),
+    '清空对话同步清 pausedOrigins 与 pending 检查点');
+  ok(/discardOriginSession\(origin\)/.test(clearHist), '清空对话立即丢弃该 origin 会话痕迹');
+  ok(/const originSessions = new Map\(\)/.test(bg) && /histSaveChains/.test(bg) && /memSaveChains/.test(bg),
+    'origin 会话世代与 hist/memory 写链协调异步持久化');
+  ok(/function originSessionLive/.test(bg) && /function sessionEpochMatches/.test(bg),
+    '异步写入带 token 校验，过期只丢弃');
+  ok(!/await storageSet\(\{ \['hist:' \+ origin\]: \[\] \}\)/.test(extractFn(bg, 'saveHistory')),
+    '过期 saveHistory 不写空 hist 反清新会话');
+  ok(!/clearTaskMemory\(origin\)/.test(extractFn(bg, 'persistTaskMemory')),
+    '过期 persistTaskMemory 不反清 memory');
 }
 ok(!/张文帅/.test(bg) && !/学科分类等级联字段必须/.test(bg), 'PLAYBOOK 不写某一站字段名');
 
@@ -1738,9 +1751,9 @@ const timeoutStart = bg.indexOf('function estimateMessageChars');
 const timeoutEnd = bg.indexOf('\n// 文本模型调用');
 ok(timeoutStart >= 0 && timeoutEnd > timeoutStart, '可截取超时计算函数');
 const timeoutSandbox = {
-  LLM_TEXT_TIMEOUT_BASE_MS: 120000,
-  LLM_TEXT_TIMEOUT_MAX_MS: 300000,
-  LLM_OCR_TIMEOUT_MS: 120000
+  LLM_TEXT_TIMEOUT_BASE_MS: 60000,
+  LLM_TEXT_TIMEOUT_MAX_MS: 150000,
+  LLM_OCR_TIMEOUT_MS: 60000
 };
 try {
   vm.runInNewContext(
@@ -1752,12 +1765,12 @@ try {
 } catch (e) {
   ok(false, '加载 llmTimeoutMs 失败: ' + (e && e.message));
 }
-ok(timeoutSandbox.llmTimeoutMs('ocr') === 120000, 'OCR 超时 120s');
-ok(timeoutSandbox.llmTimeoutMs('text', [{ content: 'x' }], 'qwen') === 120000, '短上下文普通模型 120s');
+ok(timeoutSandbox.llmTimeoutMs('ocr') === 60000, 'OCR 超时 60s');
+ok(timeoutSandbox.llmTimeoutMs('text', [{ content: 'x' }], 'qwen') === 60000, '短上下文普通模型 60s');
 ok(timeoutSandbox.isReasonerModel('qwen3.8-reasoner'), 'qwen3.8-reasoner 视为推理模型');
 ok(
-  timeoutSandbox.llmTimeoutMs('text', [{ content: 'x'.repeat(109313) }], 'qwen3.8-reasoner') === 300000,
-  '约 109k 字符的 reasoner 超时拉到上限 300s'
+  timeoutSandbox.llmTimeoutMs('text', [{ content: 'x'.repeat(109313) }], 'qwen3.8-reasoner') === 150000,
+  '约 109k 字符的 reasoner 超时拉到上限 150s'
 );
 ok(/timeoutMs/.test(bg) && /超时 /.test(panelSrc), '调用卡片会显示超时秒数');
 
@@ -2233,8 +2246,8 @@ ok(/textKind.*filename-label/.test(bridge), 'page.get 打 textKind=filename-labe
 ok(/val\.textKind/.test(extractFn(bg, 'compactOneHelperValue')), 'compactOneHelperValue 透传 textKind');
 ok(/filename-label/.test((bg.match(/RUNTIME_PLAYBOOK =[\s\S]*?PLAYBOOK_END;/) || [''])[0]),
   'PLAYBOOK 含 filename-label 说明');
-ok(/function compressTaskRefInContext/.test(bg) && /compressTaskRefInContext\(foldedHistory/.test(bg),
-  'step 上下文任务引用化');
+ok(!/见任务same=/.test(bg) && !/compressTaskRefInContext/.test(bg),
+  '请求上下文不再把任务改成 same 引用');
 ok(/repeatStreak/.test(bg) && /domLen变化极大/.test(bg), 'pageSignalBlock repeatStreak 与 domDelta');
 ok(/contextTokenSoft/.test(bg) && /contextTokenHard/.test(bg), 'DEFAULT_CONFIG 含 contextToken');
 ok(/id="contextTokenSoft"/.test(settingsHtml) && /id="contextTokenHard"/.test(settingsHtml),
@@ -2243,7 +2256,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.3.0', '锁步版本为 6.3.0');
+ok(manifestVer === '6.3.1', '锁步版本为 6.3.1');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');

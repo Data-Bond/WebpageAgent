@@ -19,11 +19,13 @@ const LAST_CHANCE_SNAPSHOT_MAX = WPA_CONTRACTS.SNAPSHOT_LAST_CHANCE_CHARS;
 const ATTACHMENT_CONTEXT_MAX_CHARS = WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS;
 const STATUS_MSG_CHARS = WPA_CONTRACTS.STATUS_MSG_CHARS;
 const STATUS_MSG_MAX = WPA_CONTRACTS.STATUS_MSG_MAX;
-const LLM_TEXT_TIMEOUT_BASE_MS = 120000;
-const LLM_TEXT_TIMEOUT_MAX_MS = 300000;
+const LLM_TEXT_TIMEOUT_BASE_MS = 60000;
+const LLM_TEXT_TIMEOUT_MAX_MS = 150000;
 const LLM_TEXT_TIMEOUT_RETRY = 2;
 const LLM_TEXT_ERROR_RETRY = 2;
-const LLM_OCR_TIMEOUT_MS = 120000;
+const LLM_OCR_TIMEOUT_MS = 60000;
+const LLM_OCR_MINERU_TIMEOUT_MS = 90000;
+const LLM_PING_TIMEOUT_MS = 15000;
 
 const DEFAULT_CONFIG = {
   textProviders: [],
@@ -2127,8 +2129,8 @@ function isReasonerModel(model) {
 function llmTimeoutMs(kind, messages, model) {
   if (kind === 'ocr') return LLM_OCR_TIMEOUT_MS;
   const chars = estimateMessageChars(messages);
-  let ms = LLM_TEXT_TIMEOUT_BASE_MS + Math.floor(chars / 25000) * 30000;
-  if (isReasonerModel(model)) ms += 60000;
+  let ms = LLM_TEXT_TIMEOUT_BASE_MS + Math.floor(chars / 25000) * 15000;
+  if (isReasonerModel(model)) ms += 30000;
   if (ms > LLM_TEXT_TIMEOUT_MAX_MS) ms = LLM_TEXT_TIMEOUT_MAX_MS;
   return ms;
 }
@@ -2620,7 +2622,7 @@ async function callOcrOpenAiVision({ fileName, uploadName, pngDataUrl, approxByt
   try {
     const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, messages, {
       maxTokens: 4096,
-      timeoutMs: 120000,
+      timeoutMs: LLM_OCR_TIMEOUT_MS,
       signal: signal,
       diagProbe: 'ocr',
       onUsage: function (u) { ocrUsage = u; }
@@ -2827,7 +2829,7 @@ async function callOcrScnet({ fileName, uploadName, pngDataUrl, approxBytes, sig
     fd.append('file', prepared.blob, prepared.name);
     fd.append('ocrType', ocrType);
     const controller = new AbortController();
-    const timer = setTimeout(function () { controller.abort(); }, 120000);
+    const timer = setTimeout(function () { controller.abort(); }, LLM_OCR_TIMEOUT_MS);
     linkAbort(controller, signal);
     try {
       return await awaitOrCancel(fetch(url, {
@@ -3079,7 +3081,7 @@ async function callOcrMinerU({ fileName, uploadName, pngDataUrl, approxBytes, si
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 180000);
+  const timer = setTimeout(() => controller.abort(), LLM_OCR_MINERU_TIMEOUT_MS);
   linkAbort(controller, signal);
   const ocrStarted = Date.now();
   try {
@@ -4125,19 +4127,27 @@ function resumeCheckpointKey(origin) {
 }
 
 function rememberResumeCheckpoint(origin, messages, interrupt) {
+  if (originSessionDiscarded(origin)) return;
   const originalTask = extractOriginalTask(messages);
   if (!origin || !originalTask) return;
+  const token = originSessionToken(origin);
+  if (!originSessionLive(token)) return;
+  const key = token.key;
   const payload = {
     originalTask: originalTask,
     done: summarizeVerifiedProgress(messages),
     interrupt: String(interrupt || '').slice(0, 300),
-    memory: cloneMemoryList(taskMemories.get(String(origin || '')) || []),
-    savedAt: Date.now()
+    memory: cloneMemoryList(taskMemories.get(key) || []),
+    savedAt: Date.now(),
+    sessionEpoch: token.epoch
   };
-  try {
-    const write = chrome.storage.session.set({ [resumeCheckpointKey(origin)]: payload });
-    if (write && typeof write.catch === 'function') write.catch(function () {});
-  } catch (e) {}
+  const holdToken = { key: key, epoch: token.epoch };
+  const prev = checkpointSaveChains.get(key) || Promise.resolve();
+  const job = prev.then(function () {
+    if (!originSessionLive(holdToken)) return;
+    return chrome.storage.session.set({ [resumeCheckpointKey(origin)]: payload });
+  }).catch(function () {});
+  checkpointSaveChains.set(key, job);
 }
 
 async function loadResumeCheckpoint(origin) {
@@ -4147,6 +4157,7 @@ async function loadResumeCheckpoint(origin) {
     const saved = await chrome.storage.session.get(key);
     const cp = saved && saved[key];
     if (!cp || Date.now() - Number(cp.savedAt || 0) > 24 * 60 * 60 * 1000) return null;
+    if (!sessionEpochMatches(origin, cp.sessionEpoch)) return null;
     return cp;
   } catch (e) { return null; }
 }
@@ -4912,6 +4923,11 @@ const TASK_MEMORY_NAME_MAX = 40;
 const TASK_MEMORY_VALUE_MAX = WPA_CONTRACTS.GET_TEXT_HARD;
 const taskMemories = new Map();
 const lastReads = new Map();
+// 各 origin 会话世代：清空对话 bump epoch；异步写入带 token，过期只丢弃、不反清新会话。
+const originSessions = new Map();
+const histSaveChains = new Map();
+const memSaveChains = new Map();
+const checkpointSaveChains = new Map();
 const childJobs = new Map();
 const lastOpenedByOpener = new Map();
 // 父页 click 已开出、尚未 delegate 的子 tab -> 父 tabId
@@ -5130,30 +5146,6 @@ function batchOpsSig(operations) {
     parts.push(String(o.op || ''));
   }
   return parts.join(',');
-}
-
-function compressTaskRefInContext(messages, stepIndex) {
-  if (stepIndex < 2) return messages;
-  if (!WPA_CONTRACTS || typeof WPA_CONTRACTS.taskCanonicalBody !== 'function' ||
-      typeof WPA_CONTRACTS.hashTextBody !== 'function') return messages;
-  const out = [];
-  let taskDone = false;
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i];
-    if (!m || typeof m !== 'object') { out.push(m); continue; }
-    if (!taskDone && m.role === 'user' &&
-        (m.kind === 'task' || m.kind === 'resume' || m.kind === 'continue' ||
-          isCurrentTaskMessage(m.content))) {
-      const body = WPA_CONTRACTS.taskCanonicalBody(m.content);
-      const h = WPA_CONTRACTS.hashTextBody(body).slice(0, 16);
-      out.push(cloneChatMessage(m,
-        '【当前指令】见任务same=' + h + '（chars=' + body.length + '，全文已在首步给出，禁止从头重做）'));
-      taskDone = true;
-    } else {
-      out.push(cloneChatMessage(m));
-    }
-  }
-  return out;
 }
 
 function sessionOpSpec(args) {
@@ -6007,26 +5999,42 @@ function isHttpUrl(url) {
 }
 
 function persistTaskMemory(origin) {
-  try {
-    const write = chrome.storage.session.set({
+  if (originSessionDiscarded(origin)) return;
+  const token = originSessionToken(origin);
+  if (!originSessionLive(token)) return;
+  const key = token.key;
+  const holdToken = { key: key, epoch: token.epoch };
+  const prev = memSaveChains.get(key) || Promise.resolve();
+  const job = prev.then(function () {
+    if (!originSessionLive(holdToken)) return;
+    return chrome.storage.session.set({
       [memorySessionKey(origin)]: {
-        list: cloneMemoryList(taskMemories.get(String(origin || '')) || []),
-        savedAt: Date.now()
+        list: cloneMemoryList(taskMemories.get(key) || []),
+        savedAt: Date.now(),
+        sessionEpoch: holdToken.epoch
       }
     });
-    if (write && typeof write.catch === 'function') write.catch(function () {});
-  } catch (e) {}
+  }).catch(function () {});
+  memSaveChains.set(key, job);
 }
 
 async function hydrateTaskMemory(origin) {
   const key = String(origin || '');
+  if (originSessionDiscarded(origin)) {
+    taskMemories.set(key, []);
+    lastReads.delete(key);
+    return;
+  }
   if (taskMemories.has(key)) return;
   try {
     const sk = memorySessionKey(origin);
     const saved = await chrome.storage.session.get(sk);
     const rec = saved && saved[sk];
-    if (rec && Array.isArray(rec.list)) taskMemories.set(key, cloneMemoryList(rec.list));
-    else taskMemories.set(key, []);
+    if (rec && Array.isArray(rec.list) && sessionEpochMatches(origin, rec.sessionEpoch)) {
+      taskMemories.set(key, cloneMemoryList(rec.list));
+    } else {
+      taskMemories.set(key, []);
+    }
   } catch (e) {
     taskMemories.set(key, []);
   }
@@ -8245,7 +8253,59 @@ function stringifyViewDiff(diff, maxChars) {
   });
 }
 
+function originKey(origin) {
+  return String(origin || '');
+}
+
+function getOriginSession(origin) {
+  const key = originKey(origin);
+  if (!originSessions.has(key)) {
+    originSessions.set(key, { epoch: 0, discarded: false });
+  }
+  return originSessions.get(key);
+}
+
+function originSessionToken(origin) {
+  const key = originKey(origin);
+  const s = getOriginSession(origin);
+  return { key: key, epoch: s.epoch };
+}
+
+function originSessionLive(token) {
+  if (!token || !token.key) return false;
+  const s = originSessions.get(token.key);
+  if (!s || s.discarded) return false;
+  return s.epoch === token.epoch;
+}
+
+function sessionEpochMatches(origin, storedEpoch) {
+  const cur = getOriginSession(origin).epoch;
+  if (storedEpoch == null || Number(storedEpoch) < 0) return cur === 0;
+  return Number(storedEpoch) === cur;
+}
+
+function originSessionDiscarded(origin) {
+  return getOriginSession(origin).discarded;
+}
+
+function discardOriginSession(origin) {
+  const key = originKey(origin);
+  const s = getOriginSession(origin);
+  s.epoch += 1;
+  s.discarded = true;
+  histSaveChains.delete(key);
+  memSaveChains.delete(key);
+  checkpointSaveChains.delete(key);
+  clearTaskMemory(origin);
+  clearResumeCheckpoint(origin);
+}
+
+function allowOriginSession(origin) {
+  getOriginSession(origin).discarded = false;
+}
+
 async function loadHistory(origin) {
+  if (originSessionDiscarded(origin)) return [];
   const key = 'hist:' + origin;
   const saved = await storageGet(key);
   const arr = saved && saved[key];
@@ -8253,8 +8313,18 @@ async function loadHistory(origin) {
 }
 
 async function saveHistory(origin, messages) {
+  const token = originSessionToken(origin);
+  if (!originSessionLive(token)) return;
+  const key = token.key;
+  const holdToken = { key: key, epoch: token.epoch };
   const trimmed = trimMessages(messages);
-  await storageSet({ ['hist:' + origin]: trimmed });
+  const prev = histSaveChains.get(key) || Promise.resolve();
+  const job = prev.then(function () {
+    if (!originSessionLive(holdToken)) return;
+    return storageSet({ ['hist:' + origin]: trimmed });
+  }).catch(function () {});
+  histSaveChains.set(key, job);
+  await job;
 }
 
 function trimMessages(messages) {
@@ -8433,7 +8503,13 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
 
   await hydrateTaskMemory(origin);
 
-  let messages = await loadHistory(origin);
+  let messages;
+  if (originSessionDiscarded(origin)) {
+    messages = [];
+    allowOriginSession(origin);
+  } else {
+    messages = await loadHistory(origin);
+  }
   if (!messages.length && config.systemPromptText) {
     messages.push({ role: 'system', content: config.systemPromptText });
   }
@@ -8698,7 +8774,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       kind: 'snapshot',
       content: snapLead + wrappedSnap + '\n步骤 ' + i + '/' + maxSteps + '；URL相对上步：' + urlNote
     };
-    let contextMessages = compressTaskRefInContext(foldedHistory.concat([snapshotUser]), i);
+    let contextMessages = foldedHistory.concat([snapshotUser]);
     if (WPA_CONTRACTS && typeof WPA_CONTRACTS.packContextToTokenBudget === 'function') {
       const ctxSoft = config.contextTokenSoft != null ? config.contextTokenSoft : WPA_CONTRACTS.CONTEXT_TOKEN_SOFT;
       const ctxHard = config.contextTokenHard != null ? config.contextTokenHard : WPA_CONTRACTS.CONTEXT_TOKEN_HARD;
@@ -9482,7 +9558,7 @@ chrome.runtime.onConnect.addListener((port) => {
             { role: 'system', content: '你是一个连通性测试助手。' },
             { role: 'user', content: '请只回复两个字：成功' }
           ];
-          const pingPayload = chatCompletionsPayload(textTag.model, pingMessages, { timeoutMs: 30000 }, undefined);
+          const pingPayload = chatCompletionsPayload(textTag.model, pingMessages, { timeoutMs: LLM_PING_TIMEOUT_MS }, undefined);
           reporter.request('文本模型', {
             model: textTag.model,
             extra: '连通性测试 ' + tagLabel,
@@ -9491,7 +9567,7 @@ chrome.runtime.onConnect.addListener((port) => {
             requestShape: describeChatCompletionsRequestShape(textUrl, pingPayload, pingMessages),
             prompt: '请只回复两个字：成功'
           });
-          const text = await callChatCompletions(textTag.baseURL, textTag.apiKey, textTag.model, pingMessages, { timeoutMs: 30000 });
+          const text = await callChatCompletions(textTag.baseURL, textTag.apiKey, textTag.model, pingMessages, { timeoutMs: LLM_PING_TIMEOUT_MS });
           reporter.response('文本模型', text);
           let message = '当前文本模型 ' + tagLabel + ' 连接成功。模型回复：' + truncate(text, 200);
 
@@ -9538,7 +9614,7 @@ chrome.runtime.onConnect.addListener((port) => {
             const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, [
               { role: 'system', content: pingSystem },
               { role: 'user', content: pingUser }
-            ], { timeoutMs: 30000 });
+            ], { timeoutMs: LLM_PING_TIMEOUT_MS });
             detail = '模型回复：' + truncate(text, 800);
           } else {
             const proto = ocrProtocol(tag);
@@ -9551,7 +9627,7 @@ chrome.runtime.onConnect.addListener((port) => {
               const text = await callChatCompletions(tag.baseURL, tag.apiKey, tag.model, [
                 { role: 'system', content: pingSystem },
                 { role: 'user', content: pingUser }
-              ], { timeoutMs: 30000 });
+              ], { timeoutMs: LLM_PING_TIMEOUT_MS });
               detail = '连接性探测（未发送图像，不测 OCR）。模型回复：' + truncate(text, 800) + '\n' + ocrHint;
             }
           }
@@ -9846,20 +9922,22 @@ chrome.runtime.onConnect.addListener((port) => {
       skillDraftRuns.delete(tabId);
       postMsg({ type: 'skillDraft', ok: false, cancelled: true, error: '已取消' });
     } else if (cmd === 'clearHistory') {
+      discardOriginSession(origin);
+      pendingInstructions.delete(tabId);
+      pausedOrigins.delete(tabId);
+      clearPendingCheckpoint(tabId);
+      skillContexts.delete(tabId);
       (async () => {
+        await storageSet({ ['hist:' + origin]: [] });
         const active = stopActiveTask(tabId, { closeOffscreen: false });
         if (active && active.done) {
           try { await active.done; } catch (e) {}
         }
         await storageSet({ ['hist:' + origin]: [] });
-        pendingInstructions.delete(tabId);
-        skillContexts.delete(tabId);
         if (!msg.keepFiles) {
           await ocrCacheClear(origin); // 连附件一起清空时，同步丢掉该页 OCR 缓存
         }
         ocrBreakerReset(origin); // 清空对话视为“修复后再试”信号，复位熔断
-        clearTaskMemory(origin);
-        clearResumeCheckpoint(origin);
         clearLlmTraces();
         postMsg({ type: 'historyCleared', ok: true, keepFiles: !!msg.keepFiles });
       })();
@@ -10089,7 +10167,8 @@ chrome.runtime.onConnect.addListener((port) => {
           } else {
             // 新的多指令批次（或单指令）：附件正文按需在 runStreamingTask 内钉入，OCR 走持久化缓存
             pendingInstructions.delete(tabId);
-            if (pausedOrigins.has(tabId)) clearPendingCheckpoint(tabId);
+            pausedOrigins.delete(tabId);
+            clearPendingCheckpoint(tabId);
             if (instructions.length === 0 && files.length) {
               instructions = [msg.task || '请根据附件完成任务'];
             }

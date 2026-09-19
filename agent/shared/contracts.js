@@ -67,8 +67,8 @@
     waitFor: { kind: 'read', runtime: 'page', worldDefault: 'isolated', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 8000 },
     probe: { kind: 'read', runtime: 'page', worldDefault: 'isolated', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 6000 },
     scroll: { kind: 'converge', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
-    ocr: { kind: 'read', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 120000 },
-    ocrFill: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 180000 },
+    ocr: { kind: 'read', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 60000 },
+    ocrFill: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 90000 },
     needAttach: { kind: 'read', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 5000 },
     urlHints: { kind: 'read', runtime: 'page', worldDefault: 'isolated', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
     // vueMethods 读节点上的 __vue__/__vueParentComponent（页面 world 挂的 expando），隔离 world 看不到
