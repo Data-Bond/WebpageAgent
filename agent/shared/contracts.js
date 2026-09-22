@@ -1406,6 +1406,8 @@
     parseResultJson: parseResultJson,
     writeResultPayload: writeResultPayload,
     batchResultFingerprint: batchResultFingerprint,
+    batchOpsLabel: batchOpsLabel,
+    dupResultFoldLine: dupResultFoldLine,
     foldDuplicateResultRoundsInMessages: foldDuplicateResultRoundsInMessages,
     packStageDupResultRound: packStageDupResultRound,
     isNavBreakUserContent: isNavBreakUserContent,

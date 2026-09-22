@@ -2,6 +2,20 @@
 'use strict';
 
 (function () {
+  const I18N = globalThis.WPA_I18N;
+  function t(key, params) {
+    return I18N && I18N.t ? I18N.t(key, params) : key;
+  }
+
+  function applySettingsLocale() {
+    if (!I18N) return;
+    I18N.applyDom(document);
+    document.title = t('settings.title') + ' · Webpage Agent';
+    document.documentElement.lang = I18N.getLocale() === 'en' ? 'en' : 'zh-CN';
+    const closeBtns = document.querySelectorAll('.modal-x');
+    closeBtns.forEach((btn) => { btn.setAttribute('aria-label', t('common.close')); });
+  }
+
   const TEXT_PROVIDER_TYPES = [
     { id: 'OpenAI-chat-completions', label: 'OpenAI-chat-completions', modelsHint: '模型ID，逗号分隔', urlHint: 'OpenAI 兼容 Base URL，如 https://api.moonshot.cn/v1' }
   ];
@@ -268,7 +282,7 @@
     };
     const typeSel = mk('select');
     typeSel.dataset.field = 'providerType';
-    typeSel.title = '固定枚举，不可自定义';
+    typeSel.title = t('settings.provider.typeTitle');
     typeSel.required = true;
     types.forEach((t) => {
       const opt = document.createElement('option');
@@ -277,7 +291,7 @@
       typeSel.appendChild(opt);
     });
     typeSel.value = meta.id;
-    const name = mk('input', null, { type: 'text', placeholder: '名称', value: (data && data.name) || '' });
+    const name = mk('input', null, { type: 'text', placeholder: t('settings.provider.namePh'), value: (data && data.name) || '' });
     name.dataset.field = 'name';
     const baseURL = mk('input', null, {
       type: 'text',
@@ -285,7 +299,7 @@
       value: (data && data.baseURL) || ''
     });
     baseURL.dataset.field = 'baseURL';
-    const apiKey = mk('input', null, { type: 'password', placeholder: 'API Key', value: (data && data.apiKey) || '' });
+    const apiKey = mk('input', null, { type: 'password', placeholder: t('settings.provider.apiKey'), value: (data && data.apiKey) || '' });
     apiKey.dataset.field = 'apiKey';
     const models = mk('input', null, {
       type: 'text',
@@ -311,11 +325,9 @@
     });
     const sampleHead = mk('div', 'provider-sample-head');
     const sampleLabel = mk('div', 'provider-sample-label', {
-      textContent: isOcr
-        ? '请求示例（OCR 协议报文，密钥已脱敏，可复制；连接性测试不发送）'
-        : '请求示例（与「测试」相同，密钥已脱敏，可复制）'
+      textContent: isOcr ? t('settings.provider.sampleOcr') : t('settings.provider.sampleText')
     });
-    const copyBtn = mk('button', 'btn provider-sample-copy', { type: 'button', textContent: '复制' });
+    const copyBtn = mk('button', 'btn provider-sample-copy', { type: 'button', textContent: t('common.copy') });
     sampleHead.appendChild(sampleLabel);
     sampleHead.appendChild(copyBtn);
     const samplePre = mk('pre', 'provider-sample');
@@ -329,36 +341,36 @@
     refreshSample();
     copyBtn.addEventListener('click', () => {
       copyTextToClipboard(samplePre.textContent || '').then((ok) => {
-        copyBtn.textContent = ok ? '已复制' : '复制失败';
-        setTimeout(() => { copyBtn.textContent = '复制'; }, 1200);
-        if (!ok) setStatus('复制失败', 'err');
+        copyBtn.textContent = ok ? t('common.copied') : t('common.copyFail');
+        setTimeout(() => { copyBtn.textContent = t('common.copy'); }, 1200);
+        if (!ok) setStatus(t('common.copyFail'), 'err');
       });
     });
     const actions = mk('div', 'provider-actions');
     const testBtn = mk('button', 'btn provider-test', {
       type: 'button',
-      textContent: isOcr ? '连接性测试' : '测试',
-      title: isOcr
-        ? '只探测连通性，不发送图片/PDF，不测 OCR 识别'
-        : '用该 provider 的第一个模型ID发连通性请求'
+      textContent: isOcr ? t('settings.provider.ocrTest') : t('settings.provider.test'),
+      title: isOcr ? t('settings.provider.ocrTestTitle') : t('settings.provider.testTitle')
     });
-    const del = mk('button', 'btn danger provider-del', { type: 'button', textContent: '✕ 删除', title: '删除该 provider' });
+    const del = mk('button', 'btn danger provider-del', {
+      type: 'button',
+      textContent: t('settings.provider.del'),
+      title: t('settings.provider.delTitle')
+    });
     testBtn.addEventListener('click', () => { testProviderRow(row, kindKey); });
     del.addEventListener('click', () => { row.remove(); });
     actions.appendChild(testBtn);
     actions.appendChild(del);
-    row.appendChild(makeField('类型 providerType', typeSel));
-    row.appendChild(makeField('名称', name));
+    row.appendChild(makeField(t('settings.provider.type'), typeSel));
+    row.appendChild(makeField(t('common.name'), name));
     row.appendChild(makeField('Base URL', baseURL));
-    row.appendChild(makeField('API Key', apiKey));
-    row.appendChild(makeField(isOcr ? '模型ID / ocrType（逗号分隔）' : '模型ID（逗号分隔）', models));
+    row.appendChild(makeField(t('settings.provider.apiKey'), apiKey));
+    row.appendChild(makeField(isOcr ? t('settings.provider.modelsOcr') : t('settings.provider.models'), models));
     row.appendChild(sampleHead);
     row.appendChild(samplePre);
     row.appendChild(actions);
     if (isOcr) {
-      row.appendChild(mk('div', 'hint', {
-        textContent: '如果需要 OCR 测试，请到对话框上传图片或 PDF，观察对话结果。'
-      }));
+      row.appendChild(mk('div', 'hint', { textContent: t('settings.provider.ocrPanelHint') }));
     }
     container.appendChild(row);
     return row;
@@ -416,7 +428,7 @@
   function showResultModal(title, text, kind) {
     const titleEl = $('resultModalTitle');
     const body = $('resultModalBody');
-    if (titleEl) titleEl.textContent = title || '测试结果';
+    if (titleEl) titleEl.textContent = title || t('settings.testResult');
     if (body) {
       body.textContent = text || '';
       body.className = 'modal-pre' + (kind === 'ok' ? ' ok' : kind === 'err' ? ' err' : '');
@@ -428,13 +440,14 @@
     const provider = providerFromRow(row, kind);
     pendingProviderTestId = 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const isOcr = kind === 'ocr';
-    const title = isOcr ? '连接性测试结果' : '测试结果';
+    const title = isOcr ? t('settings.ocrTestResult') : t('settings.testResult');
+    const modelLabel = firstProviderModelId(provider.models) || t('settings.status.noModel');
     const waiting = isOcr
-      ? ('正在做连接性测试 ' + provider.name + ' / ' + (firstProviderModelId(provider.models) || '（未填模型ID）') + ' …')
-      : ('正在测试 ' + provider.name + ' / ' + (firstProviderModelId(provider.models) || '（未填模型ID）') + ' …');
+      ? t('settings.status.ocrTesting', { name: provider.name, model: modelLabel })
+      : t('settings.status.testingProvider', { name: provider.name, model: modelLabel });
     showResultModal(title, waiting, '');
     if (!send('testProvider', { testId: pendingProviderTestId, kind: kind, provider: provider })) {
-      showResultModal(title, '未连接后台', 'err');
+      showResultModal(title, t('settings.status.noBg'), 'err');
     }
   }
 
@@ -513,7 +526,7 @@
     ocrList.textContent = '';
     const textProviders = Array.isArray(cfg.textProviders) ? cfg.textProviders : [];
     const ocrProviders = Array.isArray(cfg.ocrProviders) ? cfg.ocrProviders : [];
-    if (textProviders.length === 0) addProviderRow(textList, { name: '默认', providerType: 'OpenAI-chat-completions' }, 'text');
+    if (textProviders.length === 0) addProviderRow(textList, { name: t('settings.provider.defaultName'), providerType: 'OpenAI-chat-completions' }, 'text');
     textProviders.forEach((p) => addProviderRow(textList, p, 'text'));
     ocrProviders.forEach((p) => addProviderRow(ocrList, p, 'ocr'));
 
@@ -617,7 +630,7 @@
 
   function providerPickerLabel(p) {
     const name = String((p && p.name) || '').trim();
-    return name || '（未填名称）';
+    return name || t('settings.provider.noName');
   }
 
   function collectProviderRows(container, kind) {
@@ -645,16 +658,16 @@
     const records = $('exportRecordsBody');
     if (!records || records.getAttribute('data-filled') === '1') return;
     records.setAttribute('data-filled', '1');
-    appendExportLeaf(records, '诊断数据', { 'data-record': 'diag' });
+    appendExportLeaf(records, t('settings.diagData'), { 'data-record': 'diag' });
     const hoursWrap = mk('div', 'export-hours');
     const hoursLab = mk('label', 'field');
-    hoursLab.appendChild(document.createTextNode('最近'));
+    hoursLab.appendChild(document.createTextNode(t('settings.recent')));
     const hoursSel = mk('select');
     hoursSel.id = 'downloadDiagHours';
     [
-      { v: '1', t: '1 小时' },
-      { v: '6', t: '6 小时' },
-      { v: '24', t: '24 小时' }
+      { v: '1', t: t('settings.hour1') },
+      { v: '6', t: t('settings.hour6') },
+      { v: '24', t: t('settings.hour24') }
     ].forEach((opt) => {
       const o = document.createElement('option');
       o.value = opt.v;
@@ -664,7 +677,7 @@
     });
     hoursLab.appendChild(hoursSel);
     hoursWrap.appendChild(hoursLab);
-    const hoursHint = mk('div', 'hint', { textContent: '勾选「诊断数据」后生效。无错误时仍会下载文件并写明「没有错误」。' });
+    const hoursHint = mk('div', 'hint', { textContent: t('settings.diagHoursHint') });
     hoursWrap.appendChild(hoursHint);
     records.appendChild(hoursWrap);
   }
@@ -687,13 +700,13 @@
       wrap.appendChild(lab);
       configBody.appendChild(wrap);
     }
-    topCard('诊断记录', { 'data-card': 'diag' });
-    topCard('插件界面', { 'data-card': 'ui' });
-    topCard('运行参数（全局）', { 'data-card': 'runtime' });
-    topCard('存档脱敏指令', { 'data-card': 'archiveRedact' });
-    topCard('文本模型 System Prompt', { 'data-pick': 'textPrompt' });
+    topCard(t('settings.export.card.diag'), { 'data-card': 'diag' });
+    topCard(t('settings.export.card.ui'), { 'data-card': 'ui' });
+    topCard(t('settings.export.card.runtime'), { 'data-card': 'runtime' });
+    topCard(t('settings.export.card.archiveRedact'), { 'data-card': 'archiveRedact' });
+    topCard(t('settings.export.card.textPrompt'), { 'data-pick': 'textPrompt' });
     const textRows = collectProviderRows($('textProvidersList'), 'text');
-    appendExportGroup(configBody, '文本模型 Providers', (kids) => {
+    appendExportGroup(configBody, t('settings.export.card.textProviders'), (kids) => {
       textRows.forEach((row, i) => {
         appendExportLeaf(kids, row.label, {
           'data-kind': 'text',
@@ -701,9 +714,9 @@
         });
       });
     });
-    topCard('OCR 模型 System Prompt', { 'data-pick': 'ocrPrompt' });
+    topCard(t('settings.export.card.ocrPrompt'), { 'data-pick': 'ocrPrompt' });
     const ocrRows = collectProviderRows($('ocrProvidersList'), 'ocr');
-    appendExportGroup(configBody, 'OCR Providers', (kids) => {
+    appendExportGroup(configBody, t('settings.export.card.ocrProviders'), (kids) => {
       ocrRows.forEach((row, i) => {
         appendExportLeaf(kids, row.label, {
           'data-kind': 'ocr',
@@ -799,7 +812,7 @@
     box.textContent = '';
     if (!cachedSkills.length) {
       box.appendChild(mk('div', 'skill-export-empty', {
-        textContent: '还没有 WEB-SKILL，可在对话面板构建或在下方「重载」导入 JSON'
+        textContent: t('settings.skillEmpty')
       }));
       return;
     }
@@ -825,14 +838,14 @@
 
   function exportSkills(ids) {
     if (!ids || !ids.length) {
-      setSkillStatus('请先勾选要导出的技能', 'err');
+      setSkillStatus(t('settings.status.selectSkills'), 'err');
       return;
     }
     if (!send('exportWebSkills', {
       ids: ids,
       includeValues: !!($('exportSkillValues') && $('exportSkillValues').checked)
-    })) setSkillStatus('未连接后台', 'err');
-    else setSkillStatus('正在导出…');
+    })) setSkillStatus(t('settings.status.noBg'), 'err');
+    else setSkillStatus(t('settings.status.exporting'));
   }
 
   function collectDownloadConfig() {
@@ -844,19 +857,19 @@
 
   function finishDownloadStatus(fallback) {
     if (pendingDownloads.config || pendingDownloads.diag) return;
-    setStatus(fallback || '已下载所选数据 ✓', 'ok');
+    setStatus(fallback || t('settings.status.downloaded'), 'ok');
   }
 
   function send(cmd, extra) {
     if (!port) {
-      setStatus('未连接后台', 'err');
+      setStatus(t('settings.status.noBg'), 'err');
       return false;
     }
     try {
       port.postMessage(Object.assign({ cmd: cmd }, extra || {}));
       return true;
     } catch (e) {
-      setStatus('发送失败：' + String(e && e.message || e), 'err');
+      setStatus(t('settings.status.sendFail') + String(e && e.message || e), 'err');
       triggerReconnect();
       return false;
     }
@@ -890,7 +903,7 @@
       }
     } else if (type === 'configSaved') {
       if (msg.ok) forceFill = true;
-      setStatus(msg.ok ? '已保存 ✓' : ('保存失败' + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
+      setStatus(msg.ok ? t('settings.status.saved') : (t('settings.status.saveFail') + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
     } else if (type === 'configExport') {
       if (typeof msg.json === 'string') {
         const name = msg.filename || (msg.masked === false ? 'WebpageAgent.SECRETS.json' : 'WebpageAgent.json');
@@ -908,8 +921,8 @@
       }
     } else if (type === 'configImported') {
       if (msg.ok) forceFill = true;
-      if (msg.ok) setStatus('已导入并保存配置 ✓', 'ok');
-      else setStatus('导入配置失败：' + (msg.error || '文件无效'), 'err');
+      if (msg.ok) setStatus(t('settings.status.importConfigOk'), 'ok');
+      else setStatus(t('settings.status.importConfigFail') + (msg.error || ''), 'err');
     } else if (type === 'webSkills') {
       cachedSkills = Array.isArray(msg.skills) ? msg.skills : [];
       renderSettingsSkillList();
@@ -918,21 +931,21 @@
         const n = msg.count != null ? msg.count : 1;
         const name = msg.filename || (n === 1 ? 'WebpageAgent-web-skill.json' : 'WebpageAgent-web-skill-pack.json');
         downloadTextFile(msg.json, name, 'application/json');
-        setSkillStatus('已导出 ' + n + ' 条 WEB-SKILL ✓', 'ok');
-        setStatus('已导出 ' + n + ' 条 WEB-SKILL ✓', 'ok');
+        setSkillStatus(t('settings.status.exported', { n: n }), 'ok');
+        setStatus(t('settings.status.exported', { n: n }), 'ok');
       } else {
-        setSkillStatus('导出失败：' + (msg.error || '未知错误'), 'err');
+        setSkillStatus(t('settings.status.exportFail') + (msg.error || ''), 'err');
       }
     } else if (type === 'webSkillsImported') {
       if (msg.ok) {
         cachedSkills = Array.isArray(msg.skills) ? msg.skills : cachedSkills;
         renderSettingsSkillList();
         const n = msg.imported != null ? msg.imported : 0;
-        setSkillStatus('已导入 ' + n + ' 条（同 id 已作为新条目）', 'ok');
-        setStatus('已导入 ' + n + ' 条 WEB-SKILL ✓', 'ok');
+        setSkillStatus(t('settings.status.importedSkills', { n: n }), 'ok');
+        setStatus(t('settings.status.exported', { n: n }), 'ok');
       } else {
-        setSkillStatus('导入失败：' + (msg.error || '文件无效'), 'err');
-        setStatus('导入 WEB-SKILL 失败：' + (msg.error || '文件无效'), 'err');
+        setSkillStatus(t('settings.status.importConfigFail') + (msg.error || ''), 'err');
+        setStatus(t('settings.status.importSkillsFail') + (msg.error || ''), 'err');
       }
     } else if (type === 'diagExport') {
       if (diagExportTimer) { clearTimeout(diagExportTimer); diagExportTimer = null; }
@@ -958,13 +971,13 @@
         setStatus(detail, 'ok');
       }
     } else if (type === 'diagCleared') {
-      setStatus(msg.ok ? '已清空错误记录 ✓' : ('清空失败' + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
+      setStatus(msg.ok ? t('settings.status.clearedDiag') : (t('settings.status.clearDiagFail') + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
     } else if (type === 'testResult') {
-      setStatus(msg.message != null ? String(msg.message) : (msg.ok ? '连接成功' : '连接失败'), msg.ok ? 'ok' : 'err');
+      setStatus(msg.message != null ? String(msg.message) : (msg.ok ? t('settings.status.connOk') : t('settings.status.connFail')), msg.ok ? 'ok' : 'err');
     } else if (type === 'providerTestResult') {
       if (pendingProviderTestId && msg.testId && String(msg.testId) !== pendingProviderTestId) return;
-      const title = msg.kind === 'ocr' ? '连接性测试结果' : '测试结果';
-      showResultModal(title, msg.message != null ? String(msg.message) : (msg.ok ? '连接成功' : '连接失败'), msg.ok ? 'ok' : 'err');
+      const title = msg.kind === 'ocr' ? t('settings.ocrTestResult') : t('settings.testResult');
+      showResultModal(title, msg.message != null ? String(msg.message) : (msg.ok ? t('settings.status.connOk') : t('settings.status.connFail')), msg.ok ? 'ok' : 'err');
     } else if (type === 'status' && msg.kind === 'error') {
       pendingDownloads.config = false;
       pendingDownloads.diag = false;
@@ -1006,7 +1019,7 @@
   function triggerReconnect() {
     if (reconnectTimerId) return;
     reconnecting = true;
-    setStatus('与后台断开，正在重连…', 'err');
+    setStatus(t('settings.status.reconnect'), 'err');
     const delays = [1000, 2000, 4000, 8000, 16000, 30000, 60000];
     let attempt = 0;
     function tryReconnect() {
@@ -1021,7 +1034,7 @@
 
   function openPort() {
     if (connectPort()) return;
-    setStatus('无法连接后台：请重新加载扩展', 'err');
+    setStatus(t('settings.status.noBg'), 'err');
     triggerReconnect();
   }
 
@@ -1057,10 +1070,10 @@
       addProviderRow($('ocrProvidersList'), { name: 'OCR', providerType: 'OpenAI-chat-completions-image_url' }, 'ocr');
     });
     $('saveBtn').addEventListener('click', () => {
-      if (send('saveConfig', { config: collectConfig() })) setStatus('正在保存…');
+      if (send('saveConfig', { config: collectConfig() })) setStatus(t('settings.status.saving'));
     });
     $('testBtn').addEventListener('click', () => {
-      setStatus('测试中…');
+      setStatus(t('settings.status.testing'));
       send('testLLM', { config: collectConfig() });
     });
     $('downloadConfigBtn').addEventListener('click', () => {
@@ -1080,12 +1093,12 @@
     $('exportPickerConfirm').addEventListener('click', () => {
       const pick = collectConfigPick();
       if (!exportConfigPickHasAny(pick)) {
-        setExportPickerStatus('请至少勾选一项再下载', 'err');
+        setExportPickerStatus(t('settings.status.pickOne'), 'err');
         return;
       }
       const includeKeys = !!($('exportPickerIncludeKeys') && $('exportPickerIncludeKeys').checked);
       if (includeKeys && (pick.textIndexes.length || pick.ocrIndexes.length)
-        && !window.confirm('将导出完整 API 密钥。确认继续？')) return;
+        && !window.confirm(t('settings.confirm.exportKeys'))) return;
       pendingDownloads = { config: true, diag: false };
       const sent = send('exportConfig', {
         includeKeys: includeKeys,
@@ -1106,12 +1119,12 @@
         return;
       }
       closeModal('exportPickerModal');
-      setStatus('正在下载…');
+      setStatus(t('settings.status.downloading'));
     });
     $('downloadOtherConfirm').addEventListener('click', () => {
       const pick = collectRecordsPick();
       if (!pick.diagRecords) {
-        setOtherStatus('请至少勾选一项再下载', 'err');
+        setOtherStatus(t('settings.status.pickOne'), 'err');
         return;
       }
       setOtherStatus('');
@@ -1125,10 +1138,10 @@
       diagExportTimer = setTimeout(() => {
         diagExportTimer = null;
         pendingDownloads.diag = false;
-        setStatus('导出超时：后台未响应。请到 chrome://extensions 重新加载插件后再试。', 'err');
+        setStatus(t('settings.status.exportTimeout'), 'err');
       }, 8000);
       closeModal('exportOtherModal');
-      setStatus('正在下载…');
+      setStatus(t('settings.status.downloading'));
     });
     $('exportSkillsSelectedBtn').addEventListener('click', () => {
       exportSkills(selectedSkillIdList());
@@ -1136,7 +1149,7 @@
     $('exportSkillsAllBtn').addEventListener('click', () => {
       const ids = cachedSkills.map((s) => s.id).filter(Boolean);
       if (!ids.length) {
-        setSkillStatus('技能库为空', 'err');
+        setSkillStatus(t('settings.status.skillsEmpty'), 'err');
         return;
       }
       exportSkills(ids);
@@ -1167,7 +1180,7 @@
       closeModal('exportOtherModal');
     });
     $('importConfigBtn').addEventListener('click', () => {
-      if (formDirty && !window.confirm('当前有未保存修改，导入将用文件覆盖本页已识别的字段。继续？')) return;
+      if (formDirty && !window.confirm(t('settings.confirm.importDirty'))) return;
       $('uploadConfigInput').click();
     });
     $('uploadConfigInput').addEventListener('change', async () => {
@@ -1176,10 +1189,10 @@
       if (!file) return;
       let text;
       try { text = await file.text(); } catch (e) {
-        setStatus('读取文件失败：' + String(e && e.message || e), 'err');
+        setStatus(t('settings.status.readFail') + String(e && e.message || e), 'err');
         return;
       }
-      if (send('importConfig', { raw: String(text) })) setStatus('正在导入…');
+      if (send('importConfig', { raw: String(text) })) setStatus(t('settings.status.importing'));
     });
     $('importSkillsBtn').addEventListener('click', () => {
       $('uploadSkillsInput').click();
@@ -1190,18 +1203,18 @@
       if (!file) return;
       let text;
       try { text = await file.text(); } catch (e) {
-        setStatus('读取文件失败：' + String(e && e.message || e), 'err');
-        setSkillStatus('读取文件失败：' + String(e && e.message || e), 'err');
+        setStatus(t('settings.status.readFail') + String(e && e.message || e), 'err');
+        setSkillStatus(t('settings.status.readFail') + String(e && e.message || e), 'err');
         return;
       }
       if (send('importWebSkills', { raw: String(text) })) {
-        setStatus('正在导入 WEB-SKILL…');
-        setSkillStatus('正在导入…');
+        setStatus(t('settings.status.importSkills'));
+        setSkillStatus(t('settings.status.importing'));
       }
     });
     $('clearDiagBtn').addEventListener('click', () => {
-      if (!window.confirm('清空本机保存的错误与活动轨迹？不含配置与对话。')) return;
-      if (send('clearDiag')) setStatus('正在清空…');
+      if (!window.confirm(t('settings.confirm.clearDiag'))) return;
+      if (send('clearDiag')) setStatus(t('settings.status.clearing'));
     });
     window.addEventListener('error', () => {
       try { if (port) port.postMessage({ cmd: 'diagFail' }); } catch (e) {}
@@ -1213,6 +1226,28 @@
       if (document.hidden) return;
       if (!port) triggerReconnect();
     });
+    const langBtn = $('langToggleBtn');
+    if (langBtn && I18N) {
+      langBtn.addEventListener('click', () => { I18N.toggleLocale(); });
+    }
+  }
+
+  if (I18N) {
+    I18N.init(function () {
+      applySettingsLocale();
+      I18N.onChange(function () {
+        const rec = $('exportRecordsBody');
+        if (rec) {
+          rec.removeAttribute('data-filled');
+          rec.textContent = '';
+        }
+        applySettingsLocale();
+        fillRecordsPicker();
+        renderSettingsSkillList();
+      });
+    });
+  } else {
+    applySettingsLocale();
   }
 
   wire();

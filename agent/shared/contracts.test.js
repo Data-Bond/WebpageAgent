@@ -526,6 +526,36 @@ describe('toolProtocol hybrid', () => {
     assert.equal(sliced.truncated, true);
   });
 
+  it('operations 对象 args 规范成数组；validate 仍要求数组', () => {
+    const parsed = P.parseAssistantMessage({
+      action: 'execute',
+      operations: [{ op: 'memorize', args: { name: 'authorNames', value: '示例作者' } }]
+    });
+    assert.equal(parsed.action, 'execute');
+    assert.equal(parsed.calls[0].op, 'memorize');
+    assert.equal(parsed.calls[0].args[0].name, 'authorNames');
+    assert.equal(parsed.calls[0].args[0].value, '示例作者');
+    const click = P.parseAssistantMessage({
+      action: 'execute',
+      operations: [{ op: 'click', args: [5] }, { op: 'type', args: [8, '张三'] }]
+    });
+    assert.equal(click.calls[0].args[0], 5);
+    assert.equal(click.calls[1].args[0], 8);
+    assert.equal(click.calls[1].args[1], '张三');
+    const norm = P.normalizeOperationsArgs([
+      { op: 'memorize', args: { name: 'authorNames', value: '示例作者' } },
+      { op: 'click', args: [12] }
+    ]);
+    assert.equal(norm[0].op, 'memorize');
+    assert.equal(norm[0].args[0].name, 'authorNames');
+    assert.equal(norm[1].args[0], 12);
+    const rejected = C.validateOperations([{ op: 'click', args: { target: 5 } }]);
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.error, /必须是数组/);
+    const accepted = C.validateOperations(norm);
+    assert.equal(accepted.ok, true);
+  });
+
   it('estimateTokens 中英分开、偏悲观', () => {
     assert.equal(C.estimateTokens('abc'), 1);
     assert.equal(C.estimateTokens('abcdef'), 2);

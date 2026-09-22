@@ -248,7 +248,7 @@
         var item = obj.operations[j] || {};
         var op = String(item.op || item.tool || '');
         if (!op) continue;
-        calls.push({ op: op, args: Array.isArray(item.args) ? item.args : [] });
+        calls.push(callFromNameArgs(op, item.args != null ? item.args : item));
       }
     } else if (obj.op || (obj.tool && action !== 'execute' && action !== 'plan')) {
       var n = String(obj.tool || obj.op || action);
@@ -279,6 +279,25 @@
     return out;
   }
 
+  function normalizeOperationsArgs(operations) {
+    var list = Array.isArray(operations) ? operations : [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i];
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        out.push(item);
+        continue;
+      }
+      var op = String(item.op || item.tool || '');
+      if (item.args != null && typeof item.args === 'object' && !Array.isArray(item.args)) {
+        out.push(callFromNameArgs(op, item.args));
+        continue;
+      }
+      out.push(item);
+    }
+    return out;
+  }
+
   function toolsUnsupportedError(err) {
     var s = String(err && err.message || err || '');
     return /tools|tool_choice|tool calls|unknown field.*tool/i.test(s) &&
@@ -292,6 +311,8 @@
     parseAssistantMessage: parseAssistantMessage,
     looksLikeFinishDoneToken: looksLikeFinishDoneToken,
     toLegacyOperations: toLegacyOperations,
+    normalizeOperationsArgs: normalizeOperationsArgs,
+    callFromNameArgs: callFromNameArgs,
     toolsUnsupportedError: toolsUnsupportedError,
     callsFromToolCalls: callsFromToolCalls
   };

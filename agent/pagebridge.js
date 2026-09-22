@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '6.3.2';
+  var BRIDGE_VERSION = '6.3.3';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
   var WAIT_TIMEOUT_MAX_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
@@ -725,6 +725,57 @@
         }
       }
       return out.slice(0, cap);
+    }
+
+    function collectNearbyVisibleTexts(el, maxN) {
+      var out = [];
+      var seen = {};
+      var cap = Math.max(1, Math.min(Number(maxN) || 8, 8));
+      if (!el) return out;
+      var curVal = '';
+      try { curVal = String(el.value || '').trim(); } catch (e0) { curVal = ''; }
+      function push(t) {
+        var s = String(t || '').replace(/\s+/g, ' ').trim();
+        if (s.length < 6 || s.length > 80) return;
+        if (curVal && s === curVal) return;
+        if (seen[s]) return;
+        seen[s] = true;
+        out.push(s.slice(0, 80));
+      }
+      function collectFrom(root) {
+        if (!root || out.length >= cap) return;
+        try { if (!isVisible(root)) return; } catch (e1) {}
+        try { push(ownText(root)); } catch (e2) {}
+        var nodes = [];
+        try { nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : []; } catch (e3) { nodes = []; }
+        for (var i = 0; i < nodes.length && out.length < cap; i++) {
+          var n = nodes[i];
+          try { if (!isVisible(n)) continue; } catch (e4) {}
+          var t = '';
+          try { t = ownText(n); } catch (e5) { t = ''; }
+          if (!t) {
+            try { t = visibleShortText(n, 6, 80); } catch (e6) { t = ''; }
+          }
+          push(t);
+        }
+      }
+      var item = null;
+      try { item = formItemOf(el); } catch (e7) { item = null; }
+      if (!item) {
+        try { item = el.parentElement; } catch (e8) { item = null; }
+      }
+      collectFrom(item);
+      if (item && item.parentElement && out.length < cap) collectFrom(item.parentElement);
+      return out.slice(0, cap);
+    }
+
+    function attachNear(ret, el) {
+      if (!ret || typeof ret !== 'object' || Array.isArray(ret) || !el) return ret;
+      if (Array.isArray(ret.near) && ret.near.length) return ret;
+      var texts = [];
+      try { texts = collectNearbyVisibleTexts(el, 8); } catch (e) { texts = []; }
+      if (texts.length) ret.near = texts;
+      return ret;
     }
 
     function fieldMetaOf(el) {
@@ -9365,6 +9416,15 @@
               var fsEl = page.q(args[0]);
               if (fsEl && !fileRowOf(fsEl)) value.fieldState = collectFieldState(fsEl, { harvest: true });
             } catch (eFs) {}
+          }
+          if (value && typeof value === 'object' &&
+              (op === 'click' || op === 'check' || op === 'type' || op === 'select' ||
+               op === 'setVal' || op === 'setChecked' || op === 'selectOption' ||
+               op === 'clickByText' || op === 'clickOptionByText' || op === 'filterSelect')) {
+            try {
+              var nearEl = page.q(args[0]);
+              if (nearEl) attachNear(value, nearEl);
+            } catch (eNear) {}
           }
           results.push({ op: op, value: value });
           // selectOption 未命中会返回 {ok:false,kind:'query'} 而不是抛错；

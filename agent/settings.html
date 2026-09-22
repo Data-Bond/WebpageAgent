@@ -29,16 +29,40 @@
       padding: 24px 20px 80px;
     }
     .page-header {
-      display: flex;
-      align-items: flex-end;
-      justify-content: space-between;
-      gap: 12px;
       margin-bottom: 18px;
+    }
+    .title-row {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 14px;
     }
     h1 {
       margin: 0;
       font-size: 26px;
       letter-spacing: 0.3px;
+    }
+    .lang-switch {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 6px;
+      font-size: 16px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .lang-switch-btn {
+      border: none;
+      background: none;
+      color: var(--accent);
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 0 2px;
+      font-family: inherit;
+      line-height: inherit;
+    }
+    .lang-switch-btn:hover {
+      text-decoration: underline;
     }
     .sub {
       color: var(--muted);
@@ -419,146 +443,151 @@
 <body>
   <div class="page">
     <div class="page-header">
-      <div>
-        <h1>全局配置</h1>
-        <div class="sub">对所有网页上的插件生效。对话记录、附件与输入框高度仍按当前网站单独保存。</div>
+      <div class="title-row">
+        <h1 data-i18n="settings.title"></h1>
+        <span class="lang-switch">
+          <span id="langSwitchLabel" data-i18n="settings.langSwitchLabel"></span>
+          <button type="button" class="lang-switch-btn" id="langToggleBtn" data-i18n="settings.langSwitchBtn" data-i18n-title="common.langToggleTitle"></button>
+        </span>
       </div>
+      <div class="sub" data-i18n="settings.sub"></div>
     </div>
 
     <div class="card" id="downloadCard">
-      <div class="heading">下载</div>
-      <div class="hint">按类别分别下载。点按钮后在弹出框里勾选或导出；配置与记录会生成不同文件，WEB-SKILL 为 JSON。</div>
+      <div class="heading" data-i18n="settings.download"></div>
+      <div class="hint" data-i18n="settings.downloadHint"></div>
       <div class="io-bar">
-        <button type="button" class="btn" id="downloadConfigBtn">下载配置</button>
-        <button type="button" class="btn" id="exportSkillsBtn">导出WEB-SKILL</button>
-        <button type="button" class="btn" id="downloadOtherBtn">下载其他数据</button>
+        <button type="button" class="btn" id="downloadConfigBtn" data-i18n="settings.downloadConfig"></button>
+        <button type="button" class="btn" id="exportSkillsBtn" data-i18n="settings.exportSkills"></button>
+        <button type="button" class="btn" id="downloadOtherBtn" data-i18n="settings.downloadOther"></button>
       </div>
     </div>
 
     <div class="card" id="reloadCard">
-      <div class="heading">重载</div>
-      <div class="hint">选择 JSON 文件载入。配置文件中没有的字段保持现状；密钥为 ******** 时沿用本机已有值。WEB-SKILL 同 id 会作为新条目导入。</div>
+      <div class="heading" data-i18n="settings.reload"></div>
+      <div class="hint" data-i18n="settings.reloadHint"></div>
       <div class="io-bar">
-        <button type="button" class="btn" id="importConfigBtn">导入配置</button>
-        <button type="button" class="btn" id="importSkillsBtn">导入WEB-SKILL</button>
+        <button type="button" class="btn" id="importConfigBtn" data-i18n="settings.importConfig"></button>
+        <button type="button" class="btn" id="importSkillsBtn" data-i18n="settings.importSkills"></button>
         <input id="uploadConfigInput" type="file" accept=".json,application/json" hidden>
         <input id="uploadSkillsInput" type="file" accept=".json,application/json" hidden>
       </div>
     </div>
 
     <div class="card">
-      <div class="heading">诊断记录</div>
-      <div class="hint">记录功能探针（含成功路径的活动轨迹）与错误类，不含 API 密钥、提示词、页面内容或附件。保留最近 24 小时，并受上限约束。下载诊断数据请用上方「下载」里的「下载其他数据」。</div>
+      <div class="heading" data-i18n="settings.diag"></div>
+      <div class="hint" data-i18n="settings.diagHint"></div>
       <label class="field">
-        诊断探针日志的上限（KB）
+        <span data-i18n="settings.diagCap"></span>
         <input id="diagCapKb" type="number" min="10" max="200" step="1" value="50">
       </label>
-      <div class="hint">默认 50KB，可填 10–200。改后请点页面底部「保存」。超出上限时丢掉最旧记录。</div>
+      <div class="hint" data-i18n="settings.diagCapHint"></div>
       <div class="io-bar">
-        <button type="button" class="btn danger" id="clearDiagBtn">清空诊断记录</button>
+        <button type="button" class="btn danger" id="clearDiagBtn" data-i18n="settings.clearDiag"></button>
       </div>
     </div>
 
     <div class="card">
-      <div class="heading">插件界面</div>
+      <div class="heading" data-i18n="settings.ui"></div>
       <label class="field">
-        插件界面透明度
+        <span data-i18n="settings.uiOpacity"></span>
         <div class="range-row">
           <input id="uiOpacity" type="range" min="20" max="100" step="1" value="80">
           <span class="range-val" id="uiOpacityVal">80%</span>
         </div>
       </label>
-      <div class="hint">数值越小越透明，可透过面板看到网页。按钮与文字保持清晰。</div>
+      <div class="hint" data-i18n="settings.uiOpacityHint"></div>
       <div class="row-2">
         <label class="field">
-          放大后横向比例（%）
+          <span data-i18n="settings.scaleX"></span>
           <input id="panelScaleX" type="number" min="30" max="100" step="1" value="50">
         </label>
         <label class="field">
-          放大后纵向比例（%）
+          <span data-i18n="settings.scaleY"></span>
           <input id="panelScaleY" type="number" min="30" max="100" step="1" value="90">
         </label>
       </div>
-      <div class="hint">标题栏缩放按钮会把面板放到当前网页可视区域的该比例。附件与发送按钮保持原像素大小。</div>
+      <div class="hint" data-i18n="settings.scaleHint"></div>
     </div>
 
     <div class="card run-settings">
-      <div class="heading">运行参数（全局）</div>
+      <div class="heading" data-i18n="settings.runGlobal"></div>
       <div class="row-2">
-        <label class="field">最大步数<input id="maxSteps" type="number" min="1" max="100" step="1" value="100"></label>
-        <label class="field">模型调用间隔（秒）<input id="llmCallGapSec" type="number" min="0" max="10" step="0.1" value="0.5" title="两次文本模型调用之间的最短间隔，避免连续请求被接口限流"></label>
-        <label class="field">最小新建页面间隔（秒）<input id="newTabOpenGapSec" type="number" min="0" max="60" step="0.5" value="8" title="两次新开标签页之间的最短间隔；间隔内触发的打开会等待至期满再执行"></label>
-        <label class="field">超时重试次数<input id="llmTimeoutRetry" type="number" min="0" max="3" step="1" value="2"></label>
-        <label class="field">瞬时错误重试次数<input id="llmErrorRetry" type="number" min="0" max="5" step="1" value="2"></label>
-        <label class="field">页面稳定等待上限（秒）<input id="pageQuietSec" type="number" min="1" max="15" step="0.5" value="4" title="操作后等待页面 DOM 稳定的上限"></label>
-        <label class="field">填写后等待建议层（秒）<input id="suggestWaitSec" type="number" min="0" max="5" step="0.1" value="2" title="填写后等待搜索建议/选项卡片出现的上限"></label>
+        <label class="field"><span data-i18n="panel.maxSteps"></span><input id="maxSteps" type="number" min="1" max="100" step="1" value="100"></label>
+        <label class="field"><span data-i18n="panel.llmGap"></span><input id="llmCallGapSec" type="number" min="0" max="10" step="0.1" value="0.5" data-i18n-title="panel.llmGapTitle"></label>
+        <label class="field"><span data-i18n="settings.newTabGap"></span><input id="newTabOpenGapSec" type="number" min="0" max="60" step="0.5" value="8" data-i18n-title="settings.newTabGapTitle"></label>
+        <label class="field"><span data-i18n="panel.timeoutRetry"></span><input id="llmTimeoutRetry" type="number" min="0" max="3" step="1" value="2"></label>
+        <label class="field"><span data-i18n="panel.errorRetry"></span><input id="llmErrorRetry" type="number" min="0" max="5" step="1" value="2"></label>
+        <label class="field"><span data-i18n="panel.pageQuiet"></span><input id="pageQuietSec" type="number" min="1" max="15" step="0.5" value="4" data-i18n-title="panel.pageQuietTitle"></label>
+        <label class="field"><span data-i18n="panel.suggestWait"></span><input id="suggestWaitSec" type="number" min="0" max="5" step="0.1" value="2" data-i18n-title="panel.suggestWaitTitle"></label>
       </div>
-      <div class="pdf-parse-label">PDF 解析范围</div>
-      <label class="check-row"><input id="pdfParseAll" type="radio" name="wpaPdfParseMode" value="all">解析全部 PDF 页</label>
-      <label class="check-row"><input id="pdfParsePagesMode" type="radio" name="wpaPdfParseMode" value="pages" checked>按页码标号来解析</label>
+      <div class="pdf-parse-label" data-i18n="panel.pdfScope"></div>
+      <label class="check-row"><input id="pdfParseAll" type="radio" name="wpaPdfParseMode" value="all"><span data-i18n="panel.pdfAll"></span></label>
+      <label class="check-row"><input id="pdfParsePagesMode" type="radio" name="wpaPdfParseMode" value="pages" checked><span data-i18n="panel.pdfPages"></span></label>
       <div id="pdfParsePagesWrap">
-        <label class="field">页码<input id="pdfParsePages" type="text" value="1,2,3,4,-3,-2,-1" placeholder="例如 1,2,3,4,-3,-2,-1" title="多个页码用逗号分隔；负数表示从末尾倒数，-1 为最后一页（倒数第一页）"></label>
-        <div class="hint">「-1」表示最后一页。默认 1,2,3,4,-3,-2,-1；正数与负数若指向同一页，只解析一次、不重复 OCR。</div>
+        <label class="field"><span data-i18n="panel.pageNums"></span><input id="pdfParsePages" type="text" value="1,2,3,4,-3,-2,-1" data-i18n-placeholder="panel.pageNumsPh" data-i18n-title="panel.pageNumsTitle"></label>
+        <div class="hint" data-i18n="panel.pdfPagesHint"></div>
       </div>
-      <div class="hint" id="pdfParseAllHint" hidden>解析全部页会对每一页做文本提取，无文本层的页会渲染后 OCR，大文件可能较慢。</div>
-      <label class="field">PDF 文本层上限（字）<input id="pdfTextMaxChars" type="number" min="10000" max="500000" step="1000" value="150000" title="只计量本地 PDFium 从当前这份 PDF 抽出的文本层字符数"></label>
-      <div class="hint">只计量本地 PDFium 从当前这份 PDF 抽出的文本层字符数（含页分隔与空白），不是发给大模型的整段提示词，也不是多附件合计或对话历史。达到上限后，尚未扫描的所选页不再抽文本、也不再 OCR。</div>
-      <div class="hint">OCR 的 providerType 为 MinerU 时，始终把整份 PDF 交给 MinerU 做 OCR：不受上方页码配置约束，也不受「PDF 文本层上限」约束。本地 PDFium（文本层抽取与按页渲染 OCR）仍同时受这两项约束。</div>
-      <div class="pdf-parse-label">附件正文预算</div>
-      <label class="field">每个站点 OCR 缓存总字数<input id="ocrCacheMaxChars" type="number" min="50000" max="2000000" step="10000" value="500000" title="按网页 origin 分别计，缓存已抽出的 PDF/图片正文合计"></label>
-      <div class="hint">按站点（网页 origin）分别计，缓存的是该站已抽出的 PDF/图片正文合计，用来免重复 OCR。不是发给模型的提示词，也不是单份附件上限，更不是「PDF 文本层上限」。默认 50 万，可填 5 万–200 万。只需管总字数；条数最多 50 条，超出总字数或条数时按写入先后丢掉最旧条目。</div>
-      <label class="field">发给文本模型的多附件正文合计字数<input id="attachContextMaxChars" type="number" min="10000" max="800000" step="1000" value="300000" title="一次请求里钉入文本模型的多附件正文总长"></label>
-      <div class="hint">一次发给文本模型的多附件正文合计，不是 PDF 文本层、不是 OCR 缓存、也不是整段系统提示词或对话历史。默认 30 万，可填 1 万–80 万。超出会截断并标注。</div>
-      <div class="pdf-parse-label">上下文预算</div>
-      <label class="field">上下文 soft token 上限<input id="contextTokenSoft" type="number" min="64000" max="750000" step="10000" value="500000" title="发给模型的对话超过此值时开始折叠旧执行结果、快照 pane、附件"></label>
-      <div class="hint">发给模型的对话在 soft 以上开始折叠旧【执行结果】/快照 pane/附件，降低重复步骤的 token；过小可能过早折叠仍需要的细节。</div>
-      <label class="field">上下文 hard token 上限<input id="contextTokenHard" type="number" min="64000" max="800000" step="10000" value="700000" title="折叠后仍不得超过 hard"></label>
-      <div class="hint">折叠后仍不得超过 hard；须 ≥ soft。过小可能导致长任务丢失早期关键回执。</div>
-      <label class="check-row"><input id="busyMaskEnabled" type="checkbox">操作时显示半透明遮罩</label>
-      <label class="check-row"><input id="snapshotPiiMask" type="checkbox">快照脱敏（邮箱 / 手机 / 证件号；默认关）</label>
+      <div class="hint" id="pdfParseAllHint" hidden data-i18n="panel.pdfAllHint"></div>
+      <label class="field"><span data-i18n="settings.pdfTextMax"></span><input id="pdfTextMaxChars" type="number" min="10000" max="500000" step="1000" value="150000" data-i18n-title="settings.pdfTextMaxTitle"></label>
+      <div class="hint" data-i18n="settings.pdfTextMaxHint"></div>
+      <div class="hint" data-i18n="settings.pdfMineruGlobal"></div>
+      <div class="pdf-parse-label" data-i18n="settings.attachBudget"></div>
+      <label class="field"><span data-i18n="settings.ocrCacheMax"></span><input id="ocrCacheMaxChars" type="number" min="50000" max="2000000" step="10000" value="500000" data-i18n-title="settings.ocrCacheMaxTitle"></label>
+      <div class="hint" data-i18n="settings.ocrCacheHint"></div>
+      <label class="field"><span data-i18n="settings.attachContextMax"></span><input id="attachContextMaxChars" type="number" min="10000" max="800000" step="1000" value="300000" data-i18n-title="settings.attachContextMax"></label>
+      <div class="hint" data-i18n="settings.attachContextHint"></div>
+      <div class="pdf-parse-label" data-i18n="settings.contextBudget"></div>
+      <label class="field"><span data-i18n="settings.contextSoft"></span><input id="contextTokenSoft" type="number" min="64000" max="750000" step="10000" value="500000" data-i18n-title="settings.contextSoftTitle"></label>
+      <div class="hint" data-i18n="settings.contextSoftHint"></div>
+      <label class="field"><span data-i18n="settings.contextHard"></span><input id="contextTokenHard" type="number" min="64000" max="800000" step="10000" value="700000" data-i18n-title="settings.contextHardTitle"></label>
+      <div class="hint" data-i18n="settings.contextHardHint"></div>
+      <label class="check-row"><input id="busyMaskEnabled" type="checkbox"><span data-i18n="panel.busyMask"></span></label>
+      <label class="check-row"><input id="snapshotPiiMask" type="checkbox"><span data-i18n="panel.snapshotPii"></span></label>
     </div>
 
     <div class="card">
-      <div class="heading">存档脱敏指令</div>
-      <div class="hint">保存对话时可用这段话作为发给文本模型的用户脱敏指令。此处改的是默认文案；每次保存仍可再改，并可多次迭代脱敏。</div>
-      <label class="field">默认脱敏指令
+      <div class="heading" data-i18n="settings.archiveRedact"></div>
+      <div class="hint" data-i18n="settings.archiveRedactHint"></div>
+      <label class="field">
+        <span data-i18n="settings.archiveRedactField"></span>
         <textarea id="archiveRedactHint" rows="5" maxlength="2000"></textarea>
       </label>
     </div>
 
     <div class="card">
-      <div class="heading">文本模型 System Prompt</div>
-      <div class="hint">每次调用文本模型时置于上下文最前。</div>
+      <div class="heading" data-i18n="settings.textSysPrompt"></div>
+      <div class="hint" data-i18n="settings.textSysHint"></div>
       <label class="field">
-        文本模型 System Prompt
-        <textarea id="systemPromptText" rows="3" placeholder="文本模型 System Prompt（每次调用置于上下文最前）"></textarea>
+        <span data-i18n="settings.textSysField"></span>
+        <textarea id="systemPromptText" rows="3" data-i18n-placeholder="settings.textSysPh"></textarea>
       </label>
     </div>
 
     <div class="card">
-      <div class="heading">文本模型 Providers（类型仅 OpenAI-chat-completions：OpenAI 兼容 /chat/completions，Base URL / 模型ID 自行填写）</div>
+      <div class="heading" data-i18n="settings.textProviders"></div>
       <div class="provider-list" id="textProvidersList"></div>
-      <button type="button" class="btn" id="addTextProviderBtn">＋ 添加 provider</button>
+      <button type="button" class="btn" id="addTextProviderBtn" data-i18n="settings.addTextProvider"></button>
     </div>
 
     <div class="card">
-      <div class="heading">OCR 模型 System Prompt</div>
-      <div class="hint">视觉模型调用时置于最前。OCR-SCnet / MinerU 不使用这段提示词。</div>
+      <div class="heading" data-i18n="settings.ocrSysPrompt"></div>
+      <div class="hint" data-i18n="settings.ocrSysHint"></div>
       <label class="field">
-        OCR 模型 System Prompt
-        <textarea id="systemPromptOcr" rows="3" placeholder="OCR 模型 System Prompt（视觉模型调用时置于最前）"></textarea>
+        <span data-i18n="settings.ocrSysField"></span>
+        <textarea id="systemPromptOcr" rows="3" data-i18n-placeholder="settings.ocrSysPh"></textarea>
       </label>
     </div>
 
     <div class="card">
-      <div class="heading">OCR Providers（类型必选：OpenAI-chat-completions-image_url 为视觉 chat；OCR-SCnet 为 multipart；MinerU 为文档解析）</div>
+      <div class="heading" data-i18n="settings.ocrProviders"></div>
       <div class="provider-list" id="ocrProvidersList"></div>
-      <button type="button" class="btn" id="addOcrProviderBtn">＋ 添加 provider</button>
+      <button type="button" class="btn" id="addOcrProviderBtn" data-i18n="settings.addOcrProvider"></button>
     </div>
 
     <div class="actions">
-      <button type="button" class="btn primary" id="saveBtn">保存</button>
-      <button type="button" class="btn" id="testBtn">测试当前模型的连接</button>
+      <button type="button" class="btn primary" id="saveBtn" data-i18n="settings.save"></button>
+      <button type="button" class="btn" id="testBtn" data-i18n="settings.testConn"></button>
       <div class="status" id="settingsStatus"></div>
     </div>
   </div>
@@ -566,8 +595,8 @@
   <div class="modal" id="resultModal" hidden>
     <div class="modal-backdrop" data-close-modal="resultModal"></div>
     <div class="modal-dialog" role="dialog" aria-labelledby="resultModalTitle" aria-modal="true">
-      <button type="button" class="modal-x" data-close-modal="resultModal" aria-label="关闭">×</button>
-      <div class="modal-title" id="resultModalTitle">测试结果</div>
+      <button type="button" class="modal-x" data-close-modal="resultModal">×</button>
+      <div class="modal-title" id="resultModalTitle" data-i18n="settings.testResult"></div>
       <pre class="modal-pre" id="resultModalBody"></pre>
     </div>
   </div>
@@ -575,17 +604,17 @@
   <div class="modal" id="exportPickerModal" hidden>
     <div class="modal-backdrop" data-close-modal="exportPickerModal"></div>
     <div class="modal-dialog wide" role="dialog" aria-labelledby="exportPickerTitle" aria-modal="true">
-      <button type="button" class="modal-x" data-close-modal="exportPickerModal" aria-label="关闭">×</button>
-      <div class="modal-title" id="exportPickerTitle">下载配置</div>
-      <div class="hint">默认不勾选。每个 provider 按「名称」独立勾选；两段 System Prompt 各是独立卡片。</div>
+      <button type="button" class="modal-x" data-close-modal="exportPickerModal">×</button>
+      <div class="modal-title" id="exportPickerTitle" data-i18n="settings.exportPickerTitle"></div>
+      <div class="hint" data-i18n="settings.exportPickerHint"></div>
       <div class="io-bar">
-        <button type="button" class="btn primary" id="exportPickerConfirm">下载所选</button>
-        <button type="button" class="btn" data-close-modal="exportPickerModal">取消</button>
+        <button type="button" class="btn primary" id="exportPickerConfirm" data-i18n="settings.exportPickerConfirm"></button>
+        <button type="button" class="btn" data-close-modal="exportPickerModal" data-i18n="common.cancel"></button>
       </div>
       <div class="status" id="exportPickerStatus"></div>
       <div id="exportConfigBody"></div>
       <label class="check-row" style="margin-top:10px">
-        <input type="checkbox" id="exportPickerIncludeKeys"> 导出完整密钥
+        <input type="checkbox" id="exportPickerIncludeKeys"><span data-i18n="settings.exportKeys"></span>
       </label>
     </div>
   </div>
@@ -593,18 +622,18 @@
   <div class="modal" id="exportSkillsModal" hidden>
     <div class="modal-backdrop" data-close-modal="exportSkillsModal"></div>
     <div class="modal-dialog wide" role="dialog" aria-labelledby="exportSkillsTitle" aria-modal="true">
-      <button type="button" class="modal-x" data-close-modal="exportSkillsModal" aria-label="关闭">×</button>
-      <div class="modal-title" id="exportSkillsTitle">导出WEB-SKILL</div>
-      <div class="hint">可多选。导出为 JSON（.json）。点选是否把变量里的个人数据写进文件。</div>
+      <button type="button" class="modal-x" data-close-modal="exportSkillsModal">×</button>
+      <div class="modal-title" id="exportSkillsTitle" data-i18n="settings.exportSkillsTitle"></div>
+      <div class="hint" data-i18n="settings.exportSkillsHint"></div>
       <div class="io-bar">
-        <button type="button" class="btn" id="exportSkillsSelectedBtn">导出选中</button>
-        <button type="button" class="btn" id="exportSkillsAllBtn">导出全部</button>
-        <button type="button" class="btn" id="skillSelectAllBtn">全选</button>
-        <button type="button" class="btn" id="skillInvertBtn">反选</button>
-        <button type="button" class="btn" data-close-modal="exportSkillsModal">取消</button>
+        <button type="button" class="btn" id="exportSkillsSelectedBtn" data-i18n="common.exportSelected"></button>
+        <button type="button" class="btn" id="exportSkillsAllBtn" data-i18n="common.exportAll"></button>
+        <button type="button" class="btn" id="skillSelectAllBtn" data-i18n="settings.selectAll"></button>
+        <button type="button" class="btn" id="skillInvertBtn" data-i18n="settings.invert"></button>
+        <button type="button" class="btn" data-close-modal="exportSkillsModal" data-i18n="common.cancel"></button>
       </div>
       <label class="check-row">
-        <input type="checkbox" id="exportSkillValues"> 导出含个人数据
+        <input type="checkbox" id="exportSkillValues"><span data-i18n="panel.exportWithPii"></span>
       </label>
       <div id="settingsSkillList" class="skill-export-list"></div>
       <div class="status" id="settingsSkillStatus"></div>
@@ -614,17 +643,18 @@
   <div class="modal" id="exportOtherModal" hidden>
     <div class="modal-backdrop" data-close-modal="exportOtherModal"></div>
     <div class="modal-dialog" role="dialog" aria-labelledby="exportOtherTitle" aria-modal="true">
-      <button type="button" class="modal-x" data-close-modal="exportOtherModal" aria-label="关闭">×</button>
-      <div class="modal-title" id="exportOtherTitle">下载其他数据</div>
-      <div class="hint">即原先的记录数据（含诊断）。勾选后下载；无错误时仍会下载文件并写明「没有错误」。</div>
+      <button type="button" class="modal-x" data-close-modal="exportOtherModal">×</button>
+      <div class="modal-title" id="exportOtherTitle" data-i18n="settings.exportOtherTitle"></div>
+      <div class="hint" data-i18n="settings.exportOtherHint"></div>
       <div class="io-bar">
-        <button type="button" class="btn primary" id="downloadOtherConfirm">下载所选</button>
-        <button type="button" class="btn" data-close-modal="exportOtherModal">取消</button>
+        <button type="button" class="btn primary" id="downloadOtherConfirm" data-i18n="settings.exportPickerConfirm"></button>
+        <button type="button" class="btn" data-close-modal="exportOtherModal" data-i18n="common.cancel"></button>
       </div>
       <div class="status" id="downloadOtherStatus"></div>
       <div id="exportRecordsBody"></div>
     </div>
   </div>
+  <script src="shared/i18n.js"></script>
   <script src="settings.js"></script>
 </body>
 </html>

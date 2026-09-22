@@ -263,15 +263,15 @@ const RUNTIME_PLAYBOOK =
   '定位优先本轮 idx，idx 每轮重排；回执 catalog 编号与上轮快照同批，跨轮作废。用户/技能中的 CSS 只对照本轮快照，勿当 click/get/type 的 target；提交 idx 或 name。\n' +
   'outline 的 role/name 为无障碍名；同串不重复堆字段。click 短文按 name 得 0/1/多：先查本轮 idx（含 hidden），失败回执带本轮 catalog；get 短文仍 live 反查，不是同一张表。\n' +
   '无因果依赖，或页面已清楚、因果序列极大概率能顺完：可一轮多个工具；否则一次一个，后一步看前一步回执。\n' +
-  '页面正文用 get。跨步保留用 memorize；{} 或缺 value 从本批成功 get/print 或上一拍 lastRead 回填，快照 panes 不算。每轮【记忆】只给目录（name/chars/same/短头），不倒全文。取槽里全文或续读用 recall；若本段历史【执行结果】或先前 get 已有同 same、未 truncated、字段已够当前判断，不必再 recall。看回执 chars。forget 删槽。goto 打开记住的页。读 URL 用 get(target=url) 再 memorize。\n' +
+  '页面正文用 get。跨步保留用 memorize；{} 或缺 value 从本批成功 get/print 或上一拍 lastRead 回填（预览开关打开等大 DOM 变化后会清空 lastRead，须先 get），快照 panes 不算。每轮【记忆】只给目录（name/chars/same/短头），不倒全文。取槽里全文或续读用 recall；若本段历史【执行结果】或先前 get 已有同 same、未 truncated、字段已够当前判断，不必再 recall。看回执 chars。forget 删槽。goto 打开记住的页。读 URL 用 get(target=url) 再 memorize。memorize 的 args 可以是 ["name","value"] 或 {"name":"...","value":"..."}。\n' +
   'print 搜控件打目录进对话，不算字数。type 只打字，不自动点选项。若附近列表出现或选项变了则本批停，按回执 catalog 或下一轮快照再点。check 只用于真正复选/单选。\n' +
   'click 的 button：省略或 left 为左键；hover 只移指针不点击；right 只发右键菜单；dblclick 为双击。移上去才出现的控件：本轮快照已有（常 hidden）用本轮 idx 点；没有则 hover，本批停，按回执 catalog 或下一轮快照再点。不要同批点刚出现的项。覆盖层/iframe 正文在快照 panes 或 <PANE>，用其 idx get/scroll。\n' +
   '快照优先当前覆盖层、文件名、隐藏操作与大块正文；truncated 则 get/print/scroll。get 回执 textKind=filename-label 表示只读到文件名标签，不是文件正文；需打开预览 pane 或 upload 后再 get。\n' +
   '多轮完不成：换 print/get/scroll。get.limit 默认 10000 字，offset 从第 N 字起；truncated 则加大 limit 或设 offset 再 get，见截断尾注，勿换 CSS 重点。print.limit 是目录条数。\n' +
   '上一轮无法解析时按观察改写；回答用户用 done（summary 为回答）或 ask。\n' +
   '缺用户才有的信息才 ask。上传用 upload(控件, 附件key)，禁止 click 上传按钮弹系统框。\n' +
-  'ocr/ocrFill 只读当前像素，不点图；换图先 click。submit 仅当传入才点。\n' +
-  'click button=right 只开菜单，不改选中。click / check 点带勾选控件的行时回执 selection 为当前勾选/高亮条目；确认框看 statusMessages 再点。\n' +
+  'ocr/ocrFill 只读当前像素，不点图；换图先 click。statusMessages 含过期或失效时，先 click 验证码图，再 ocrFill。submit 仅当传入才点。\n' +
+  'click button=right 只开菜单，不改选中。click / check 点带勾选控件的行时回执 selection 为当前勾选/高亮条目；确认框看 statusMessages 再点。check 回执 reason=not-checkbox 时读 hint；click/check/type/select 回执 near 为操作对象附近可见短文。\n' +
   'click 下拉 trigger 会切换列表。committed 为 shown 展示字，filter 为可写框，open/optionsTop 为当前所属可见弹层。\n' +
   'wait：等句柄出现、until=enabled 等可用、until=gone 等消失；只给 timeout 则等这么久（上限 8000ms）。超时是观察。已出现的 idx 立刻返回。\n' +
   '技能变量 {{name}} 须原样输出，由引擎替换本地值。\n' +
@@ -3593,7 +3593,7 @@ async function inject(tabId) {
   const files = [
     { files: ['content.js', 'pagebridge.js'], world: 'ISOLATED' },
     { files: ['office.js', 'pagebridge.js'], world: 'MAIN' },
-    { files: ['shared/webSkill.js', 'panel.js'], world: 'ISOLATED' }
+    { files: ['shared/i18n.js', 'shared/webSkill.js', 'panel.js'], world: 'ISOLATED' }
   ];
   const failures = [];
   for (const entry of files) {
@@ -4923,6 +4923,7 @@ const TASK_MEMORY_NAME_MAX = 40;
 const TASK_MEMORY_VALUE_MAX = WPA_CONTRACTS.GET_TEXT_HARD;
 const taskMemories = new Map();
 const lastReads = new Map();
+const LAST_READ_DOM_STALE = 500000;
 // 各 origin 会话世代：清空对话 bump epoch；异步写入带 token，过期只丢弃、不反清新会话。
 const originSessions = new Map();
 const histSaveChains = new Map();
@@ -4991,6 +4992,23 @@ function pickMemorizeSource(results) {
 function valueFromPriorReads(results) {
   const picked = pickMemorizeSource(results);
   return picked ? picked.text : '';
+}
+
+function batchHadReadSource(results) {
+  return !!pickMemorizeSource(results);
+}
+
+function maybeInvalidateLastRead(origin, report, results) {
+  if (!origin || !report) return;
+  if (batchHadReadSource(results)) return;
+  const domDelta = Number(report.domChanged);
+  if (Number.isFinite(domDelta) && Math.abs(domDelta) >= LAST_READ_DOM_STALE) {
+    lastReads.delete(String(origin));
+    return;
+  }
+  if (report.urlChanged || report.documentChanged) {
+    lastReads.delete(String(origin));
+  }
 }
 
 function noteLastReadFromResults(origin, results) {
@@ -5119,6 +5137,38 @@ function formatMemoryBlock(list, seen) {
   return '【记忆】\n' + lines.join('\n') + '\n';
 }
 
+function makeResultFoldState() {
+  return { firstRound: Object.create(null), roundNo: 0 };
+}
+
+function resetResultFoldState(state) {
+  if (!state) return makeResultFoldState();
+  state.firstRound = Object.create(null);
+  state.roundNo = 0;
+  return state;
+}
+
+function appendResultMessage(messages, toolStored, foldState) {
+  let content = toolStored;
+  if (foldState && WPA_CONTRACTS && typeof WPA_CONTRACTS.parseResultJson === 'function') {
+    const parsed = WPA_CONTRACTS.parseResultJson(toolStored);
+    if (parsed && parsed.obj && typeof WPA_CONTRACTS.batchResultFingerprint === 'function') {
+      const fp = WPA_CONTRACTS.batchResultFingerprint(parsed.obj);
+      if (fp) {
+        foldState.roundNo += 1;
+        if (foldState.firstRound[fp] != null && typeof WPA_CONTRACTS.dupResultFoldLine === 'function') {
+          const ops = typeof WPA_CONTRACTS.batchOpsLabel === 'function'
+            ? WPA_CONTRACTS.batchOpsLabel(parsed.obj) : '';
+          content = WPA_CONTRACTS.dupResultFoldLine(foldState.firstRound[fp], fp, ops, parsed.suffix);
+        } else {
+          foldState.firstRound[fp] = foldState.roundNo;
+        }
+      }
+    }
+  }
+  messages.push({ role: 'user', content: content });
+}
+
 function foldOutgoingMessages(messages, seen) {
   const src = Array.isArray(messages) ? messages : [];
   const out = [];
@@ -5149,6 +5199,7 @@ function batchOpsSig(operations) {
 }
 
 function sessionOpSpec(args) {
+  if (args && typeof args === 'object' && !Array.isArray(args)) return args;
   if (!Array.isArray(args) || !args.length) return {};
   if (args[0] && typeof args[0] === 'object' && !Array.isArray(args[0])) return args[0];
   const spec = { name: args[0], value: args[1], url: args[0] };
@@ -6559,6 +6610,7 @@ function compactOneHelperValue(op, val) {
   if (val.inputPresent === false) o.inputPresent = false;
   else if (val.inputPresent === true) o.inputPresent = true;
   if (val.reason) o.reason = String(val.reason).slice(0, 40);
+  if (val.hint) o.hint = String(val.hint).slice(0, 80);
   if (val.url) o.url = String(val.url).slice(0, 300);
   if (val.name && (op === 'memorize' || op === 'recall' || op === 'forget' || op === 'goto' || op === 'click' || op === 'check' || op === 'setChecked')) o.name = String(val.name).slice(0, 40);
   if (val.checked != null && (op === 'click' || op === 'check' || op === 'setChecked')) o.checked = !!val.checked;
@@ -6588,6 +6640,11 @@ function compactOneHelperValue(op, val) {
       if (x.idx != null && Number.isFinite(Number(x.idx))) row.idx = Math.round(Number(x.idx));
       return row;
     });
+  }
+  if (Array.isArray(val.near) && val.near.length) {
+    o.near = val.near.slice(0, 8).map(function (s) {
+      return String(s || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    }).filter(Boolean);
   }
   if (val.yieldBatch) o.yieldBatch = true;
   if (typeof val.intentUrl === 'string' && val.intentUrl) o.intentUrl = String(val.intentUrl).slice(0, 300);
@@ -7800,7 +7857,10 @@ async function runScriptSafe(tabId, script) {
 }
 
 async function runOperationsSafe(tabId, operations, ctx) {
-  const checked = WPA_CONTRACTS.validateOperations(Array.isArray(operations) ? operations : []);
+  const incoming = (WPA_TOOL_PROTOCOL && typeof WPA_TOOL_PROTOCOL.normalizeOperationsArgs === 'function')
+    ? WPA_TOOL_PROTOCOL.normalizeOperationsArgs(operations)
+    : operations;
+  const checked = WPA_CONTRACTS.validateOperations(Array.isArray(incoming) ? incoming : []);
   if (!checked.ok) {
     return { resp: { ok: false, error: checked.error }, navigated: false };
   }
@@ -8565,6 +8625,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
   let lastOps = [];
   let repeatStreak = 0;
   let lastResultFp = '';
+  let resultFoldState = makeResultFoldState();
 
   function filesToPin(opts) {
     const force = !!(opts && opts.force);
@@ -9115,6 +9176,13 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       if (urlChanged || documentChanged) formSessionTargets = [];
       else formSessionTargets = formSessionTargets.concat(thisTargets);
 
+      try {
+        if (resultRaw) {
+          const batchObj = JSON.parse(resultRaw);
+          maybeInvalidateLastRead(origin, report, batchObj && batchObj.results);
+        }
+      } catch (eInv) {}
+
       let resultFp = '';
       if (resultRaw) {
         try {
@@ -9167,7 +9235,8 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       // 面板消息附加简短变化摘要
       if (cSummary && !(navigated || urlChanged)) toolText += ' ｜ ' + cSummary;
 
-      messages.push({ role: 'user', content: toolStored });
+      if (urlChanged || documentChanged) resetResultFoldState(resultFoldState);
+      appendResultMessage(messages, toolStored, resultFoldState);
       postMsg({ type: 'tool', text: toolText, ok: toolOk });
       try {
         const lastTool = lastHelperDiagFromResult(resultRaw);

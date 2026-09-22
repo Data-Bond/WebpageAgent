@@ -1,6 +1,6 @@
 // panel.js — 持久化聊天面板（隔离 world content script）
 // 页面挂 about:blank iframe 壳，UI 在 iframe 内 closed Shadow，避免编辑器页面抢走按键。
-// 由 background 通过 chrome.scripting.executeScript({ files:['shared/webSkill.js','panel.js'], world:'ISOLATED' }) 注入。
+// 由 background 通过 chrome.scripting.executeScript({ files:['shared/i18n.js','shared/webSkill.js','panel.js'], world:'ISOLATED' }) 注入。
 // 与 content.js 共存于同一隔离 world；不使用/不覆盖它声明的全局（__dsContentLoaded 等）。
 
 'use strict';
@@ -15,6 +15,9 @@
     : 'unknown';
   const BUILD_TAG = 'v' + BUILD_VERSION;
   const SKILL = (typeof globalThis !== 'undefined' && globalThis.WPA_WEB_SKILL) || {};
+  const I18N = globalThis.WPA_I18N;
+  function t(key, params) { return I18N && I18N.t ? I18N.t(key, params) : key; }
+  let connStateKey = 'connecting';
 
   // 同版本幂等；版本变化时先拆掉旧面板（否则布尔守卫会让角标永远停在首次注入的号，例如 2.5.0）。
   if (window.__assistantPanelVersion === BUILD_VERSION) return;
@@ -229,6 +232,10 @@
     }
     .header-action:hover {
       background: rgba(255,255,255,0.2);
+    }
+    .lang-btn {
+      min-width: 2.2em;
+      font-weight: 700;
     }
     .settings-panel {
       position: absolute;
@@ -1479,8 +1486,8 @@
   let archiveSaveMeta = null;
   let archiveRedactWait = null;
   let archiveSaveWait = null;
-  const CONN_HINT_RECONNECT = '连接已断开，正在重连…';
-  const CONN_HINT_CONNECTED = '已连接';
+  function connHintReconnect() { return t('panel.conn.reconnecting'); }
+  function connHintConnected() { return t('panel.conn.connected'); }
 
   const MAX_FILES_BYTES = 5 * 1024 * 1024; // 5MB dataUrl 总字节上限
   const MAX_SINGLE_FILE_BYTES = 8 * 1024 * 1024;
@@ -1707,9 +1714,9 @@
     return out;
   }
   function kindBadge(kind) {
-    if (kind === 'text') return '文本';
-    if (kind === 'pdf' || kind === 'image') return 'OCR';
-    return '上传';
+    if (kind === 'text') return t('panel.chip.text');
+    if (kind === 'pdf' || kind === 'image') return t('panel.chip.ocr');
+    return t('panel.chip.upload');
   }
   function kindBadgeClass(kind) {
     if (kind === 'text') return 'text';
@@ -1720,19 +1727,48 @@
   // provider 表单已迁至 settings.js（全局配置标签页）。
 
   function buildDOM() {
+    function mkI18nLabel(key, input) {
+      const label = mk('label');
+      const span = mk('span');
+      span.setAttribute('data-i18n', key);
+      label.appendChild(span);
+      label.appendChild(input);
+      return label;
+    }
+    function mkCheckRow(input, key) {
+      const row = mk('label', 'settings-check-row');
+      row.appendChild(input);
+      const span = mk('span');
+      span.setAttribute('data-i18n', key);
+      row.appendChild(span);
+      return row;
+    }
     const header = mk('header', 'app-header');
-    const zoomBtn = mk('button', 'zoom-btn', { type: 'button', textContent: '⛶', title: '放大面板' });
-    const title = mk('div', 'header-title', { textContent: 'Webpage Agent' });
-    const buildBadge = mk('span', 'header-build', { textContent: BUILD_TAG, title: '扩展版本（manifest，须与页面桥一致）' });
+    const zoomBtn = mk('button', 'zoom-btn', { type: 'button', textContent: '⛶' });
+    zoomBtn.setAttribute('data-i18n-title', 'panel.zoomTitle');
+    const title = mk('div', 'header-title');
+    title.setAttribute('data-i18n', 'panel.iframeTitle');
+    const buildBadge = mk('span', 'header-build', { textContent: BUILD_TAG });
+    buildBadge.setAttribute('data-i18n-title', 'panel.buildTitle');
     const headerRight = mk('div', 'header-right');
-    const saveSkillBtn = mk('button', 'header-action', { type: 'button', textContent: '构建SKILL', title: '根据对话自动或手动构建可复用技能' });
-    const skillLibBtn = mk('button', 'header-action', { type: 'button', textContent: '加载SKILL', title: '查看、导入或触发已保存的技能' });
-    const clearBtn = mk('button', 'header-action', { type: 'button', textContent: '清空/存档对话', title: '清空对话或保存存档' });
-    const settingsBtn = mk('button', 'icon-btn', { textContent: '⚙', title: '设置' });
-    const closeBtn = mk('button', 'icon-btn', { textContent: '✕', title: '关闭面板' });
+    const saveSkillBtn = mk('button', 'header-action', { type: 'button' });
+    saveSkillBtn.setAttribute('data-i18n', 'panel.buildSkill');
+    saveSkillBtn.setAttribute('data-i18n-title', 'panel.buildSkillTitle');
+    const skillLibBtn = mk('button', 'header-action', { type: 'button' });
+    skillLibBtn.setAttribute('data-i18n', 'panel.loadSkill');
+    skillLibBtn.setAttribute('data-i18n-title', 'panel.loadSkillTitle');
+    const clearBtn = mk('button', 'header-action', { type: 'button' });
+    clearBtn.setAttribute('data-i18n', 'panel.clearArchive');
+    clearBtn.setAttribute('data-i18n-title', 'panel.clearArchiveTitle');
+    const langBtn = mk('button', 'header-action lang-btn', { type: 'button' });
+    const settingsBtn = mk('button', 'icon-btn', { textContent: '⚙' });
+    settingsBtn.setAttribute('data-i18n-title', 'common.settings');
+    const closeBtn = mk('button', 'icon-btn', { textContent: '✕' });
+    closeBtn.setAttribute('data-i18n-title', 'common.close');
     headerRight.appendChild(saveSkillBtn);
     headerRight.appendChild(skillLibBtn);
     headerRight.appendChild(clearBtn);
+    headerRight.appendChild(langBtn);
     headerRight.appendChild(settingsBtn);
     headerRight.appendChild(zoomBtn);
     headerRight.appendChild(closeBtn);
@@ -1742,8 +1778,10 @@
     headerMain.appendChild(title);
     headerBrand.appendChild(buildBadge);
     const connLampWrap = mk('div', 'conn-lamp-wrap');
-    const connLamp = mk('span', 'conn-lamp connecting', { title: '连接中' });
-    const connLampLabel = mk('span', 'conn-lamp-label', { textContent: '连接中' });
+    const connLamp = mk('span', 'conn-lamp connecting');
+    connLamp.setAttribute('data-i18n-title', 'panel.conn.connecting');
+    const connLampLabel = mk('span', 'conn-lamp-label');
+    connLampLabel.setAttribute('data-i18n', 'panel.conn.connecting');
     connLampWrap.appendChild(connLamp);
     connLampWrap.appendChild(connLampLabel);
     headerBrand.appendChild(connLampWrap);
@@ -1754,17 +1792,15 @@
 
     const settingsPanel = mk('section', 'settings-panel hidden');
     settingsPanel.id = 'settingsPanel';
-    const openGlobalSettingsBtn = mk('button', 'btn primary global-settings-btn', {
-      type: 'button',
-      textContent: '全局配置',
-      title: '在新标签页打开全局配置'
-    });
+    const openGlobalSettingsBtn = mk('button', 'btn primary global-settings-btn', { type: 'button' });
+    openGlobalSettingsBtn.setAttribute('data-i18n', 'panel.globalSettings');
+    openGlobalSettingsBtn.setAttribute('data-i18n-title', 'panel.globalSettingsTitle');
     settingsPanel.appendChild(openGlobalSettingsBtn);
-    settingsPanel.appendChild(mk('div', 'page-settings-hint', {
-      textContent: '对话记录、附件与输入框高度按当前网站保存。下方「本页配置」只作用于当前网页，不会改写全局配置。模型、密钥、全局运行参数、界面透明度与缩放比例在「全局配置」中设置。'
-    }));
+    const pageSettingsHint = mk('div', 'page-settings-hint');
+    pageSettingsHint.setAttribute('data-i18n', 'panel.pageSettingsHint');
+    settingsPanel.appendChild(pageSettingsHint);
 
-    function mkNumInput(id, min, max, step, value, title) {
+    function mkNumInput(id, min, max, step, value, titleKey) {
       const input = mk('input');
       input.id = id;
       input.type = 'number';
@@ -1772,102 +1808,88 @@
       input.max = String(max);
       input.step = String(step);
       input.value = String(value);
-      if (title) input.title = title;
+      if (titleKey) input.setAttribute('data-i18n-title', titleKey);
       return input;
     }
-    function mkFieldLabel(text, input) {
-      const label = mk('label');
-      label.appendChild(panelDoc.createTextNode(text));
-      label.appendChild(input);
-      return label;
-    }
     const pageConfigTab = mk('div', 'page-config-tab');
-    pageConfigTab.appendChild(mk('div', 'page-config-tab-head', { textContent: '本页配置' }));
+    const pageConfigTabHead = mk('div', 'page-config-tab-head');
+    pageConfigTabHead.setAttribute('data-i18n', 'panel.pageConfig');
+    pageConfigTab.appendChild(pageConfigTabHead);
     const pageConfigBody = mk('div', 'page-config-tab-body');
-    pageConfigBody.appendChild(mk('div', 'page-config-scope', {
-      textContent: '仅对当前网页生效。保存在本站，不会改写「全局配置」里面向所有网页的运行参数。'
-    }));
+    const pageConfigScope = mk('div', 'page-config-scope');
+    pageConfigScope.setAttribute('data-i18n', 'panel.pageScope');
+    pageConfigBody.appendChild(pageConfigScope);
     const pageRunCard = mk('div', 'run-settings');
-    pageRunCard.appendChild(mk('div', 'settings-card-heading', { textContent: '运行参数' }));
+    const pageRunHeading = mk('div', 'settings-card-heading');
+    pageRunHeading.setAttribute('data-i18n', 'panel.runParams');
+    pageRunCard.appendChild(pageRunHeading);
     const pageRunRow = mk('div', 'settings-row-2');
     const pageMaxSteps = mkNumInput('pageMaxSteps', 1, 100, 1, 100);
-    const pageLlmCallGapSec = mkNumInput('pageLlmCallGapSec', 0, 10, 0.1, 0.5, '两次文本模型调用之间的最短间隔，避免连续请求被接口限流');
+    const pageLlmCallGapSec = mkNumInput('pageLlmCallGapSec', 0, 10, 0.1, 0.5, 'panel.llmGapTitle');
     const pageLlmTimeoutRetry = mkNumInput('pageLlmTimeoutRetry', 0, 3, 1, 2);
     const pageLlmErrorRetry = mkNumInput('pageLlmErrorRetry', 0, 5, 1, 2);
-    const pagePageQuietSec = mkNumInput('pagePageQuietSec', 1, 15, 0.5, 4, '操作后等待页面 DOM 稳定的上限');
-    const pageSuggestWaitSec = mkNumInput('pageSuggestWaitSec', 0, 5, 0.1, 2, '填写后等待搜索建议/选项卡片出现的上限');
-    pageRunRow.appendChild(mkFieldLabel('最大步数', pageMaxSteps));
-    pageRunRow.appendChild(mkFieldLabel('模型调用间隔（秒）', pageLlmCallGapSec));
-    pageRunRow.appendChild(mkFieldLabel('超时重试次数', pageLlmTimeoutRetry));
-    pageRunRow.appendChild(mkFieldLabel('瞬时错误重试次数', pageLlmErrorRetry));
-    pageRunRow.appendChild(mkFieldLabel('页面稳定等待上限（秒）', pagePageQuietSec));
-    pageRunRow.appendChild(mkFieldLabel('填写后等待建议层（秒）', pageSuggestWaitSec));
+    const pagePageQuietSec = mkNumInput('pagePageQuietSec', 1, 15, 0.5, 4, 'panel.pageQuietTitle');
+    const pageSuggestWaitSec = mkNumInput('pageSuggestWaitSec', 0, 5, 0.1, 2, 'panel.suggestWaitTitle');
+    pageRunRow.appendChild(mkI18nLabel('panel.maxSteps', pageMaxSteps));
+    pageRunRow.appendChild(mkI18nLabel('panel.llmGap', pageLlmCallGapSec));
+    pageRunRow.appendChild(mkI18nLabel('panel.timeoutRetry', pageLlmTimeoutRetry));
+    pageRunRow.appendChild(mkI18nLabel('panel.errorRetry', pageLlmErrorRetry));
+    pageRunRow.appendChild(mkI18nLabel('panel.pageQuiet', pagePageQuietSec));
+    pageRunRow.appendChild(mkI18nLabel('panel.suggestWait', pageSuggestWaitSec));
     pageRunCard.appendChild(pageRunRow);
-    pageRunCard.appendChild(mk('div', 'pdf-parse-label', { textContent: 'PDF 解析范围' }));
+    const pdfParseLabel = mk('div', 'pdf-parse-label');
+    pdfParseLabel.setAttribute('data-i18n', 'panel.pdfScope');
+    pageRunCard.appendChild(pdfParseLabel);
     const pagePdfParseAll = mk('input');
     pagePdfParseAll.id = 'pagePdfParseAll';
     pagePdfParseAll.type = 'radio';
     pagePdfParseAll.name = 'pageWpaPdfParseMode';
     pagePdfParseAll.value = 'all';
     pagePdfParseAll.checked = false;
-    const pagePdfParseAllRow = mk('label', 'settings-check-row');
-    pagePdfParseAllRow.appendChild(pagePdfParseAll);
-    pagePdfParseAllRow.appendChild(panelDoc.createTextNode('解析全部 PDF 页'));
-    pageRunCard.appendChild(pagePdfParseAllRow);
+    pageRunCard.appendChild(mkCheckRow(pagePdfParseAll, 'panel.pdfAll'));
     const pagePdfParsePagesMode = mk('input');
     pagePdfParsePagesMode.id = 'pagePdfParsePagesMode';
     pagePdfParsePagesMode.type = 'radio';
     pagePdfParsePagesMode.name = 'pageWpaPdfParseMode';
     pagePdfParsePagesMode.value = 'pages';
     pagePdfParsePagesMode.checked = true;
-    const pagePdfParsePagesModeRow = mk('label', 'settings-check-row');
-    pagePdfParsePagesModeRow.appendChild(pagePdfParsePagesMode);
-    pagePdfParsePagesModeRow.appendChild(panelDoc.createTextNode('按页码标号来解析'));
-    pageRunCard.appendChild(pagePdfParsePagesModeRow);
+    pageRunCard.appendChild(mkCheckRow(pagePdfParsePagesMode, 'panel.pdfPages'));
     const pagePdfParsePagesWrap = mk('div', 'pdf-parse-pages-wrap');
     pagePdfParsePagesWrap.hidden = false;
     const pagePdfParsePages = mk('input');
     pagePdfParsePages.id = 'pagePdfParsePages';
     pagePdfParsePages.type = 'text';
     pagePdfParsePages.value = '1,2,3,4,-3,-2,-1';
-    pagePdfParsePages.placeholder = '例如 1,2,3,4,-3,-2,-1';
-    pagePdfParsePages.title = '多个页码用逗号分隔；负数表示从末尾倒数，-1 为最后一页（倒数第一页）';
-    pagePdfParsePagesWrap.appendChild(mkFieldLabel('页码', pagePdfParsePages));
-    pagePdfParsePagesWrap.appendChild(mk('div', 'pdf-parse-hint', {
-      textContent: '「-1」表示最后一页。默认 1,2,3,4,-3,-2,-1；正数与负数若指向同一页，只解析一次、不重复 OCR。'
-    }));
+    pagePdfParsePages.setAttribute('data-i18n-placeholder', 'panel.pageNumsPh');
+    pagePdfParsePages.setAttribute('data-i18n-title', 'panel.pageNumsTitle');
+    pagePdfParsePagesWrap.appendChild(mkI18nLabel('panel.pageNums', pagePdfParsePages));
+    const pagePdfPagesHint = mk('div', 'pdf-parse-hint');
+    pagePdfPagesHint.setAttribute('data-i18n', 'panel.pdfPagesHint');
+    pagePdfParsePagesWrap.appendChild(pagePdfPagesHint);
     pageRunCard.appendChild(pagePdfParsePagesWrap);
     const pagePdfParseAllHint = mk('div', 'pdf-parse-hint');
     pagePdfParseAllHint.id = 'pagePdfParseAllHint';
-    pagePdfParseAllHint.textContent = '解析全部页会对每一页做文本提取，无文本层的页会渲染后 OCR，大文件可能较慢。';
+    pagePdfParseAllHint.setAttribute('data-i18n', 'panel.pdfAllHint');
     pagePdfParseAllHint.hidden = true;
     pageRunCard.appendChild(pagePdfParseAllHint);
-    pageRunCard.appendChild(mk('div', 'pdf-parse-hint', {
-      textContent: 'OCR 的 providerType 为 MinerU 时，始终把整份 PDF 交给 MinerU 做 OCR：不受本页页码配置约束，也不受全局配置里的「PDF 文本层上限」约束。本地 PDFium（文本层抽取与按页渲染 OCR）仍同时受这两项约束。文本层上限只在全局配置页调节。'
-    }));
+    const pagePdfMineruHint = mk('div', 'pdf-parse-hint');
+    pagePdfMineruHint.setAttribute('data-i18n', 'panel.pdfMineruHint');
+    pageRunCard.appendChild(pagePdfMineruHint);
     const pageBusyMaskEnabled = mk('input');
     pageBusyMaskEnabled.id = 'pageBusyMaskEnabled';
     pageBusyMaskEnabled.type = 'checkbox';
-    const pageBusyRow = mk('label', 'settings-check-row');
-    pageBusyRow.appendChild(pageBusyMaskEnabled);
-    pageBusyRow.appendChild(panelDoc.createTextNode('操作时显示半透明遮罩'));
-    pageRunCard.appendChild(pageBusyRow);
+    pageRunCard.appendChild(mkCheckRow(pageBusyMaskEnabled, 'panel.busyMask'));
     const pageSnapshotPiiMask = mk('input');
     pageSnapshotPiiMask.id = 'pageSnapshotPiiMask';
     pageSnapshotPiiMask.type = 'checkbox';
-    const pagePiiRow = mk('label', 'settings-check-row');
-    pagePiiRow.appendChild(pageSnapshotPiiMask);
-    pagePiiRow.appendChild(panelDoc.createTextNode('快照脱敏（邮箱 / 手机 / 证件号；默认关）'));
-    pageRunCard.appendChild(pagePiiRow);
+    pageRunCard.appendChild(mkCheckRow(pageSnapshotPiiMask, 'panel.snapshotPii'));
     const pageCompatMode = mk('input');
     pageCompatMode.id = 'pageCompatMode';
     pageCompatMode.type = 'checkbox';
-    const pageCompatRow = mk('label', 'settings-check-row');
-    pageCompatRow.appendChild(pageCompatMode);
-    pageCompatRow.appendChild(panelDoc.createTextNode('兼容模式（本站变更操作走 MAIN，不自动换世界）'));
-    pageRunCard.appendChild(pageCompatRow);
+    pageRunCard.appendChild(mkCheckRow(pageCompatMode, 'panel.compatMode'));
     const pageRunActions = mk('div', 'settings-actions');
-    const pageRunSaveBtn = mk('button', 'btn primary', { type: 'button', textContent: '保存本页运行参数' });
+    const pageRunSaveBtn = mk('button', 'btn primary', { type: 'button' });
+    pageRunSaveBtn.setAttribute('data-i18n', 'panel.savePageRun');
     const pageRunStatus = mk('div', 'settings-status');
     pageRunActions.appendChild(pageRunSaveBtn);
     pageRunActions.appendChild(pageRunStatus);
@@ -1879,10 +1901,13 @@
     const skillLibrary = mk('section', 'settings-panel skill-library hidden');
     skillLibrary.id = 'skillLibrary';
     const skillLibToolbar = mk('div', 'skill-lib-toolbar');
-    const skillSearch = mk('input', 'skill-search', { type: 'search', placeholder: '搜索名称、URL 或正文…' });
+    const skillSearch = mk('input', 'skill-search', { type: 'search' });
+    skillSearch.setAttribute('data-i18n-placeholder', 'panel.skillSearchPh');
     const skillLibFilters = mk('div', 'skill-lib-filters');
-    const skillFilterAll = mk('button', 'btn filter-btn active', { type: 'button', textContent: '全部' });
-    const skillFilterMatch = mk('button', 'btn filter-btn', { type: 'button', textContent: '当前页匹配' });
+    const skillFilterAll = mk('button', 'btn filter-btn active', { type: 'button' });
+    skillFilterAll.setAttribute('data-i18n', 'common.all');
+    const skillFilterMatch = mk('button', 'btn filter-btn', { type: 'button' });
+    skillFilterMatch.setAttribute('data-i18n', 'panel.skillFilterMatch');
     skillLibFilters.appendChild(skillFilterAll);
     skillLibFilters.appendChild(skillFilterMatch);
     skillLibToolbar.appendChild(skillSearch);
@@ -1891,9 +1916,12 @@
     const skillList = mk('div', 'skill-list');
     skillLibrary.appendChild(skillList);
     const skillLibFooter = mk('div', 'skill-lib-footer');
-    const importSkillsBtn = mk('button', 'btn', { type: 'button', textContent: '导入' });
-    const exportSelectedBtn = mk('button', 'btn', { type: 'button', textContent: '导出选中' });
-    const exportAllBtn = mk('button', 'btn', { type: 'button', textContent: '导出全部' });
+    const importSkillsBtn = mk('button', 'btn', { type: 'button' });
+    importSkillsBtn.setAttribute('data-i18n', 'common.import');
+    const exportSelectedBtn = mk('button', 'btn', { type: 'button' });
+    exportSelectedBtn.setAttribute('data-i18n', 'common.exportSelected');
+    const exportAllBtn = mk('button', 'btn', { type: 'button' });
+    exportAllBtn.setAttribute('data-i18n', 'common.exportAll');
     const importSkillsInput = mk('input');
     importSkillsInput.type = 'file';
     importSkillsInput.accept = '.json,application/json';
@@ -1905,82 +1933,96 @@
     const skillExportValuesRow = mk('label', 'skill-lib-export-opt');
     const skillExportValues = mk('input', null, { type: 'checkbox' });
     skillExportValuesRow.appendChild(skillExportValues);
-    skillExportValuesRow.appendChild(panelDoc.createTextNode('导出含个人数据'));
+    const skillExportValuesLabel = mk('span');
+    skillExportValuesLabel.setAttribute('data-i18n', 'panel.exportWithPii');
+    skillExportValuesRow.appendChild(skillExportValuesLabel);
     skillLibFooter.appendChild(skillExportValuesRow);
     const skillLibStatus = mk('div', 'skill-lib-status');
     skillLibFooter.appendChild(skillLibStatus);
     skillLibrary.appendChild(skillLibFooter);
 
-    const mkLabel = (text, input) => {
-      const label = mk('label');
-      label.appendChild(panelDoc.createTextNode(text));
-      label.appendChild(input);
-      return label;
-    };
-
     const saveSkillModal = mk('div', 'modal-backdrop hidden');
     const saveSkillDialog = mk('div', 'modal');
-    saveSkillDialog.appendChild(mk('h3', null, { textContent: '构建SKILL' }));
+    const saveSkillHeading = mk('h3');
+    saveSkillHeading.setAttribute('data-i18n', 'panel.buildSkill');
+    saveSkillDialog.appendChild(saveSkillHeading);
     const skillTabs = mk('div', 'skill-tabs');
-    const skillTabAuto = mk('button', 'btn skill-tab active', { type: 'button', textContent: '自动构建' });
-    const skillTabManual = mk('button', 'btn skill-tab', { type: 'button', textContent: '手动确认' });
+    const skillTabAuto = mk('button', 'btn skill-tab active', { type: 'button' });
+    skillTabAuto.setAttribute('data-i18n', 'panel.skillAutoTab');
+    const skillTabManual = mk('button', 'btn skill-tab', { type: 'button' });
+    skillTabManual.setAttribute('data-i18n', 'panel.skillManualTab');
     skillTabs.appendChild(skillTabAuto);
     skillTabs.appendChild(skillTabManual);
     saveSkillDialog.appendChild(skillTabs);
 
     const skillAutoPane = mk('div', 'skill-builder-pane');
-    skillAutoPane.appendChild(mk('div', 'skill-build-hint', {
-      textContent: '根据当前对话中的用户指令生成草稿（个人数据放入变量，正文用 {{变量名}}）。生成后请在「手动确认」里增删变量并改任意字段，点保存前不会写入技能库。'
-    }));
+    const skillAutoHint = mk('div', 'skill-build-hint');
+    skillAutoHint.setAttribute('data-i18n', 'panel.skillAutoHint');
+    skillAutoPane.appendChild(skillAutoHint);
     const skillAutoStatus = mk('div', 'skill-lib-status');
     const skillAutoActions = mk('div', 'modal-actions');
-    const skillAutoRun = mk('button', 'btn primary', { type: 'button', textContent: '根据对话生成草稿' });
-    const skillAutoCancel = mk('button', 'btn hidden', { type: 'button', textContent: '取消生成' });
+    const skillAutoRun = mk('button', 'btn primary', { type: 'button' });
+    skillAutoRun.setAttribute('data-i18n', 'panel.skillAutoRun');
+    const skillAutoCancel = mk('button', 'btn hidden', { type: 'button' });
+    skillAutoCancel.setAttribute('data-i18n', 'panel.skillAutoCancel');
     skillAutoActions.appendChild(skillAutoRun);
     skillAutoActions.appendChild(skillAutoCancel);
     skillAutoPane.appendChild(skillAutoStatus);
     skillAutoPane.appendChild(skillAutoActions);
 
     const skillManualPane = mk('div', 'skill-builder-pane hidden');
-    const saveSkillName = mk('input', null, { type: 'text', placeholder: '技能名称', maxLength: 80 });
-    skillManualPane.appendChild(mkLabel('名称', saveSkillName));
+    const saveSkillName = mk('input', null, { type: 'text', maxLength: 80 });
+    saveSkillName.setAttribute('data-i18n-placeholder', 'panel.skillNamePh');
+    skillManualPane.appendChild(mkI18nLabel('common.name', saveSkillName));
     const saveSkillUrl = mk('input', null, { type: 'url', placeholder: 'https://…' });
-    skillManualPane.appendChild(mkLabel('适用页面 URL（关键字段）', saveSkillUrl));
+    skillManualPane.appendChild(mkI18nLabel('panel.skillUrlLabel', saveSkillUrl));
     const saveSkillMatch = mk('select');
     const matchOpts = [
-      ['origin+path', '同源同路径（忽略查询串）'],
-      ['origin', '仅同源'],
-      ['exact', '完整 URL（含查询串）']
+      ['origin+path', 'panel.skillMatch.originPath'],
+      ['origin', 'panel.skillMatch.origin'],
+      ['exact', 'panel.skillMatch.exact']
     ];
     matchOpts.forEach((pair) => {
-      const opt = mk('option', null, { value: pair[0], textContent: pair[1] });
+      const opt = mk('option', null, { value: pair[0] });
+      opt.setAttribute('data-i18n-opt', pair[1]);
       saveSkillMatch.appendChild(opt);
     });
-    skillManualPane.appendChild(mkLabel('URL 匹配方式', saveSkillMatch));
+    skillManualPane.appendChild(mkI18nLabel('panel.skillMatchLabel', saveSkillMatch));
     const saveSkillOverwrite = mk('select');
-    skillManualPane.appendChild(mkLabel('保存方式', saveSkillOverwrite));
+    skillManualPane.appendChild(mkI18nLabel('panel.skillSaveMode', saveSkillOverwrite));
     const saveSkillNeedRow = mk('label', 'modal-check');
     const saveSkillNeedsInput = mk('input', null, { type: 'checkbox' });
     saveSkillNeedRow.appendChild(saveSkillNeedsInput);
-    saveSkillNeedRow.appendChild(panelDoc.createTextNode('需要个性化数据或参数'));
+    const saveSkillNeedLabel = mk('span');
+    saveSkillNeedLabel.setAttribute('data-i18n', 'panel.skillNeedsInput');
+    saveSkillNeedRow.appendChild(saveSkillNeedLabel);
     skillManualPane.appendChild(saveSkillNeedRow);
-    const saveSkillHint = mk('input', null, { type: 'text', placeholder: '例如：请确认姓名、邮箱后再发送', maxLength: 500 });
-    skillManualPane.appendChild(mkLabel('参数说明（可选）', saveSkillHint));
+    const saveSkillHint = mk('input', null, { type: 'text', maxLength: 500 });
+    saveSkillHint.setAttribute('data-i18n-placeholder', 'panel.skillHintPh');
+    skillManualPane.appendChild(mkI18nLabel('panel.skillHintLabel', saveSkillHint));
     const skillStagesHead = mk('div', 'skill-dyn-head');
-    skillStagesHead.appendChild(panelDoc.createTextNode('阶段'));
-    const skillAddStage = mk('button', 'btn', { type: 'button', textContent: '添加阶段' });
+    const skillStagesTitle = mk('span');
+    skillStagesTitle.setAttribute('data-i18n', 'panel.skillStages');
+    skillStagesHead.appendChild(skillStagesTitle);
+    const skillAddStage = mk('button', 'btn', { type: 'button' });
+    skillAddStage.setAttribute('data-i18n', 'panel.skillAddStage');
     skillStagesHead.appendChild(skillAddStage);
     skillManualPane.appendChild(skillStagesHead);
     const skillStagesList = mk('div', 'skill-dyn-list');
     skillManualPane.appendChild(skillStagesList);
     const skillVarsHead = mk('div', 'skill-dyn-head');
-    skillVarsHead.appendChild(panelDoc.createTextNode('变量 {{var}}'));
-    const skillAddVar = mk('button', 'btn', { type: 'button', textContent: '添加变量' });
+    const skillVarsTitle = mk('span');
+    skillVarsTitle.setAttribute('data-i18n', 'panel.skillVars');
+    skillVarsHead.appendChild(skillVarsTitle);
+    const skillAddVar = mk('button', 'btn', { type: 'button' });
+    skillAddVar.setAttribute('data-i18n', 'panel.skillAddVar');
     skillVarsHead.appendChild(skillAddVar);
     skillManualPane.appendChild(skillVarsHead);
     const skillVarsList = mk('div', 'skill-dyn-list');
     skillManualPane.appendChild(skillVarsList);
-    skillManualPane.appendChild(mk('div', 'skill-build-hint', { textContent: '派生正文（触发时写入输入框，不展开变量值）' }));
+    const skillPromptHint = mk('div', 'skill-build-hint');
+    skillPromptHint.setAttribute('data-i18n', 'panel.skillPromptPreview');
+    skillManualPane.appendChild(skillPromptHint);
     const skillPromptPreview = mk('div', 'skill-preview');
     skillManualPane.appendChild(skillPromptPreview);
     const skillUndeclared = mk('div', 'modal-error');
@@ -1991,8 +2033,10 @@
     const saveSkillError = mk('div', 'modal-error');
     saveSkillDialog.appendChild(saveSkillError);
     const saveSkillActions = mk('div', 'modal-actions');
-    const saveSkillCancel = mk('button', 'btn', { type: 'button', textContent: '取消' });
-    const saveSkillConfirm = mk('button', 'btn primary', { type: 'button', textContent: '保存' });
+    const saveSkillCancel = mk('button', 'btn', { type: 'button' });
+    saveSkillCancel.setAttribute('data-i18n', 'common.cancel');
+    const saveSkillConfirm = mk('button', 'btn primary', { type: 'button' });
+    saveSkillConfirm.setAttribute('data-i18n', 'common.save');
     saveSkillActions.appendChild(saveSkillCancel);
     saveSkillActions.appendChild(saveSkillConfirm);
     saveSkillDialog.appendChild(saveSkillActions);
@@ -2000,12 +2044,16 @@
 
     const confirmModal = mk('div', 'modal-backdrop hidden');
     const confirmDialog = mk('div', 'modal');
-    confirmDialog.appendChild(mk('h3', null, { textContent: '页面不匹配' }));
+    const confirmHeading = mk('h3');
+    confirmHeading.setAttribute('data-i18n', 'panel.pageMismatch');
+    confirmDialog.appendChild(confirmHeading);
     const confirmWarn = mk('div', 'modal-warn');
     confirmDialog.appendChild(confirmWarn);
     const confirmActions = mk('div', 'modal-actions');
-    const confirmCancel = mk('button', 'btn', { type: 'button', textContent: '取消' });
-    const confirmOk = mk('button', 'btn primary', { type: 'button', textContent: '仍要载入' });
+    const confirmCancel = mk('button', 'btn', { type: 'button' });
+    confirmCancel.setAttribute('data-i18n', 'common.cancel');
+    const confirmOk = mk('button', 'btn primary', { type: 'button' });
+    confirmOk.setAttribute('data-i18n', 'panel.loadAnyway');
     confirmActions.appendChild(confirmCancel);
     confirmActions.appendChild(confirmOk);
     confirmDialog.appendChild(confirmActions);
@@ -2013,36 +2061,44 @@
 
     const archiveModal = mk('div', 'modal-backdrop hidden');
     const archiveDialog = mk('div', 'modal');
-    archiveDialog.appendChild(mk('h3', null, { textContent: '清空/存档对话' }));
-    archiveDialog.appendChild(mk('div', 'archive-lead', {
-      textContent: '请选择一项操作。清空不可撤销。保存对话会打开下一页，可检查文本并用大模型脱敏后再保存。'
-    }));
+    const archiveHeading = mk('h3');
+    archiveHeading.setAttribute('data-i18n', 'panel.archiveTitle');
+    archiveDialog.appendChild(archiveHeading);
+    const archiveLead = mk('div', 'archive-lead');
+    archiveLead.setAttribute('data-i18n', 'panel.archiveLead');
+    archiveDialog.appendChild(archiveLead);
     const archiveStatus = mk('div', 'archive-status');
     archiveDialog.appendChild(archiveStatus);
-    function mkArchiveAction(title, hint, extraClass) {
+    function mkArchiveAction(titleKey, hintKey, extraClass) {
       const btn = mk('button', 'archive-action' + (extraClass ? ' ' + extraClass : ''), { type: 'button' });
-      btn.appendChild(mk('span', 'archive-action-title', { textContent: title }));
-      if (hint) btn.appendChild(mk('span', 'archive-action-hint', { textContent: hint }));
+      const titleEl = mk('span', 'archive-action-title');
+      titleEl.setAttribute('data-i18n', titleKey);
+      btn.appendChild(titleEl);
+      if (hintKey) {
+        const hintEl = mk('span', 'archive-action-hint');
+        hintEl.setAttribute('data-i18n', hintKey);
+        btn.appendChild(hintEl);
+      }
       return btn;
     }
     const archiveActions = mk('div', 'archive-actions');
     const archiveClearKeepFiles = mkArchiveAction(
-      '清空对话（仅对话历史、保留附件）',
-      '删除聊天记录与模型历史，已添加的附件仍保留。',
+      'panel.archiveClearKeep',
+      'panel.archiveClearKeepHint',
       'danger'
     );
     const archiveClearAll = mkArchiveAction(
-      '清空对话（包括对话历史与附件）',
-      '删除聊天记录、模型历史和全部附件。',
+      'panel.archiveClearAll',
+      'panel.archiveClearAllHint',
       'danger'
     );
     const archiveSaveFull = mkArchiveAction(
-      '保存对话（用户 prompt、API 请求结构与系统响应）',
-      '下载用户输入、时间线，以及每次调用大模型 API 的请求结构（系统提示词与页面快照为解释词，不含网页快照正文；其余 content 为完整正文）。'
+      'panel.archiveSaveFull',
+      'panel.archiveSaveFullHint'
     );
     const archiveSaveUser = mkArchiveAction(
-      '保存对话（仅用户输入）',
-      '只下载你发送过的任务原文与时间。'
+      'panel.archiveSaveUser',
+      'panel.archiveSaveUserHint'
     );
     archiveActions.appendChild(archiveClearKeepFiles);
     archiveActions.appendChild(archiveClearAll);
@@ -2050,59 +2106,67 @@
     archiveActions.appendChild(archiveSaveUser);
     archiveDialog.appendChild(archiveActions);
     const archiveFooter = mk('div', 'modal-actions');
-    const archiveCancel = mk('button', 'btn', { type: 'button', textContent: '取消' });
+    const archiveCancel = mk('button', 'btn', { type: 'button' });
+    archiveCancel.setAttribute('data-i18n', 'common.cancel');
     archiveFooter.appendChild(archiveCancel);
     archiveDialog.appendChild(archiveFooter);
     archiveModal.appendChild(archiveDialog);
 
     const archiveSaveModal = mk('div', 'modal-backdrop hidden');
     const archiveSaveDialog = mk('div', 'modal');
-    archiveSaveDialog.appendChild(mk('h3', null, { textContent: '保存对话' }));
-    archiveSaveDialog.appendChild(mk('div', 'archive-lead', {
-      textContent: '可先用大模型按指令脱敏，满意后再保存本文档。脱敏可多次迭代。超过每段字数或调用失败才分段。'
-    }));
+    const archiveSaveHeading = mk('h3');
+    archiveSaveHeading.setAttribute('data-i18n', 'panel.archiveSaveTitle');
+    archiveSaveDialog.appendChild(archiveSaveHeading);
+    const archiveSaveLead = mk('div', 'archive-lead');
+    archiveSaveLead.setAttribute('data-i18n', 'panel.archiveSaveLead');
+    archiveSaveDialog.appendChild(archiveSaveLead);
     const archiveRedactLabel = mk('label');
-    archiveRedactLabel.appendChild(panelDoc.createTextNode('传送给大模型的用户脱敏指令'));
-    const archiveRedactInput = mk('textarea', 'archive-redact-input', {
-      rows: 5,
-      maxLength: 2000,
-      placeholder: '填写发给文本模型的脱敏要求'
-    });
+    const archiveRedactLabelText = mk('span');
+    archiveRedactLabelText.setAttribute('data-i18n', 'panel.archiveRedactLabel');
+    archiveRedactLabel.appendChild(archiveRedactLabelText);
+    const archiveRedactInput = mk('textarea', 'archive-redact-input', { rows: 5, maxLength: 2000 });
+    archiveRedactInput.setAttribute('data-i18n-placeholder', 'panel.archiveRedactPh');
     archiveRedactLabel.appendChild(archiveRedactInput);
     archiveSaveDialog.appendChild(archiveRedactLabel);
     const archiveDocLabel = mk('label');
-    archiveDocLabel.appendChild(panelDoc.createTextNode('对话历史内容文本'));
-    const archiveDocInput = mk('textarea', 'archive-doc-input', {
-      rows: 10,
-      placeholder: '将保存的对话文本'
-    });
+    const archiveDocLabelText = mk('span');
+    archiveDocLabelText.setAttribute('data-i18n', 'panel.archiveDocLabel');
+    archiveDocLabel.appendChild(archiveDocLabelText);
+    const archiveDocInput = mk('textarea', 'archive-doc-input', { rows: 10 });
+    archiveDocInput.setAttribute('data-i18n-placeholder', 'panel.archiveDocPh');
     archiveDocLabel.appendChild(archiveDocInput);
     archiveSaveDialog.appendChild(archiveDocLabel);
     const archiveChunkRow = mk('label', 'archive-chunk-row');
-    const archiveCharCount = mk('span', 'archive-char-count', { textContent: '文本共 0 字，将按每段' });
+    const archiveCharCount = mk('span', 'archive-char-count');
     const archiveChunkInput = mk('input', 'archive-chunk-input');
     archiveChunkInput.type = 'number';
     archiveChunkInput.min = '2000';
     archiveChunkInput.max = '5000000';
     archiveChunkInput.step = '1000';
     archiveChunkInput.value = '1000000';
-    archiveChunkInput.title = '默认 100 万字。超过才分段，调用失败时也会自动按段落再分。';
-    const archiveCharTail = mk('span', 'archive-char-tail', { textContent: '进行分隔' });
+    archiveChunkInput.setAttribute('data-i18n-title', 'panel.archiveChunkTitle');
+    const archiveCharTail = mk('span', 'archive-char-tail');
+    archiveCharTail.setAttribute('data-i18n', 'panel.archiveCharSuffix');
     archiveChunkRow.appendChild(archiveCharCount);
     archiveChunkRow.appendChild(archiveChunkInput);
     archiveChunkRow.appendChild(archiveCharTail);
     archiveSaveDialog.appendChild(archiveChunkRow);
     const archiveModelRow = mk('label', 'archive-model-row');
-    archiveModelRow.appendChild(panelDoc.createTextNode('文本模型'));
+    const archiveModelLabel = mk('span');
+    archiveModelLabel.setAttribute('data-i18n', 'panel.textModel');
+    archiveModelRow.appendChild(archiveModelLabel);
     const archiveModelSelect = mk('select', 'tag-select');
     archiveModelRow.appendChild(archiveModelSelect);
     archiveSaveDialog.appendChild(archiveModelRow);
     const archiveSaveStatus = mk('div', 'archive-status');
     archiveSaveDialog.appendChild(archiveSaveStatus);
     const archiveSaveActions = mk('div', 'modal-actions');
-    const archiveSaveBack = mk('button', 'btn', { type: 'button', textContent: '返回' });
-    const archiveRedactBtn = mk('button', 'btn', { type: 'button', textContent: '采用大模型脱敏本文档' });
-    const archiveSaveDocBtn = mk('button', 'btn primary', { type: 'button', textContent: '保存本文档' });
+    const archiveSaveBack = mk('button', 'btn', { type: 'button' });
+    archiveSaveBack.setAttribute('data-i18n', 'common.back');
+    const archiveRedactBtn = mk('button', 'btn', { type: 'button' });
+    archiveRedactBtn.setAttribute('data-i18n', 'panel.archiveRedactBtn');
+    const archiveSaveDocBtn = mk('button', 'btn primary', { type: 'button' });
+    archiveSaveDocBtn.setAttribute('data-i18n', 'panel.archiveSaveDoc');
     archiveSaveActions.appendChild(archiveSaveBack);
     archiveSaveActions.appendChild(archiveRedactBtn);
     archiveSaveActions.appendChild(archiveSaveDocBtn);
@@ -2128,10 +2192,13 @@
     const userInput = mk('textarea');
     userInput.id = 'userInput';
     userInput.rows = 2;
-    userInput.placeholder = '描述完整工作要求，例如：根据附件为张三提交事假申请\n如需多条独立任务，请每行使用编号或项目符号：\n1. 进入成果反馈页面\n2. 填写申请并上传附件';
+    userInput.setAttribute('data-i18n-placeholder', 'panel.inputPh');
     const composerActions = mk('div', 'composer-actions');
-    const attachBtn = mk('button', 'attach-btn', { type: 'button', textContent: '📎', title: '上传附件（文本/PDF/图片）' });
-    const sendBtn = mk('button', 'btn primary send-btn', { type: 'button', textContent: '发送', title: '发送' });
+    const attachBtn = mk('button', 'attach-btn', { type: 'button', textContent: '📎' });
+    attachBtn.setAttribute('data-i18n-title', 'panel.attachTitle');
+    const sendBtn = mk('button', 'btn primary send-btn', { type: 'button' });
+    sendBtn.setAttribute('data-i18n', 'panel.send.send');
+    sendBtn.setAttribute('data-i18n-title', 'panel.send.sendTitle');
     composerActions.appendChild(attachBtn);
     composerActions.appendChild(sendBtn);
     inputRow.appendChild(userInput);
@@ -2140,21 +2207,25 @@
     // 输入行下方：两个模型标签选择器（文本 / OCR），切换立即持久化
     const tagRow = mk('div', 'tag-row');
     const textTagField = mk('div', 'tag-field');
-    textTagField.appendChild(mk('label', null, { textContent: '文本模型' }));
+    const textTagLabel = mk('label');
+    textTagLabel.setAttribute('data-i18n', 'panel.textModelTag');
+    textTagField.appendChild(textTagLabel);
     const textTagSelect = mk('select', 'tag-select');
-    textTagSelect.title = '选择文本模型标签（provider名 / 模型ID）';
+    textTagSelect.setAttribute('data-i18n-title', 'panel.textModelTagTitle');
     textTagField.appendChild(textTagSelect);
     const ocrTagField = mk('div', 'tag-field');
-    ocrTagField.appendChild(mk('label', null, { textContent: 'OCR模型' }));
+    const ocrTagLabel = mk('label');
+    ocrTagLabel.setAttribute('data-i18n', 'panel.ocrModelTag');
+    ocrTagField.appendChild(ocrTagLabel);
     const ocrTagSelect = mk('select', 'tag-select');
-    ocrTagSelect.title = '选择 OCR 模型：视觉模型ID、MinerU，或SCNet ocrType（如 GENERAL / ID_CARD）';
+    ocrTagSelect.setAttribute('data-i18n-title', 'panel.ocrModelTagTitle');
     ocrTagField.appendChild(ocrTagSelect);
     tagRow.appendChild(textTagField);
     tagRow.appendChild(ocrTagField);
 
     const composer = mk('div', 'composer');
     const inputResizeHandle = mk('div', 'input-resize-handle');
-    inputResizeHandle.title = '拖动调整输入框高度';
+    inputResizeHandle.setAttribute('data-i18n-title', 'panel.resizeHandle');
     composer.appendChild(inputResizeHandle);
     composer.appendChild(inputRow);
     composer.appendChild(tagRow);
@@ -2172,7 +2243,7 @@
     shadow.appendChild(archiveSaveModal);
 
     return {
-      header, zoomBtn, settingsBtn, closeBtn, clearBtn,
+      header, zoomBtn, settingsBtn, closeBtn, clearBtn, langBtn,
       connLamp, connLampLabel,
       saveSkillBtn: saveSkillBtn, skillLibBtn: skillLibBtn,
       settingsPanel, openGlobalSettingsBtn,
@@ -2200,6 +2271,50 @@
       messages, userInput, sendBtn, inputResizeHandle,
       textTagSelect, ocrTagSelect
     };
+  }
+
+  function applyPanelLocale() {
+    if (shadow && I18N && I18N.applyDom) I18N.applyDom(shadow);
+    if (shadow) {
+      const optNodes = shadow.querySelectorAll('[data-i18n-opt]');
+      for (let i = 0; i < optNodes.length; i++) {
+        const ok = optNodes[i].getAttribute('data-i18n-opt');
+        if (ok) optNodes[i].textContent = t(ok);
+      }
+    }
+    if (els.langBtn && I18N) {
+      els.langBtn.textContent = I18N.langToggleLabel();
+      els.langBtn.title = I18N.langToggleTitle();
+    }
+    if (els.saveSkillMatch) {
+      const optKeys = {
+        'origin+path': 'panel.skillMatch.originPath',
+        origin: 'panel.skillMatch.origin',
+        exact: 'panel.skillMatch.exact'
+      };
+      Array.from(els.saveSkillMatch.options).forEach(function (opt) {
+        const key = optKeys[opt.value];
+        if (key) opt.textContent = t(key);
+      });
+    }
+    if (typeof refreshArchiveDocChars === 'function') refreshArchiveDocChars();
+    if (typeof setConnState === 'function' && connStateKey) setConnState(connStateKey);
+    if (archiveBusy && els.archiveRedactBtn) {
+      els.archiveRedactBtn.textContent = t('panel.archiveRedactStop');
+    }
+    if (shell) shell.setAttribute('title', t('panel.iframeTitle'));
+    if (els.zoomBtn) {
+      els.zoomBtn.title = panelExpanded ? t('panel.zoomRestore') : t('panel.zoomTitle');
+    }
+    if (!running && !standby && els.sendBtn) {
+      els.sendBtn.textContent = t('panel.send.send');
+      els.sendBtn.title = t('panel.send.sendTitle');
+    } else if (running && els.sendBtn) {
+      els.sendBtn.textContent = stopping ? t('panel.send.stopping') : t('panel.send.stop');
+      els.sendBtn.title = stopping ? t('panel.send.stoppingTitle') : t('panel.send.stopTitle');
+    } else if (standby && els.sendBtn) {
+      els.sendBtn.textContent = t('panel.standby');
+    }
   }
 
   const els = buildDOM();
@@ -2237,7 +2352,7 @@
 
   function storeSet(obj) {
     return storeRpc('panelStoreSet', { obj: obj }).then((r) => {
-      if (r && r.pressure) setConnBanner('本地存储接近上限，附件正文可能未写入（刷新后需重加）', 'error');
+      if (r && r.pressure) setConnBanner(t('panel.msg.storagePressure'), 'error');
       return !!(r && r.ok);
     });
   }
@@ -2254,8 +2369,14 @@
   function isConnHintMessage(m) {
     if (!m) return false;
     if (m.role !== 'status' && m.role !== 'system') return false;
-    const t = String(m.text || '');
-    return t === CONN_HINT_RECONNECT || t === CONN_HINT_CONNECTED;
+    const text = String(m.text || '');
+    if (I18N && I18N.STR) {
+      const zh = I18N.STR.zh;
+      const en = I18N.STR.en;
+      return text === zh['panel.conn.reconnecting'] || text === en['panel.conn.reconnecting']
+        || text === zh['panel.conn.connected'] || text === en['panel.conn.connected'];
+    }
+    return text === connHintReconnect() || text === connHintConnected();
   }
 
   function persistTranscript() {
@@ -2875,15 +2996,15 @@
     attachedFiles.forEach((f, idx) => {
       const kind = f.kind || classifyFile(f.name, f.type);
       const chip = mk('span', 'chip');
-      const badge = mk('span', 'chip-badge ' + kindBadgeClass(kind), { textContent: kindBadge(kind), title: '类别：' + kind });
+      const badge = mk('span', 'chip-badge ' + kindBadgeClass(kind), { textContent: kindBadge(kind), title: t('panel.chip.kindTitle') + kind });
       const name = mk('span', 'chip-name', { textContent: f.name || '' });
       const aliasTitle = (Array.isArray(f.aliases) && f.aliases.length) ? ('；别名 ' + f.aliases.join('、')) : '';
       name.title = (f.name || '') + aliasTitle + (f.needsName ? '（正在根据 OCR 命名）' : '');
       const size = mk('span', 'chip-size', {
-        textContent: fileSizeLabel(f.size || 0) + (!f.dataUrl ? ' · 需重加' : ''),
-        title: !f.dataUrl ? '附件内容未持久化，请移除后重新添加' : ''
+        textContent: fileSizeLabel(f.size || 0) + (!f.dataUrl ? t('panel.chip.readd') : ''),
+        title: !f.dataUrl ? t('panel.chip.readdTitle') : ''
       });
-      const remove = mk('button', 'chip-remove', { textContent: '✕', title: '移除' });
+      const remove = mk('button', 'chip-remove', { textContent: '✕', title: t('panel.chip.remove') });
       remove.addEventListener('click', () => {
         attachedFiles.splice(idx, 1);
         renderChips();
@@ -3206,8 +3327,8 @@
     clearStopWatch();
     els.userInput.disabled = true;
     if (els.attachBtn) els.attachBtn.disabled = true;
-    els.sendBtn.textContent = '待命';
-    els.sendBtn.title = hint || '等待父页 delegate 到此页，暂不可发送新任务';
+    els.sendBtn.textContent = t('panel.standby');
+    els.sendBtn.title = hint || t('panel.msg.standbyDelegate');
     els.sendBtn.disabled = true;
     els.sendBtn.classList.remove('primary', 'stop');
     els.sendBtn.classList.add('standby');
@@ -3226,14 +3347,14 @@
     els.userInput.disabled = v || standby;
     if (els.attachBtn) els.attachBtn.disabled = v || standby;
     if (v) {
-      els.sendBtn.textContent = stopping ? '停止中' : '停止';
-      els.sendBtn.title = stopping ? '正在停止…' : '停止当前正在执行的任务';
+      els.sendBtn.textContent = stopping ? t('panel.send.stopping') : t('panel.send.stop');
+      els.sendBtn.title = stopping ? t('panel.send.stoppingTitle') : t('panel.send.stopTitle');
       els.sendBtn.classList.add('stop');
       els.sendBtn.classList.remove('primary', 'standby');
       els.sendBtn.disabled = stopping;
     } else if (!standby) {
-      els.sendBtn.textContent = '发送';
-      els.sendBtn.title = '发送';
+      els.sendBtn.textContent = t('panel.send.send');
+      els.sendBtn.title = t('panel.send.sendTitle');
       els.sendBtn.classList.add('primary');
       els.sendBtn.classList.remove('stop', 'standby');
       els.sendBtn.disabled = false;
@@ -3291,7 +3412,7 @@
     try {
       chrome.runtime.sendMessage({ cmd: 'cancelFromPanel' }, () => void chrome.runtime.lastError);
     } catch (e2) {}
-    addBubble('status', '正在停止当前任务…');
+    addBubble('status', t('panel.msg.stopping'));
     clearStopWatch();
     // 后台若仍在收尾，超时后恢复「停止」而不是「发送」，避免无法再次终止
     stopWatchId = setTimeout(() => {
@@ -3299,7 +3420,7 @@
       if (!running) return;
       stopping = false;
       setRunning(true);
-      addBubble('status', '停止指令已发出；若后台仍在运行，请再次点击停止。');
+      addBubble('status', t('panel.msg.stopSent'));
     }, 12000);
   }
 
@@ -3317,7 +3438,7 @@
       renderChips();
       if (canPersist()) storeSet({ [fileKey()]: [] });
     }
-    addBubble('status', keepFiles ? '已清空对话历史（附件已保留）' : '已清空对话历史与附件');
+    addBubble('status', keepFiles ? t('panel.msg.clearedKeep') : t('panel.msg.clearedAll'));
     activeSkillContext = null;
   }
 
@@ -3346,14 +3467,15 @@
 
   function archiveRoleLabel(role) {
     const map = {
-      user: '用户',
-      assistant: '助手',
-      system: '系统',
-      status: '状态',
-      error: '错误',
-      'llm-call': '模型调用'
+      user: 'panel.archive.role.user',
+      assistant: 'panel.archive.role.assistant',
+      system: 'panel.archive.role.system',
+      status: 'panel.archive.role.status',
+      error: 'panel.archive.role.error',
+      'llm-call': 'panel.archive.role.llm'
     };
-    return map[role] || String(role || '');
+    const key = map[role];
+    return key ? t(key) : String(role || '');
   }
 
   function archiveItems(userOnly) {
@@ -3381,40 +3503,40 @@
   function buildArchiveMarkdown(items, userOnly) {
     const now = new Date();
     const lines = [
-      '# 对话存档',
+      t('panel.archive.heading'),
       '',
-      '- 页面：' + (location.href || ''),
-      '- 保存时间：' + formatLocalDateTime(now),
-      '- 范围：' + (userOnly ? '仅用户输入' : '全部（用户 prompt、API 请求结构与系统响应）'),
+      t('panel.archive.page') + (location.href || ''),
+      t('panel.archive.savedAt') + formatLocalDateTime(now),
+      (userOnly ? t('panel.archive.scopeUser') : t('panel.archive.scopeFull')),
       ''
     ];
     if (!userOnly) {
-      lines.push('API 请求保存实际 messages.content；系统提示词+运行时手册与页面快照仍为解释词（不含网页快照正文），图像 dataURL 与密钥不写入。');
+      lines.push(t('panel.archive.apiNote'));
       lines.push('');
     }
     if (!items.length) {
-      lines.push('（当前没有可保存的内容）');
+      lines.push(t('panel.archive.empty'));
       return lines.join('\n');
     }
     items.forEach((m, idx) => {
-      const t = formatMessageTime(m.at);
-      const title = t ? (t + ' · ' + archiveRoleLabel(m.role)) : archiveRoleLabel(m.role);
+      const stamp = formatMessageTime(m.at);
+      const title = stamp ? (stamp + ' · ' + archiveRoleLabel(m.role)) : archiveRoleLabel(m.role);
       lines.push('## ' + title);
       lines.push('');
       const body = String(m.text || '').trim();
-      lines.push(body || '（无文本）');
+      lines.push(body || t('panel.archive.noText'));
       if (!userOnly && m.role === 'llm-call') {
         const prompt = String((m.llm && m.llm.prompt) || nearestArchiveUserPrompt(items, idx) || '').trim();
         if (prompt) {
           lines.push('');
-          lines.push('### 输入 prompt');
+          lines.push(t('panel.archive.inputPrompt'));
           lines.push('');
           lines.push(prompt);
         }
         const shapeText = formatArchiveRequestShape(m.llm && m.llm.requestShape);
         if (shapeText) {
           lines.push('');
-          lines.push('### API 请求结构');
+          lines.push(t('panel.archive.apiShape'));
           lines.push('');
           lines.push('```json');
           lines.push(shapeText);
@@ -3423,7 +3545,7 @@
       }
       if (!userOnly && m.output) {
         lines.push('');
-        lines.push('### 完整输出');
+        lines.push(t('panel.archive.fullOutput'));
         lines.push('');
         lines.push('```');
         lines.push(formatModelOutput(m.output));
@@ -3458,7 +3580,7 @@
     if (els.archiveChunkInput) els.archiveChunkInput.disabled = archiveBusy;
     if (els.archiveRedactBtn) {
       els.archiveRedactBtn.disabled = false;
-      els.archiveRedactBtn.textContent = archiveBusy ? '停止脱敏' : '采用大模型脱敏本文档';
+      els.archiveRedactBtn.textContent = archiveBusy ? t('panel.archiveRedactStop') : t('panel.archiveRedactBtn');
     }
   }
 
@@ -3473,7 +3595,7 @@
   function requestArchiveRedact(markdown, hint, tag, maxChars) {
     return new Promise((resolve, reject) => {
       if (archiveRedactWait) {
-        reject(new Error('已有脱敏任务进行中'));
+        reject(new Error(t('panel.msg.redactBusy')));
         return;
       }
       archiveRedactWait = { resolve: resolve, reject: reject };
@@ -3537,11 +3659,11 @@
     if (archiveBusy) return;
     const items = archiveItems(!!userOnly);
     if (!items.length) {
-      setArchiveStatus(userOnly ? '当前没有用户输入可保存' : '当前没有可保存的对话', true);
+      setArchiveStatus(userOnly ? t('panel.msg.noUserArchive') : t('panel.msg.noArchive'), true);
       return;
     }
     const stamp = formatStampForFile(new Date());
-    const filename = (userOnly ? '对话存档-用户输入-' : '对话存档-完整-') + stamp + '.md';
+    const filename = (userOnly ? t('panel.archive.fileUser') : t('panel.archive.fileFull')) + stamp + '.md';
     archiveSaveMeta = { userOnly: !!userOnly, filename: filename };
     if (els.archiveRedactInput) els.archiveRedactInput.value = defaultArchiveRedactHint();
     if (els.archiveDocInput) els.archiveDocInput.value = buildArchiveMarkdown(items, !!userOnly);
@@ -3564,7 +3686,7 @@
 
   function refreshArchiveDocChars() {
     if (els.archiveCharCount) {
-      els.archiveCharCount.textContent = '文本共 ' + archiveDocCharCount() + ' 字，将按每段';
+      els.archiveCharCount.textContent = t('panel.archiveCharPrefix', { n: archiveDocCharCount() });
     }
   }
 
@@ -3599,11 +3721,11 @@
     }
     const hint = String(els.archiveRedactInput && els.archiveRedactInput.value || '').trim();
     if (!hint) {
-      setArchiveStatus('脱敏指令为空，未调用大模型。可直接保存本文档，或填写指令后再脱敏。', true);
+      setArchiveStatus(t('panel.archive.redactEmpty'), true);
       return;
     }
     if (!port || portDead) {
-      setArchiveStatus('未连接后台，无法脱敏', true);
+      setArchiveStatus(t('panel.archive.redactNoConn'), true);
       return;
     }
     const markdown = String(els.archiveDocInput && els.archiveDocInput.value || '');
@@ -3611,19 +3733,19 @@
     const maxChars = readArchiveChunkChars();
     if (els.archiveChunkInput) els.archiveChunkInput.value = String(maxChars);
     setArchiveBusy(true);
-    setArchiveStatus('文本共 ' + markdown.length + ' 字，将按每段 ' + maxChars + ' 字分隔。正在调用文本模型脱敏…');
+    setArchiveStatus(t('panel.archive.redactProgress', { n: markdown.length, chunk: maxChars }));
     try {
       const out = await requestArchiveRedact(markdown, hint, tag, maxChars);
       if (els.archiveDocInput) els.archiveDocInput.value = out;
       refreshArchiveDocChars();
       setArchiveBusy(false);
-      setArchiveStatus('脱敏完成，可继续改指令再脱敏，或保存本文档。');
+      setArchiveStatus(t('panel.archive.redactDone'));
     } catch (e) {
       setArchiveBusy(false);
       if (isArchiveRedactStopError(e)) {
-        setArchiveStatus('已停止脱敏，文档保持不变。');
+        setArchiveStatus(t('panel.archive.redactStoppedDoc'));
       } else {
-        setArchiveStatus('脱敏失败：' + String(e && e.message || e), true);
+        setArchiveStatus(t('panel.msg.redactFail') + '：' + String(e && e.message || e), true);
       }
     }
   }
@@ -3631,21 +3753,21 @@
   async function saveArchiveDocument() {
     if (archiveBusy) return;
     const filename = (archiveSaveMeta && archiveSaveMeta.filename)
-      || ('对话存档-' + formatStampForFile(new Date()) + '.md');
+      || (t('panel.archive.fileDefault') + formatStampForFile(new Date()) + '.md');
     const markdown = String(els.archiveDocInput && els.archiveDocInput.value || '');
     setArchiveBusy(true);
     const saved = await saveArchiveFile(markdown, filename);
     setArchiveBusy(false);
     if (saved && saved.cancelled) {
-      setArchiveStatus('已取消保存');
+      setArchiveStatus(t('panel.archive.saveCancelled'));
       return;
     }
     if (!saved || !saved.ok) {
-      setArchiveStatus('保存失败' + (saved && saved.error ? '：' + saved.error : ''), true);
+      setArchiveStatus(t('panel.archive.saveFail') + (saved && saved.error ? '：' + saved.error : ''), true);
       return;
     }
     hideArchiveModal();
-    addBubble('status', '已保存：' + filename);
+    addBubble('status', t('panel.archive.saved') + filename);
   }
 
   function backToArchiveModal() {
@@ -3764,18 +3886,18 @@
 
   function savePageRuntimeConfig() {
     if (!port || portDead) {
-      setPageRunStatus('未连接后台', 'err');
+      setPageRunStatus(t('panel.pageRun.noConn'), 'err');
       return;
     }
     if (!origin) {
-      setPageRunStatus('当前页没有可用的网站标识', 'err');
+      setPageRunStatus(t('panel.pageRun.noOrigin'), 'err');
       return;
     }
     try {
       port.postMessage({ cmd: 'savePageConfig', config: collectPageRuntimeConfig() });
-      setPageRunStatus('正在保存…');
+      setPageRunStatus(t('panel.pageRun.saving'));
     } catch (e) {
-      setPageRunStatus('保存失败：' + String(e && e.message || e), 'err');
+      setPageRunStatus(t('panel.pageRun.saveFail') + String(e && e.message || e), 'err');
     }
   }
 
@@ -3812,7 +3934,7 @@
     }
     if (els.zoomBtn) {
       els.zoomBtn.textContent = panelExpanded ? '⤡' : '⛶';
-      els.zoomBtn.title = panelExpanded ? '还原面板大小' : '放大面板至网页比例';
+      els.zoomBtn.title = panelExpanded ? t('panel.zoomRestore') : t('panel.zoomTitle');
     }
     const next = shell.getBoundingClientRect();
     if (prev.width > 1 && prev.height > 1) {
@@ -4196,7 +4318,7 @@
     els.skillList.textContent = '';
     if (list.length === 0) {
       els.skillList.appendChild(mk('div', 'skill-empty', {
-        textContent: cachedSkills.length ? '没有符合条件的技能' : '还没有 SKILL，可从当前对话构建或导入 JSON'
+        textContent: cachedSkills.length ? t('panel.skillEmptyFilter') : t('panel.skillEmpty')
       }));
       return;
     }
@@ -4211,11 +4333,11 @@
         if (check.checked) selectedSkillIds[skill.id] = true;
         else delete selectedSkillIds[skill.id];
       });
-      const name = mk('div', 'skill-card-name', { textContent: skill.name || '(未命名)' });
+      const name = mk('div', 'skill-card-name', { textContent: skill.name || t('common.unnamed') });
       top.appendChild(check);
       top.appendChild(name);
-      if (match) top.appendChild(mk('span', 'skill-badge match', { textContent: '适用本页' }));
-      if (skill.needsInput) top.appendChild(mk('span', 'skill-badge need', { textContent: '需参数' }));
+      if (match) top.appendChild(mk('span', 'skill-badge match', { textContent: t('panel.skillMatchBadge') }));
+      if (skill.needsInput) top.appendChild(mk('span', 'skill-badge need', { textContent: t('panel.skillNeedBadge') }));
       card.appendChild(top);
       card.appendChild(mk('div', 'skill-card-url', { textContent: compactUrl(skill.pageUrl) }));
       const actions = mk('div', 'skill-card-actions');
@@ -4462,13 +4584,14 @@
   }
 
   function setConnState(state) {
-    const labels = {
-      connected: '已连接',
-      disconnected: '未连接',
-      reconnecting: '重连中',
-      connecting: '连接中'
+    connStateKey = state;
+    const keyMap = {
+      connected: 'panel.conn.connected',
+      disconnected: 'panel.conn.disconnected',
+      reconnecting: 'panel.conn.reconnectingShort',
+      connecting: 'panel.conn.connecting'
     };
-    const label = labels[state] || '未连接';
+    const label = t(keyMap[state] || 'panel.conn.disconnected');
     if (els.connLamp) {
       els.connLamp.className = 'conn-lamp ' + state;
       els.connLamp.title = label;
@@ -4628,13 +4751,13 @@
   async function handleReady(msg) {
     if (msg.taskRunning) setRunning(true);
     else if (msg.pendingDelegate) {
-      setStandby(true, '等待父页 delegate 到此页，暂不可发送新任务');
+      setStandby(true, t('panel.msg.standbyDelegate'));
       if (msg.delegateFromUrl) showDelegateFromUrl(msg.delegateFromUrl);
     }
     if (msg.origin) origin = msg.origin;
     if (origin) {
       if (msg.injectError) {
-        setConnBanner('页面桥注入失败：' + msg.injectError, 'error');
+        setConnBanner(t('panel.msg.bridgeInjectFail') + msg.injectError, 'error');
       } else {
         setConnBanner('');
       }
@@ -4647,7 +4770,7 @@
       }
       setConnState('connected');
       if (wasReconnecting) {
-        upsertConnHint(CONN_HINT_CONNECTED, 'system');
+        upsertConnHint(connHintConnected(), 'system');
         queuePrepareAttach();
       }
       // SW 重启后 visibleTabs 会丢失，若面板可见则重新上报
@@ -4655,10 +4778,10 @@
       if (msg.taskRunning) {
         setRunning(true);
       } else if (msg.pendingDelegate) {
-        setStandby(true, '等待父页 delegate 到此页，暂不可发送新任务');
+        setStandby(true, t('panel.msg.standbyDelegate'));
         if (msg.delegateFromUrl) showDelegateFromUrl(msg.delegateFromUrl);
       } else if (runningBeforeDisconnect) {
-        addBubble('error', '浏览器后台已重启，之前的运行中任务已中断，请确认页面状态后重新发送。');
+        addBubble('error', t('panel.msg.swRestart'));
         setRunning(false);
       }
       runningBeforeDisconnect = false;
@@ -4679,27 +4802,27 @@
 
   function handleAsk(msg) {
     const q = msg.question != null ? String(msg.question) : '';
-    addAssistantBubble(q || '需要更多信息', msg.output);
-    addBubble('system', '请回复后继续');
+    addAssistantBubble(q || t('panel.msg.needMoreInfo'), msg.output);
+    addBubble('system', t('panel.msg.replyToContinue'));
     setRunning(false);
     els.userInput.focus();
   }
 
   function handleDone(msg) {
-    addAssistantBubble(msg.summary != null ? String(msg.summary) : '完成', msg.output);
+    addAssistantBubble(msg.summary != null ? String(msg.summary) : t('panel.msg.taskDone'), msg.output);
     if (msg.running) {
-      addBubble('status', '本条指令完成，继续执行下一条…');
+      addBubble('status', t('panel.msg.continueNext'));
       setRunning(true);
       return;
     }
-    addBubble('system', '任务完成');
+    addBubble('system', t('panel.msg.taskDone'));
     setRunning(false);
     els.userInput.focus();
   }
 
   function handleError(msg) {
-    addBubble('error', msg.message != null ? String(msg.message) : '发生错误');
-    addBubble('system', '任务已结束');
+    addBubble('error', msg.message != null ? String(msg.message) : t('panel.msg.taskError'));
+    addBubble('system', t('panel.msg.taskEnded'));
     setRunning(false);
     els.userInput.focus();
   }
@@ -4713,7 +4836,7 @@
         upsertLlmCallCard({ id: card.dataset.llmId, phase: 'cancelled' });
       }
     }
-    const text = msg && msg.summary != null ? String(msg.summary) : '已停止当前任务';
+    const text = msg && msg.summary != null ? String(msg.summary) : t('panel.msg.taskStopped');
     if (running || stopping) addBubble('system', text);
     setRunning(false);
     els.userInput.focus();
@@ -4750,16 +4873,16 @@
           if (msg.ok) {
             if (msg.config && typeof msg.config === 'object') currentPageConfig = msg.config;
             fillPageRuntimeForm();
-            setPageRunStatus('已保存 ✓', 'ok');
+            setPageRunStatus(t('panel.msg.pageSaved'), 'ok');
           } else {
-            setPageRunStatus('保存失败' + (msg.error ? '：' + msg.error : ''), 'err');
+            setPageRunStatus(t('panel.msg.pageSaveFail') + (msg.error ? '：' + msg.error : ''), 'err');
           }
           break;
         case 'configExport':
           break;
         case 'configImported':
-          if (msg.ok) addBubble('status', '已导入配置并生效');
-          else addBubble('error', '导入配置失败：' + (msg.error || '文件无效'));
+          if (msg.ok) addBubble('status', t('panel.msg.configImported'));
+          else addBubble('error', t('panel.msg.configImportFail') + (msg.error || '文件无效'));
           break;
         case 'tagSaved':
           // 标签已持久化；无需额外动作（下拉已即时反映）
@@ -4995,7 +5118,7 @@
     }
     if (reconnectTimerId) return;
     setConnState('reconnecting');
-    upsertConnHint(CONN_HINT_RECONNECT, 'status');
+    upsertConnHint(connHintReconnect(), 'status');
     reconnecting = true;
     const delays = [1000, 2000, 4000, 8000, 16000, 30000, 60000];
     let attempt = 0;
@@ -5024,7 +5147,7 @@
     if (!ok) {
       portDead = true;
       setConnState('disconnected');
-      addBubble('error', '无法连接后台：请重新打开扩展');
+      addBubble('error', t('settings.status.noBg'));
     }
   }
 
@@ -5093,6 +5216,9 @@
     els.confirmModal.addEventListener('click', (e) => {
       if (e.target === els.confirmModal) hideConfirmModal();
     });
+    if (els.langBtn && I18N) {
+      els.langBtn.addEventListener('click', () => { I18N.toggleLocale(); });
+    }
     els.clearBtn.addEventListener('click', () => openArchiveModal());
     els.archiveCancel.addEventListener('click', () => hideArchiveModal());
     els.archiveClearKeepFiles.addEventListener('click', () => clearConversation(true));
@@ -5268,6 +5394,12 @@
     window.addEventListener('pageshow', onPageShow);
     // 页面即将进入 bfcache：提前停止心跳，标记端口失效
     window.addEventListener('pagehide', onPageHide);
+    if (I18N) {
+      I18N.init(function () {
+        applyPanelLocale();
+        I18N.onChange(function () { applyPanelLocale(); });
+      });
+    }
   }
 
   function onDomReady() {

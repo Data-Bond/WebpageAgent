@@ -21,7 +21,7 @@ function ok(cond, name) {
   }
 }
 
-const files = ['background.js', 'pagebridge.js', 'content.js', 'panel.js', 'office.js', 'settings.js', 'shared/contracts.js', 'shared/toolProtocol.js', 'shared/pdfPages.js', 'shared/webSkill.js'];
+const files = ['background.js', 'pagebridge.js', 'content.js', 'panel.js', 'office.js', 'settings.js', 'shared/contracts.js', 'shared/toolProtocol.js', 'shared/pdfPages.js', 'shared/webSkill.js', 'shared/i18n.js'];
 const srcs = {};
 for (const f of files) {
   const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
@@ -77,25 +77,27 @@ ok(/opts\.onUsage/.test(bg) && /parseLlmUsage\(data && data\.usage\)/.test(bg),
 ok(/usage: rec\.usage/.test(bg), '下载详情包含本次用量');
 ok(/downloadLlmCall/.test(panelSrc), '面板可请求下载调用详情');
 ok(/llm-call-badge/.test(panelSrc), '调用卡片有解析状态徽标');
-ok(/textContent: '构建SKILL'/.test(panelSrc), '标题栏按钮文案为构建SKILL');
-ok(/textContent: '清空\/存档对话'/.test(panelSrc), '标题栏按钮为清空/存档对话');
+ok(/data-i18n.*panel\.buildSkill/.test(panelSrc), '标题栏构建SKILL 走 i18n');
+ok(/data-i18n.*panel\.clearArchive/.test(panelSrc) && !/清空\/存档对话/.test(panelSrc), '标题栏为清空/存档（无对话后缀）');
+ok(/langBtn/.test(panelSrc) && /lang-btn/.test(panelSrc), '标题栏有中英文切换按钮');
+ok(/shared\/i18n\.js/.test(bg), '面板注入含 i18n.js');
 ok(!/textContent: '清空对话', title: '清空对话与附件'/.test(panelSrc), '标题栏不再直接清空对话');
-ok(/清空对话（仅对话历史、保留附件）/.test(panelSrc), '可清空对话并保留附件');
-ok(/清空对话（包括对话历史与附件）/.test(panelSrc), '可清空对话与附件');
-ok(/保存对话（用户 prompt、API 请求结构与系统响应）/.test(panelSrc), '可保存完整对话时间线（含请求结构）');
-ok(/保存对话（仅用户输入）/.test(panelSrc), '可仅保存用户输入');
-ok(/### 输入 prompt/.test(panelSrc) && /### API 请求结构/.test(panelSrc), '完整存档写入 prompt 与 API 请求结构');
-ok(/不含网页快照/.test(panelSrc), '存档声明不含快照正文');
+ok(/panel\.archiveClearKeep/.test(panelSrc), '可清空对话并保留附件');
+ok(/panel\.archiveClearAll/.test(panelSrc), '可清空对话与附件');
+ok(/panel\.archiveSaveFull/.test(panelSrc), '可保存完整对话时间线（含请求结构）');
+ok(/panel\.archiveSaveUser/.test(panelSrc), '可仅保存用户输入');
+ok(/panel\.archive\.inputPrompt/.test(panelSrc) && /panel\.archive\.apiShape/.test(panelSrc), '完整存档写入 prompt 与 API 请求结构');
+ok(/panel\.archive\.apiNote/.test(panelSrc), '存档声明不含快照正文');
 ok(/requestShape/.test(panelSrc) && /function describeChatCompletionsRequestShape/.test(bg), '调用卡片持久化请求结构');
 ok(/dumped\.length < 1500000/.test(panelSrc), '会话持久化请求结构上限覆盖完整 content');
 ok(/keepFiles/.test(panelSrc) && /keepFiles/.test(bg), '清空历史可选择保留附件');
 ok(/function saveConversation/.test(panelSrc) && /function archiveItems/.test(panelSrc), '保存对话从 transcript 导出');
 ok(/function openArchiveModal/.test(panelSrc), '点击标题栏打开清空/存档页');
-ok(/textContent: '加载SKILL'/.test(panelSrc), '标题栏按钮文案为加载SKILL');
+ok(/data-i18n.*panel\.loadSkill/.test(panelSrc), '标题栏加载SKILL 走 i18n');
 ok(!/存为 WEB-SKILL/.test(panelSrc), '不再使用「存为 WEB-SKILL」');
 ok(!/WEB-SKILL 库/.test(panelSrc), '不再使用「WEB-SKILL 库」');
-ok(/导出含个人数据/.test(panelSrc), '技能库可勾选导出含个人数据');
-ok(/textContent: '自动构建'/.test(panelSrc) && /textContent: '手动确认'/.test(panelSrc), '构建SKILL 含自动/手动标签');
+ok(/panel\.exportWithPii/.test(panelSrc), '技能库可勾选导出含个人数据');
+ok(/panel\.skillAutoTab/.test(panelSrc) && /panel\.skillManualTab/.test(panelSrc), '构建SKILL 含自动/手动标签 i18n');
 ok(/cmd === 'buildSkillDraft'/.test(bg) && /function buildSkillDraftFromTurns/.test(bg), '后台可自动构建技能草稿');
 ok(/importScripts\('shared\/webSkill\.js'\)/.test(bg), '后台加载 webSkill 共享模块');
 ok(/shared\/webSkill\.js',\s*'panel\.js'/.test(bg), '面板注入先加载 webSkill.js');
@@ -105,7 +107,7 @@ ok(/listWebSkills: true, exportWebSkills: true, importWebSkills: true/.test(bg),
   '设置页端口允许列出/导出/导入 WEB-SKILL');
 ok(/id="exportSkillsSelectedBtn"/.test(settingsHtml) && /id="exportSkillsAllBtn"/.test(settingsHtml)
   && /id="skillSelectAllBtn"/.test(settingsHtml) && /id="skillInvertBtn"/.test(settingsHtml)
-  && /导出含个人数据/.test(settingsHtml) && /exportWebSkills/.test(settingsSrc)
+  && /panel\.exportWithPii/.test(settingsHtml) && /exportWebSkills/.test(settingsSrc)
   && /includeValues: !!\(\$\('exportSkillValues'\)/.test(settingsSrc)
   && /WebpageAgent-web-skill\.json/.test(settingsSrc) && /WebpageAgent-web-skill-pack\.json/.test(bg)
   && !/web-skill\.md/.test(settingsSrc) && !/web-skill-pack\.md/.test(bg),
@@ -116,8 +118,8 @@ ok(/skillContext: activeSkillContext/.test(panelSrc), '发送任务携带技能�
 ok(/substituteSkillVars/.test(bg), '执行 ops 前替换技能变量');
 ok(/header-action/.test(panelSrc), '标题栏文本按钮样式统一');
 ok(!/｜ 已注入/.test(panelSrc), '不再展示页面 URL｜已注入 条');
-ok(/网页智能体助手/.test(panelSrc) && /textContent: 'Webpage Agent'/.test(panelSrc),
-  '面板 iframe 标题为网页智能体助手，角标英文为 Webpage Agent');
+ok(/panel\.iframeTitle/.test(panelSrc) && /header-title/.test(panelSrc),
+  '面板标题走 i18n，角标仍为 manifest 版本');
 ok(/SHELL_DEFAULT_WIDTH = '650px'/.test(panelSrc) && /\.header-title \{[\s\S]*?white-space: nowrap/.test(panelSrc),
   '折叠面板默认宽度约加 25%，标题 Webpage Agent 单行');
 ok(/你是网页智能体助手/.test(bg),
@@ -260,9 +262,14 @@ const archiveHelpers = [
   extractFn(panelSrc, 'formatArchiveRequestShape'),
   extractFn(panelSrc, 'buildArchiveMarkdown')
 ].join('\n');
-const archiveBox = { location: { href: 'https://docs.qq.com/sheet/demo' } };
+const WPA_I18N = require(path.join(ROOT, 'shared/i18n.js'));
+const archiveBox = { location: { href: 'https://docs.qq.com/sheet/demo' }, WPA_I18N };
 try {
-  vm.runInNewContext(archiveHelpers + '\nthis.buildArchiveMarkdown = buildArchiveMarkdown;', archiveBox);
+  vm.runInNewContext(
+    'function t(key, params) { return WPA_I18N.t(key, params); }\n' +
+      archiveHelpers + '\nthis.buildArchiveMarkdown = buildArchiveMarkdown;',
+    archiveBox
+  );
   ok(typeof archiveBox.buildArchiveMarkdown === 'function', '存档 Markdown 函数可在测试中加载');
 } catch (e) {
   ok(false, '加载存档 Markdown 函数失败: ' + (e && e.message));
@@ -352,6 +359,12 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
     '手册：type 列表变化停批，下一轮再点');
   ok(/带勾选控件的行时回执 selection/.test(pbSrc),
     '手册：勾选行 click/check 回执带 selection');
+  ok(/reason=not-checkbox 时读 hint/.test(pbSrc) && /回执 near 为操作对象附近可见短文/.test(pbSrc),
+    '手册：not-checkbox 读 hint；mutation 回执带 near');
+  ok(/statusMessages 含过期或失效时/.test(pbSrc) && /先 click 验证码图/.test(pbSrc),
+    '手册：验证码过期先 click 图再 ocrFill');
+  ok(/memorize 的 args 可以是/.test(pbSrc) && /\["name","value"\]/.test(pbSrc),
+    '手册：memorize args 对象或数组');
   ok(/delegate returnToParent tabClose/.test(pbSrc), '手册列出委托工具');
   ok(/openedTab 则本批停/.test(pbSrc) && /下一轮 delegate 或 tabClose/.test(pbSrc),
     '手册：开出新 tab 后本批停');
@@ -396,7 +409,7 @@ ok(/function mirrorPanelToOpenedTab/.test(bg) &&
 ok(/pendingDelegateParent/.test(bg) && /function markPendingDelegate/.test(bg) &&
   /phase: 'standby'/.test(bg) && /childPendingDelegateInfo\(tabId\)/.test(bg),
   '开出子 tab 空窗期标记待命并拦截 runTask');
-ok(/function setStandby/.test(panelSrc) && /textContent = '待命'/.test(panelSrc) &&
+ok(/function setStandby/.test(panelSrc) && /panel\.standby/.test(panelSrc) &&
   /if \(running \|\| standby\) return/.test(panelSrc),
   '子 tab 面板待命态禁用输入与发送');
 ok(/function showDelegateFromUrl/.test(panelSrc) &&
@@ -670,6 +683,24 @@ ok(/function findRootByVisibleText/.test(bridge), 'within 标题文案按可见�
 ok(/function retargetFileSelectClick/.test(bridge), 'pagebridge 有文件行点击改向勾选图标');
 ok(/function collectFileSelectRows/.test(bridge), 'pagebridge 收集文件选择行供 setChecked');
 ok(/function isFileSelectRow/.test(bridge), 'pagebridge 识别文件选择行');
+ok(/function collectNearbyVisibleTexts/.test(bridge) && /function attachNear/.test(bridge),
+  'pagebridge 收集操作对象附近可见短文');
+{
+  const nearFn = extractFn(bridge, 'collectNearbyVisibleTexts');
+  ok(nearFn.indexOf('FIELD_CONSTRAINT_RE') < 0 && nearFn.indexOf('FIELD_HINT_CLASS_RE') < 0,
+    'near 收集不做约束词过滤');
+}
+ok(/args && typeof args === 'object' && !Array.isArray\(args\)/.test(extractFn(bg, 'sessionOpSpec')),
+  'sessionOpSpec 接受纯对象 args');
+ok(/function collectNearbyVisibleTexts/.test(bridge) && /function attachNear/.test(bridge),
+  'pagebridge 收集操作对象附近可见短文');
+{
+  const nearFn = extractFn(bridge, 'collectNearbyVisibleTexts');
+  ok(nearFn.indexOf('FIELD_CONSTRAINT_RE') < 0 && nearFn.indexOf('FIELD_HINT_CLASS_RE') < 0,
+    'near 收集不做约束词过滤');
+}
+ok(/args && typeof args === 'object' && !Array.isArray\(args\)/.test(extractFn(bg, 'sessionOpSpec')),
+  'sessionOpSpec 接受纯对象 args');
 ok(/check 只用于真正复选\/单选/.test(bg), '短手册：check 不用于级联项');
 ok(!/助手已确认生效/.test(bg), '变化摘要不再把 verified 说成已生效');
 ok(!/该勾选\/赋值已成功/.test(bg), '回执不再写赋值已成功');
@@ -1935,7 +1966,8 @@ const plainClick = doneSandbox.attachTaskHintToOps(
 ok(!plainClick[0].args[1], '普通 click 不注入 hint');
 
 ok(/function memorizeIntoList/.test(bg) && /function valueFromPriorReads/.test(bg) &&
-  /function recallFromList/.test(bg) && /function coerceMemorizeValue/.test(bg),
+  /function recallFromList/.test(bg) && /function coerceMemorizeValue/.test(bg) &&
+  /function maybeInvalidateLastRead/.test(bg) && /function appendResultMessage/.test(bg),
   '记忆从本轮成功 get/print 或 lastRead 回填，取用走 recall');
 ok(/【记忆】/.test(bg) && /formatMemoryBlock/.test(bg), '每轮快照头可注入记忆块');
 ok(/print-catalog/.test(panelSrc), '面板有 print 可复制目录');
@@ -2020,6 +2052,69 @@ ok(/print-catalog/.test(panelSrc), '面板有 print 可复制目录');
     ok(/智能体首页=https:/.test(memBox.formatMemoryBlock(linked.list)), '短记忆块写成 name=value');
   } catch (e) {
     ok(false, '记忆辅助函数测试失败: ' + (e && e.message));
+  }
+}
+{
+  const invBox = { WPA_CONTRACTS: C, lastReads: new Map(), LAST_READ_DOM_STALE: 500000 };
+  try {
+    vm.runInNewContext(
+      'const lastReads = this.lastReads;\n' +
+      'const LAST_READ_DOM_STALE = this.LAST_READ_DOM_STALE;\n' +
+      'const READ_MEMORY_SOURCE_OPS = { get: 1, print: 1, getText: 1, officeRead: 1 };\n' +
+      extractFn(bg, 'pickMemorizeSource') + '\n' +
+      extractFn(bg, 'batchHadReadSource') + '\n' +
+      extractFn(bg, 'maybeInvalidateLastRead') + '\n' +
+      'this.pickMemorizeSource = pickMemorizeSource;\n' +
+      'this.batchHadReadSource = batchHadReadSource;\n' +
+      'this.maybeInvalidateLastRead = maybeInvalidateLastRead;',
+      invBox
+    );
+    invBox.lastReads.set('origin-a', 'stale-body');
+    invBox.maybeInvalidateLastRead('origin-a', { domChanged: 5419309 }, [
+      { op: 'click', value: { ok: true, idx: 10 } }
+    ]);
+    ok(!invBox.lastReads.has('origin-a'), '预览级 DOM 变化且无本批读时清空 lastRead');
+    invBox.lastReads.set('origin-b', 'fresh-body');
+    invBox.maybeInvalidateLastRead('origin-b', { domChanged: 5419309 }, [
+      { op: 'get', value: { ok: true, text: 'preview text' } }
+    ]);
+    ok(invBox.lastReads.has('origin-b'), '本批含 get 时不清 lastRead');
+    invBox.lastReads.set('origin-c', 'keep-body');
+    invBox.maybeInvalidateLastRead('origin-c', { domChanged: 12 }, [
+      { op: 'click', value: { ok: true } }
+    ]);
+    ok(invBox.lastReads.has('origin-c'), '小幅 DOM 变化不清 lastRead');
+  } catch (e) {
+    ok(false, 'lastRead 失效测试失败: ' + (e && e.message));
+  }
+}
+{
+  const foldBox = { WPA_CONTRACTS: C, messages: [] };
+  try {
+    vm.runInNewContext(
+      'const WPA_CONTRACTS = this.WPA_CONTRACTS;\n' +
+      extractFn(bg, 'makeResultFoldState') + '\n' +
+      extractFn(bg, 'resetResultFoldState') + '\n' +
+      extractFn(bg, 'appendResultMessage') + '\n' +
+      'this.makeResultFoldState = makeResultFoldState;\n' +
+      'this.resetResultFoldState = resetResultFoldState;\n' +
+      'this.appendResultMessage = appendResultMessage;',
+      foldBox
+    );
+    const foldState = foldBox.makeResultFoldState();
+    const batchJson = JSON.stringify({
+      kind: 'batch',
+      results: [{ op: 'get', value: { ok: true, same: 'fd8e1c278b6fe6c5', text: '# doc', chars: 10879 } }]
+    });
+    const suffix = '\n【页面信号】url未变化；无探针差异';
+    foldBox.appendResultMessage(foldBox.messages, '【执行结果】\n' + batchJson + suffix, foldState);
+    foldBox.appendResultMessage(foldBox.messages, '【执行结果】\n' + batchJson + suffix, foldState);
+    ok(foldBox.messages.length === 2, 'appendResultMessage 写入两条');
+    ok(foldBox.messages[0].content.indexOf('# doc') >= 0, '首条保留完整 get');
+    ok(foldBox.messages[1].content.indexOf('sameBatch=') >= 0, '第二条重复 get 折叠写入');
+    ok(foldBox.messages[1].content.indexOf('【页面信号】') >= 0, '折叠行保留页面信号');
+  } catch (e) {
+    ok(false, 'appendResultMessage 测试失败: ' + (e && e.message));
   }
 }
 
@@ -2184,6 +2279,9 @@ ok(String(changeSandbox.changeSummary({ anyChange: true, viewChanged: true, view
 ok(C.CONTEXT_TOKEN_SOFT === 500000 && C.CONTEXT_TOKEN_HARD === 700000,
   'CONTEXT_TOKEN soft/hard 默认 500000/700000');
 ok(C.CONTEXT_PACK_STAGES[0] === 'dup-result', 'pack 首阶段为 dup-result');
+ok(C.CONTEXT_PACK_STAGES.join(',') ===
+  'dup-result,history-result,dup-history,pane,attach,outline-rest,memory,outline-field,last',
+  'CONTEXT_PACK_STAGES 顺序保持');
 {
   const fpA = C.batchResultFingerprint({
     kind: 'batch',
@@ -2290,6 +2388,24 @@ ok(C.CONTEXT_PACK_STAGES[0] === 'dup-result', 'pack 首阶段为 dup-result');
     results: [{ op: 'wait', value: { ok: true, found: true, elapsedMs: 800 } }]
   });
   ok(waitFpA !== waitFpB, 'wait 不同 elapsedMs 指纹不同');
+  const nearSameA = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'click', value: { ok: true, near: ['已选择1人'] } }]
+  });
+  const nearSameB = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'click', value: { ok: true, near: ['已选择1人'] } }]
+  });
+  const nearDiff = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'click', value: { ok: true, near: ['已选择2人'] } }]
+  });
+  ok(nearSameA === nearSameB && nearSameA !== nearDiff, 'near 相同则折叠、不同则不折叠');
+  const oldShape = C.batchResultFingerprint({
+    kind: 'batch',
+    results: [{ op: 'click', value: { ok: true, name: '下载' } }]
+  });
+  ok(oldShape === clickFpA, '无 near 的旧形 click 指纹不变');
   C.foldDuplicateBodiesInText(shortBody + liveSuffix, seenShort);
   const shortFold2 = C.foldDuplicateBodiesInText(shortBody + liveSuffix, seenShort);
   ok(shortFold2.indexOf('"text":"file.pdf"') < 0 && shortFold2.indexOf('"same"') >= 0,
@@ -2311,7 +2427,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.3.2', '锁步版本为 6.3.2');
+ok(manifestVer === '6.3.3', '锁步版本为 6.3.3');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -2374,15 +2490,15 @@ ok(/pdfParseMode/.test(bg) && /pdfParsePages/.test(bg) && /pdfTextMaxChars/.test
   '配置含 pdfParseMode/pdfParsePages/pdfTextMaxChars');
 ok(/ocrCacheMaxChars: 500000/.test(bg) && /attachContextMaxChars: WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS/.test(bg),
   'OCR 缓存默认 50 万字、多附件正文合计锁步契约');
-ok(/id="ocrCacheMaxChars"/.test(settingsHtml) && /每个站点 OCR 缓存总字数/.test(settingsHtml),
+ok(/id="ocrCacheMaxChars"/.test(settingsHtml) && /settings\.ocrCacheMax/.test(settingsHtml),
   '全局配置可改每个站点 OCR 缓存总字数');
-ok(/条数最多 50 条/.test(settingsHtml) && /OCR_CACHE_MAX_ENTRIES = 50/.test(bg),
+ok(/settings\.ocrCacheHint/.test(settingsHtml) && /OCR_CACHE_MAX_ENTRIES = 50/.test(bg),
   'OCR 缓存条数上限 50 且配置页有提示');
-ok(/id="attachContextMaxChars"/.test(settingsHtml) && /发给文本模型的多附件正文合计字数/.test(settingsHtml),
+ok(/id="attachContextMaxChars"/.test(settingsHtml) && /settings\.attachContextMax/.test(settingsHtml),
   '全局配置可改发给文本模型的多附件正文合计');
-ok(/不是发给模型的提示词/.test(settingsHtml) && /不是单份附件上限/.test(settingsHtml),
+ok(/settings\.ocrCacheHint/.test(settingsHtml),
   '提示 OCR 缓存不是提示词也不是单份上限');
-ok(/不是 PDF 文本层/.test(settingsHtml) && /不是 OCR 缓存/.test(settingsHtml),
+ok(/settings\.attachContextHint/.test(settingsHtml),
   '提示多附件合计不是文本层也不是 OCR 缓存');
 ok(/ocrCacheMaxChars/.test(settingsSrc) && /attachContextMaxChars/.test(settingsSrc),
   '设置页收集 OCR 缓存与多附件合计上限');
@@ -2392,20 +2508,20 @@ ok(/clampInt\(maxChars, 50000, 2000000/.test(extractFn(bg, 'writeOcrCache')),
   'OCR 缓存写入按配置字数淘汰');
 ok(/pdfParseMode: 'pages'/.test(bg) && /pdfParsePages: '1,2,3,4,-3,-2,-1'/.test(bg) && /pdfTextMaxChars: 150000/.test(bg),
   'PDF 默认按页码 1,2,3,4,-3,-2,-1 且文本层上限 15 万字');
-ok(/解析全部 PDF 页/.test(settingsHtml) && /按页码标号来解析/.test(settingsHtml),
+ok(/panel\.pdfAll/.test(settingsHtml) && /panel\.pdfPages/.test(settingsHtml),
   '设置页可选手解析全部或按页码');
-ok(/placeholder="例如 1,2,3,4,-3,-2,-1"/.test(settingsHtml), '页码填空处给出示例');
-ok(/倒数第一页/.test(settingsHtml) && /「-1」表示最后一页/.test(settingsHtml),
+ok(/panel\.pageNumsPh/.test(settingsHtml), '页码填空处给出示例');
+ok(/panel\.pageNumsTitle/.test(settingsHtml) && /panel\.pdfPagesHint/.test(settingsHtml),
   '提示 -1 表示最后一页（倒数第一页）');
-ok(/id="pdfTextMaxChars"/.test(settingsHtml) && /PDF 文本层上限（字）/.test(settingsHtml),
+ok(/id="pdfTextMaxChars"/.test(settingsHtml) && /settings\.pdfTextMax/.test(settingsHtml),
   '全局配置可改 PDF 文本层上限');
-ok(/不是发给大模型的整段提示词/.test(settingsHtml) && /不是多附件合计或对话历史/.test(settingsHtml),
+ok(/settings\.pdfTextMaxHint/.test(settingsHtml),
   '提示文本层上限不是整段提示词或附件合计');
-ok(/MinerU/.test(settingsHtml) && /不受上方页码配置约束/.test(settingsHtml) && /也不受「PDF 文本层上限」约束/.test(settingsHtml),
+ok(/settings\.pdfMineruGlobal/.test(settingsHtml),
   '提示 MinerU 不受页码与文本层上限约束');
 ok(/pdfTextMaxChars/.test(settingsSrc) && /clampInt\(\$\('pdfTextMaxChars'\)\.value, 10000, 500000, 150000\)/.test(settingsSrc),
   '设置页收集并钳制 pdfTextMaxChars');
-ok(/placeholder = '例如 1,2,3,4,-3,-2,-1'/.test(panelSrc) && /不受本页页码配置约束/.test(panelSrc) && /也不受全局配置里的「PDF 文本层上限」约束/.test(panelSrc),
+ok(/panel\.pageNumsPh/.test(panelSrc) && /panel\.pdfMineruHint/.test(panelSrc),
   '本页配置同步默认页码并提示 MinerU 不受页码与文本层上限约束');
 ok(/spec\.maxChars/.test(bg) && /clampPdfTextMaxChars\(pageSpec && pageSpec.maxChars\)/.test(bg),
   '发给 offscreen 的 pageSpec 含钳制后的 maxChars');
@@ -3237,11 +3353,11 @@ ok(/reason: 'disabled'/.test(bridge) && /continueBatch/.test(bridge),
   '禁用点击不抛整批失败');
 ok(/tag === 'IMG'/.test(extractFn(bridge, 'retargetFileSelectClick')),
   '文件行 img 改点 checkmark');
-ok(/snapshotPiiMask/.test(bg) && /快照脱敏/.test(settingsHtml), '设置含快照脱敏开关');
+ok(/snapshotPiiMask/.test(bg) && /panel\.snapshotPii/.test(settingsHtml), '设置含快照脱敏开关');
 ok(/cfg\.snapshotPiiMask === true/.test(bg), '快照脱敏默认关（仅显式 true 才开）');
 ok(/llmCallGapMs: 500/.test(bg), '调用间隔默认 500ms');
 ok(/newTabOpenGapMs: 8000/.test(bg), '最小新建页面间隔默认 8 秒');
-ok(/最小新建页面间隔/.test(settingsHtml) && /newTabOpenGapSec/.test(settingsHtml),
+ok(/settings\.newTabGap/.test(settingsHtml) && /newTabOpenGapSec/.test(settingsHtml),
   '设置页有最小新建页面间隔');
 ok(/function waitNewTabOpenGap/.test(bg) && /function enqueueNewTabOpen/.test(bg) &&
   /noteNewTabOpened/.test(extractFn(bg, 'createTabFromClickIntent')),
@@ -3257,24 +3373,24 @@ ok(/showBusyMaskTab\(tabId, config\.busyMaskEnabled === true\)/.test(bg), '遮�
 ok(/enabled === false/.test(bg), '遮罩关闭时不盖层');
 ok(/config\.llmTimeoutRetry/.test(bg) && /config\.llmErrorRetry/.test(bg), '重试次数读配置');
 ok(/cfg\.pageQuietMs/.test(bg) && /cfg\.suggestWaitMs/.test(bg), '两类等待读配置 deadline');
-ok(/测试当前模型的连接/.test(settingsHtml), '全局配置测试按钮标明测当前模型');
+ok(/data-i18n="settings\.testConn"/.test(settingsHtml), '全局配置测试按钮标明测当前模型');
 ok(/当前文本模型 /.test(bg) && /textTag\.name/.test(bg) && /textTag\.model/.test(bg), '测试结果含当前 provider 与模型名');
 ok(/text-align: center/.test((panelSrc.match(/\.page-config-tab-head \{[\s\S]*?\n    \}/) || [''])[0]), '本页配置标题居中');
-ok(/运行参数（全局）/.test(settingsHtml) && /模型调用间隔（秒）/.test(settingsHtml), '设置页有全局运行参数分组');
-ok(settingsHtml.indexOf('运行参数（全局）') < settingsHtml.indexOf('存档脱敏指令') &&
-  settingsHtml.indexOf('存档脱敏指令') < settingsHtml.indexOf('id="systemPromptText"') &&
+ok(/settings\.runGlobal/.test(settingsHtml) && /panel\.llmGap/.test(settingsHtml), '设置页有全局运行参数分组');
+ok(settingsHtml.indexOf('settings.runGlobal') < settingsHtml.indexOf('settings.archiveRedact') &&
+  settingsHtml.indexOf('settings.archiveRedact') < settingsHtml.indexOf('id="systemPromptText"') &&
   settingsHtml.indexOf('id="systemPromptText"') < settingsHtml.indexOf('id="textProvidersList"') &&
   settingsHtml.indexOf('id="systemPromptOcr"') < settingsHtml.indexOf('id="ocrProvidersList"'),
   'System Prompt 独立成卡并排在对应 Providers 之前');
-ok(/操作时显示半透明遮罩/.test(settingsHtml), '设置页可关操作遮罩');
-ok(/超时重试次数/.test(settingsHtml) && /瞬时错误重试次数/.test(settingsHtml), '设置页可配重试');
-ok(/页面稳定等待上限/.test(settingsHtml) && /填写后等待建议层/.test(settingsHtml), '设置页可配页面等待');
+ok(/panel\.busyMask/.test(settingsHtml), '设置页可关操作遮罩');
+ok(/panel\.timeoutRetry/.test(settingsHtml) && /panel\.errorRetry/.test(settingsHtml), '设置页可配重试');
+ok(/panel\.pageQuiet/.test(settingsHtml) && /panel\.suggestWait/.test(settingsHtml), '设置页可配页面等待');
 ok(/llmCallGapMs/.test(bg) && /function exportPayload\(/.test(bg), '导出含调用间隔');
 ok(/secInputToMs/.test(settingsSrc) && /msToSecValue/.test(settingsSrc), '设置页秒与毫秒互转');
 ok(/function exportPayload\(/.test(bg) && /maskProviderList/.test(bg), '导入导出走白名单且默认掩码密钥');
-ok(/diagCapKb: 50/.test(bg) && /id="diagCapKb"/.test(settingsHtml) && /诊断探针日志的上限/.test(settingsHtml),
+ok(/diagCapKb: 50/.test(bg) && /id="diagCapKb"/.test(settingsHtml) && /settings\.diagCap/.test(settingsHtml),
   '诊断探针日志上限默认 50KB 且可在全局配置改');
-ok(/诊断记录/.test(settingsHtml) && /诊断数据/.test(settingsHtml) && /cmd === 'exportDiag'/.test(bg),
+ok(/settings\.diag/.test(settingsHtml) && /settings\.diagData/.test(settingsSrc) && /cmd === 'exportDiag'/.test(bg),
   '全局配置可下载诊断数据');
 ok(/WebpageAgent\.json/.test(bg) && /WebpageAgent\.SECRETS\.json/.test(bg)
   && /WebpageAgent-web-skill\.json/.test(bg) && /WebpageAgent-web-skill-pack\.json/.test(bg)
@@ -3283,23 +3399,23 @@ ok(/WebpageAgent\.json/.test(bg) && /WebpageAgent\.SECRETS\.json/.test(bg)
   && !/assistant-config/.test(bg) && !/assistant-config/.test(settingsSrc)
   && !/'wpa-diag-/.test(bg) && !/'wpa-diag\.json'/.test(settingsSrc),
   '全局配置下载文件默认前缀为 WebpageAgent');
-ok(/id="downloadConfigBtn"/.test(settingsHtml) && />下载</.test(settingsHtml)
-  && /导出WEB-SKILL/.test(settingsHtml) && /下载其他数据/.test(settingsHtml)
-  && />重载</.test(settingsHtml) && /导入配置/.test(settingsHtml) && /导入WEB-SKILL/.test(settingsHtml)
+ok(/id="downloadConfigBtn"/.test(settingsHtml) && /settings\.download/.test(settingsHtml)
+  && /settings\.exportSkills/.test(settingsHtml) && /settings\.downloadOther/.test(settingsHtml)
+  && /settings\.reload/.test(settingsHtml) && /settings\.importConfig/.test(settingsHtml) && /settings\.importSkills/.test(settingsHtml)
   && /id="importConfigBtn"/.test(settingsHtml) && /id="importSkillsBtn"/.test(settingsHtml),
   '下载与重载分组：配置 / WEB-SKILL / 其他数据，以及导入配置与导入技能');
 (function () {
   const downloadCardHtml = settingsHtml.slice(settingsHtml.indexOf('id="downloadCard"'), settingsHtml.indexOf('id="reloadCard"'));
   ok(!/subhead/.test(downloadCardHtml) && !/导出选中/.test(downloadCardHtml)
-    && /id="downloadConfigBtn">下载配置</.test(downloadCardHtml)
-    && /id="exportSkillsBtn">导出WEB-SKILL</.test(downloadCardHtml)
-    && /id="downloadOtherBtn">下载其他数据</.test(downloadCardHtml)
+    && /id="downloadConfigBtn"[^>]*data-i18n="settings\.downloadConfig"/.test(downloadCardHtml)
+    && /id="exportSkillsBtn"[^>]*data-i18n="settings\.exportSkills"/.test(downloadCardHtml)
+    && /id="downloadOtherBtn"[^>]*data-i18n="settings\.downloadOther"/.test(downloadCardHtml)
     && downloadCardHtml.indexOf('downloadConfigBtn') < downloadCardHtml.indexOf('exportSkillsBtn')
     && downloadCardHtml.indexOf('exportSkillsBtn') < downloadCardHtml.indexOf('downloadOtherBtn'),
     '下载卡片一行三个入口，后续操作在弹出框');
-  const reloadCardHtml = settingsHtml.slice(settingsHtml.indexOf('id="reloadCard"'), settingsHtml.indexOf('诊断记录'));
-  ok(/id="importConfigBtn">导入配置</.test(reloadCardHtml)
-    && /id="importSkillsBtn">导入WEB-SKILL</.test(reloadCardHtml)
+  const reloadCardHtml = settingsHtml.slice(settingsHtml.indexOf('id="reloadCard"'), settingsHtml.indexOf('settings.diag'));
+  ok(/id="importConfigBtn"[^>]*data-i18n="settings\.importConfig"/.test(reloadCardHtml)
+    && /id="importSkillsBtn"[^>]*data-i18n="settings\.importSkills"/.test(reloadCardHtml)
     && !/subhead/.test(reloadCardHtml) && !/选择文件并导入/.test(reloadCardHtml),
     '重载卡片两个导入按钮直接选文件');
 })();
@@ -3308,32 +3424,33 @@ ok(/id="exportSkillsModal"/.test(settingsHtml) && /id="exportOtherModal"/.test(s
   && /openModal\('exportOtherModal'\)/.test(settingsSrc)
   && /id="downloadOtherConfirm"/.test(settingsHtml),
   '导出技能与下载其他数据走弹出框');
-ok(/id="exportPickerModal"/.test(settingsHtml) && /下载配置/.test(settingsHtml)
+ok(/id="exportPickerModal"/.test(settingsHtml) && /settings\.exportPickerTitle/.test(settingsHtml)
   && settingsHtml.indexOf('id="exportPickerConfirm"') < settingsHtml.indexOf('id="exportConfigBody"')
   && /data-kind/.test(settingsSrc) && /textIndexes/.test(settingsSrc) && /providerPickerLabel/.test(settingsSrc)
   && /cb\.checked = false/.test(settingsSrc)
-  && /topCard\('文本模型 System Prompt'/.test(settingsSrc)
+  && /settings\.export\.card\.textPrompt/.test(settingsSrc)
   && !/appendExportLeaf\(kids, '文本模型 System Prompt'/.test(settingsSrc)
   && /fillConfigPicker/.test(settingsSrc) && /fillRecordsPicker/.test(settingsSrc)
-  && /id="exportRecordsBody"/.test(settingsHtml) && /诊断数据/.test(settingsHtml),
+  && /id="exportRecordsBody"/.test(settingsHtml) && /settings\.diagData/.test(settingsSrc),
   '下载配置弹窗只含配置项，记录数据在下载其他数据；System Prompt 与 provider 分卡勾选');
 ok(/ARCHIVE_REDACT_DEFAULT_CHUNK_CHARS = 1000000/.test(bg) && /function planArchiveRedactChunks/.test(bg),
   '存档脱敏默认 100 万字不分拆');
 ok(/provider-row:nth-child\(8n\+1\)/.test(settingsHtml) && /#dceaff/.test(settingsHtml),
   'provider 配置卡用不同背景色区分');
-ok(/provider-sample/.test(settingsHtml) && /请求示例（与「测试」相同/.test(settingsSrc)
-  && /连接性测试不发送/.test(settingsSrc),
+ok(/provider-sample/.test(settingsHtml) && /settings\.provider\.sampleText/.test(settingsSrc)
+  && /settings\.provider\.sampleOcr/.test(settingsSrc),
   '文本卡示例对齐测试；OCR 卡示例为协议报文且标明连接性测试不发送');
-ok(/provider-test/.test(settingsSrc) && /连接性测试/.test(settingsSrc) && /provider-del/.test(settingsSrc)
-  && /如果需要 OCR 测试，请到对话框上传图片或 PDF/.test(settingsSrc),
+ok(/provider-test/.test(settingsSrc) && /settings\.provider\.ocrTest/.test(settingsSrc) && /provider-del/.test(settingsSrc)
+  && /settings\.provider\.ocrPanelHint/.test(settingsSrc),
   'OCR 卡为连接性测试，并提示到对话框上传图片或 PDF');
 ok(/id="resultModal"/.test(settingsHtml) && /data-close-modal="resultModal"/.test(settingsHtml)
   && /providerTestResult/.test(settingsSrc),
   'provider 测试结果（含错误）显示在可关闭弹出框');
-const pickerNameBox = {};
+const pickerNameBox = { WPA_I18N };
 try {
   vm.runInNewContext(
-    extractFn(settingsSrc, 'providerPickerLabel') + '\nthis.providerPickerLabel = providerPickerLabel;',
+    'function t(key, params) { return WPA_I18N.t(key, params); }\n' +
+      extractFn(settingsSrc, 'providerPickerLabel') + '\nthis.providerPickerLabel = providerPickerLabel;',
     pickerNameBox
   );
 } catch (e) {
@@ -3341,7 +3458,7 @@ try {
 }
 if (pickerNameBox.providerPickerLabel) {
   ok(pickerNameBox.providerPickerLabel({ name: 'Kimi' }) === 'Kimi', '下载选项名为名称字段');
-  ok(pickerNameBox.providerPickerLabel({ name: '  ' }) === '（未填名称）', '名称为空时用占位');
+  ok(pickerNameBox.providerPickerLabel({ name: '  ' }) === WPA_I18N.t('settings.provider.noName'), '名称为空时用占位');
 }
 ok(/cmd === 'testProvider'/.test(bg) && /testProvider: true/.test(bg)
   && /未发送 OCR 识别请求/.test(bg) && /不测 OCR/.test(bg),
@@ -3754,6 +3871,33 @@ if (runCompactBox.compactRunResult) {
     waitOut.indexOf('"busy":true') >= 0 && waitOut.indexOf('"elapsedMs":0') >= 0 &&
     waitOut.indexOf('drop-wait') < 0,
     'wait 回执压缩保留 until/disabled/busy/elapsedMs');
+  const hintPacked = JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'check',
+      value: { ok: false, reason: 'not-checkbox', hint: '目标是级联/下拉项，reason=not-checkbox。', extra: 'drop-hint' }
+    }]
+  });
+  const hintOut = runCompactBox.compactRunResult(hintPacked);
+  ok(hintOut.indexOf('not-checkbox') >= 0 && hintOut.indexOf('级联/下拉项') >= 0 && hintOut.indexOf('drop-hint') < 0,
+    'compact 保留 hint');
+  const nearPacked = JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'click',
+      value: { ok: true, near: ['已选择1人', '个人作者'], extra: 'drop-near' }
+    }]
+  });
+  const nearOut = runCompactBox.compactRunResult(nearPacked);
+  ok(nearOut.indexOf('已选择1人') >= 0 && nearOut.indexOf('个人作者') >= 0 && nearOut.indexOf('drop-near') < 0,
+    'compact 保留 near');
+  const bareClickPacked = JSON.stringify({
+    kind: 'batch',
+    results: [{ op: 'click', value: { ok: true, name: '下载' } }]
+  });
+  const bareClickOut = runCompactBox.compactRunResult(bareClickPacked);
+  ok(bareClickOut.indexOf('"near"') < 0 && bareClickOut.indexOf('"hint"') < 0,
+    '无 hint/near 的 click 不写入这两项');
   const ocrPacked = JSON.stringify({
     kind: 'batch',
     results: [{
@@ -4298,7 +4442,7 @@ ok(attachMode('选一下单位', { lastOps: [{ op: 'officeFill', args: ['C11', '
   '上一步 officeFill 视为填表则补钉正文');
 
 ok(/options_ui/.test(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')), 'manifest 登记全局配置页');
-ok(/textContent: '全局配置'/.test(panelSrc), '弹出框第一行有全局配置按钮');
+ok(/data-i18n.*panel\.globalSettings/.test(panelSrc), '弹出框第一行有全局配置按钮');
 ok(/port\.name !== 'panel' && port\.name !== 'settings'/.test(bg), '后台接受 settings 端口');
 ok(/cmd === 'openGlobalSettings'/.test(bg) && /settings\.html/.test(bg), '可打开全局配置标签页');
 ok(/uiOpacity: 80/.test(bg) && /panelScaleX: 50/.test(bg) && /panelScaleY: 90/.test(bg),
@@ -4450,6 +4594,11 @@ ok(/function syncOverlayTop\(/.test(panelSrc) && /--wpa-header-h/.test(panelSrc)
 ok(!/附件命中缓存/.test(bg), '命中附件缓存不再向对话发状态');
 ok(/isSilentAttachStatus/.test(panelSrc), '面板忽略附件缓存命中状态');
 ok(/chrome\.runtime\.connect\(\{ name: 'settings' \}\)/.test(settingsSrc), '全局配置页用 settings 端口');
+ok(/shared\/i18n\.js/.test(settingsHtml) && /id="langToggleBtn"/.test(settingsHtml)
+  && /settings\.langSwitchLabel/.test(settingsHtml) && /settings\.langSwitchBtn/.test(settingsHtml)
+  && /title-row/.test(settingsHtml),
+  '全局配置标题旁 Language/语言 切换');
+ok(/applySettingsLocale/.test(settingsSrc) && /WPA_I18N/.test(settingsSrc), '全局配置页接入 i18n');
 ok(/connectGen/.test(settingsSrc) && /function triggerReconnect\(/.test(settingsSrc),
   '配置页端口有世代号与退避重连');
 ok(/cmd: 'ping'/.test(settingsSrc) && /ping: true/.test(bg),
@@ -4461,38 +4610,38 @@ ok(!/setTimeout\(connect, 400\)/.test(settingsSrc), '配置页不再 400ms 无�
 ok(/panelExpanded = false/.test(extractFn(panelSrc, 'loadPageUi')), '加载本页 UI 不恢复放大状态');
 ok(!/expanded: panelExpanded/.test(panelSrc), '放大状态不写入按网站存储');
 ok(/togglePanelZoom[\s\S]*applyPanelSize\(\);\n  \}/.test(panelSrc), '切换放大只改当前窗口，不 persist');
-ok(/archive-redact-input/.test(panelSrc) && /传送给大模型的用户脱敏指令/.test(panelSrc), '保存对话二级页提供脱敏指令输入框');
+ok(/archive-redact-input/.test(panelSrc) && /panel\.archiveRedactLabel/.test(panelSrc), '保存对话二级页提供脱敏指令输入框');
 ok(/cmd === 'redactArchive'/.test(bg) && /function redactArchiveMarkdown\(/.test(bg), '后台可按提示词脱敏存档');
 ok(/maxChars: msg\.maxChars/.test(bg) && /改为按段落分段脱敏/.test(extractFn(bg, 'redactArchiveMarkdown')),
   '后台按用户段长分包，整份失败才再按段落分');
 ok(/cmd === 'saveTextAs'/.test(bg) && /saveAs: true/.test(bg), '保存对话可弹出另存为');
 ok(/"downloads"/.test(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')), 'manifest 含 downloads 以便另存为');
 ok(/if \(!hint\)/.test(extractFn(panelSrc, 'redactArchiveDocument')), '脱敏指令为空时不调用大模型');
-ok(/采用大模型脱敏本文档/.test(panelSrc) && /保存本文档/.test(panelSrc), '二级页可脱敏或保存本文档');
-ok(/停止脱敏/.test(panelSrc) && /cmd: 'cancelArchiveRedact'/.test(panelSrc),
+ok(/panel\.archiveRedactBtn/.test(panelSrc) && /panel\.archiveSaveDoc/.test(panelSrc), '二级页可脱敏或保存本文档');
+ok(/panel\.archiveRedactStop/.test(panelSrc) && /cmd: 'cancelArchiveRedact'/.test(panelSrc),
   '脱敏进行中按钮改为停止脱敏');
-ok(/文本共/.test(panelSrc) && /将按每段/.test(panelSrc) && /进行分隔/.test(panelSrc)
+ok(/panel\.archiveCharPrefix/.test(panelSrc) && /panel\.archiveCharSuffix/.test(panelSrc)
   && /archive-chunk-row/.test(panelSrc) && !/archive-chunk-label/.test(panelSrc)
   && /maxChars/.test(extractFn(panelSrc, 'requestArchiveRedact')),
   '总字数与每段字数同一行，输入框在「将按每段」右侧');
 ok(/archiveChunkInput\.value = '1000000'/.test(panelSrc), '每段字数默认 1000000');
-ok(/已停止脱敏，文档保持不变/.test(extractFn(panelSrc, 'redactArchiveDocument'))
+ok(/panel\.archive\.redactStoppedDoc/.test(extractFn(panelSrc, 'redactArchiveDocument'))
   && /els\.archiveDocInput\.value = out/.test(extractFn(panelSrc, 'redactArchiveDocument')),
   '停止或失败不改文档，成功才写回');
 ok(/els\.archiveRedactBtn\.disabled = false/.test(extractFn(panelSrc, 'setArchiveBusy')),
   '脱敏中脱敏按钮仍可点以停止');
-ok(/本页配置/.test(panelSrc) && /page-config-tab/.test(panelSrc), '插件配置页有本页配置选项卡');
+ok(/panel\.pageConfig/.test(panelSrc) && /page-config-tab/.test(panelSrc), '插件配置页有本页配置选项卡');
 ok(/overflow-y: auto/.test((panelSrc.match(/\.page-config-tab-body \{[\s\S]*?\n    \}/) || [''])[0]),
   '本页配置卡内容可滚动');
-ok(/仅对当前网页生效/.test(panelSrc) && /不会改写/.test(panelSrc) && /pageCfg:/.test(bg),
+ok(/panel\.pageScope/.test(panelSrc) && /pageCfg:/.test(bg),
   '本页配置声明仅当前网页生效、不改全局');
 const savePageBranch = (bg.match(/cmd === 'savePageConfig'[\s\S]*?cmd === 'selectTag'/) || [''])[0];
 ok(/pageConfigKey/.test(savePageBranch) && /storageSet\(writeObj\)/.test(savePageBranch) &&
   !/assistantConfig/.test(savePageBranch),
   '保存本页配置只写 pageCfg，不改全局 assistantConfig');
-ok(/textContent: '运行参数'/.test(panelSrc) && /保存本页运行参数/.test(panelSrc), '本页配置内有运行参数卡');
+ok(/panel\.runParams/.test(panelSrc) && /panel\.savePageRun/.test(panelSrc), '本页配置内有运行参数卡');
 ok(!/运行参数（本页局部）/.test(panelSrc), '本页运行参数不再带局部后缀');
-ok(/id="archiveRedactHint"/.test(settingsHtml) && /存档脱敏指令/.test(settingsHtml), '全局配置含可改的默认脱敏指令');
+ok(/id="archiveRedactHint"/.test(settingsHtml) && /data-i18n="settings\.archiveRedact"/.test(settingsHtml), '全局配置含可改的默认脱敏指令');
 ok(/archiveRedactHint/.test(bg) && /DEFAULT_ARCHIVE_REDACT_HINT/.test(bg), '配置合并含默认脱敏指令');
 ok(/function mergePageRuntimeConfig/.test(bg) && /pageCfg:/.test(bg), '本页运行参数可覆盖全局');
 ok(/cmd === 'savePageConfig'/.test(bg) && /cmd === 'getPageConfig'/.test(bg), '后台可读写本页运行参数');
@@ -4633,10 +4782,10 @@ ok(/cmd !== 'cancelFromPanel'/.test(bg) && /cmd: 'cancelFromPanel'/.test(panelSr
   '端口断开时面板仍可通过 runtime 消息停止后台');
 ok(/if \(msg.taskRunning\) setRunning\(true\)/.test(panelSrc), 'ready.taskRunning 立即恢复停止按钮');
 ok(/msg.running === false/.test(panelSrc), 'taskState.running=false 才把按钮改回发送');
-ok(/本条指令完成，继续执行下一条/.test(panelSrc), '中间 done 不展示任务完成');
+ok(/panel\.msg\.continueNext/.test(panelSrc), '中间 done 不展示任务完成');
 ok(!/runningBeforeDisconnect = running;\s*portDead = true;\s*setRunning\(false\)/.test(panelSrc),
   '端口断开不再把停止按钮改成发送');
-ok(/停止指令已发出；若后台仍在运行，请再次点击停止/.test(panelSrc),
+ok(/panel\.msg\.stopSent/.test(panelSrc),
   '停止超时后仍保留停止按钮');
 ok(/stillRunning && item && item.type === 'done'/.test(bg),
   '面板重连回放队列时，运行中任务的 done 不会把界面打成空闲');
