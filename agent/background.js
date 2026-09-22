@@ -54,6 +54,7 @@ const DEFAULT_CONFIG = {
   uiOpacity: 80,
   panelScaleX: 50,
   panelScaleY: 90,
+  uiFontScale: 100,
   archiveRedactHint: DEFAULT_ARCHIVE_REDACT_HINT,
   diagCapKb: 50
 };
@@ -85,7 +86,8 @@ function applyUiKnobs(cfg) {
   return {
     uiOpacity: clampInt(src.uiOpacity, 20, 100, DEFAULT_CONFIG.uiOpacity),
     panelScaleX: clampInt(src.panelScaleX, 30, 100, DEFAULT_CONFIG.panelScaleX),
-    panelScaleY: clampInt(src.panelScaleY, 30, 100, DEFAULT_CONFIG.panelScaleY)
+    panelScaleY: clampInt(src.panelScaleY, 30, 100, DEFAULT_CONFIG.panelScaleY),
+    uiFontScale: clampInt(src.uiFontScale, 50, 200, DEFAULT_CONFIG.uiFontScale)
   };
 }
 
@@ -983,6 +985,7 @@ function configPayload(cfg) {
     uiOpacity: cfg.uiOpacity,
     panelScaleX: cfg.panelScaleX,
     panelScaleY: cfg.panelScaleY,
+    uiFontScale: cfg.uiFontScale,
     diagCapKb: WPA_CONTRACTS.clampDiagCapKb(cfg.diagCapKb),
     archiveRedactHint: typeof cfg.archiveRedactHint === 'string'
       ? cfg.archiveRedactHint.slice(0, 2000)
@@ -1010,7 +1013,7 @@ function pickExportPayload(full, pick) {
     }
   }
   take(pick.diag, ['diagCapKb']);
-  take(pick.ui, ['uiOpacity', 'panelScaleX', 'panelScaleY']);
+  take(pick.ui, ['uiOpacity', 'panelScaleX', 'panelScaleY', 'uiFontScale']);
   take(pick.runtime, [
     'maxSteps', 'snapshotPiiMask', 'llmCallGapMs', 'newTabOpenGapMs', 'busyMaskEnabled',
     'llmTimeoutRetry', 'llmErrorRetry', 'pageQuietMs', 'suggestWaitMs',
@@ -1206,6 +1209,7 @@ function validateImportConfig(obj, current) {
   importClamped('uiOpacity', 20, 100, DEFAULT_CONFIG.uiOpacity);
   importClamped('panelScaleX', 30, 100, DEFAULT_CONFIG.panelScaleX);
   importClamped('panelScaleY', 30, 100, DEFAULT_CONFIG.panelScaleY);
+  importClamped('uiFontScale', 50, 200, DEFAULT_CONFIG.uiFontScale);
   importClamped('diagCapKb', 10, 200, DEFAULT_CONFIG.diagCapKb);
   importClamped('pdfTextMaxChars', 10000, 500000, DEFAULT_CONFIG.pdfTextMaxChars);
   importClamped('ocrCacheMaxChars', 50000, 2000000, DEFAULT_CONFIG.ocrCacheMaxChars);

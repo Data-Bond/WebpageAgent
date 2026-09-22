@@ -2427,7 +2427,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.3.3', '锁步版本为 6.3.3');
+ok(manifestVer === '6.4.0', '锁步版本为 6.4.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -4445,12 +4445,13 @@ ok(/options_ui/.test(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')),
 ok(/data-i18n.*panel\.globalSettings/.test(panelSrc), '弹出框第一行有全局配置按钮');
 ok(/port\.name !== 'panel' && port\.name !== 'settings'/.test(bg), '后台接受 settings 端口');
 ok(/cmd === 'openGlobalSettings'/.test(bg) && /settings\.html/.test(bg), '可打开全局配置标签页');
-ok(/uiOpacity: 80/.test(bg) && /panelScaleX: 50/.test(bg) && /panelScaleY: 90/.test(bg),
-  '界面透明度默认 80、放大比例默认 50×90');
+ok(/uiOpacity: 80/.test(bg) && /panelScaleX: 50/.test(bg) && /panelScaleY: 90/.test(bg) && /uiFontScale: 100/.test(bg),
+  '界面透明度默认 80、放大比例默认 50×90、字体默认 100');
 ok(/value="80"/.test(settingsHtml) && /id="uiOpacityVal">80%/.test(settingsHtml),
   '全局配置页透明度默认 80%');
 ok(/id="panelScaleX"[\s\S]*?value="50"/.test(settingsHtml) && /id="panelScaleY"[\s\S]*?value="90"/.test(settingsHtml),
   '全局配置页放大默认横向 50、纵向 90');
+ok(/id="uiFontScale"[\s\S]*?value="100"/.test(settingsHtml), '全局配置页字体大小默认 100');
 ok(/function applyUiKnobs\(/.test(bg) && /uiOpacity/.test(settingsHtml), '全局配置含插件界面透明度');
 ok(/:host\.expanded/.test(panelSrc) && /--wpa-scale-x/.test(panelSrc), '放大面板用宽高比例而非 transform');
 ok(/shell\.style\.width = w \+ 'px'/.test(extractFn(panelSrc, 'applyPanelSize')), '放大时用像素宽高打在页面 iframe 上');
@@ -4607,9 +4608,18 @@ ok(/formDirty/.test(settingsSrc) && /forceFill/.test(settingsSrc),
   '正在编辑时广播 config 不整表重填');
 ok(!/setTimeout\(connect, 400\)/.test(settingsSrc), '配置页不再 400ms 无退避重连');
 
-ok(/panelExpanded = false/.test(extractFn(panelSrc, 'loadPageUi')), '加载本页 UI 不恢复放大状态');
-ok(!/expanded: panelExpanded/.test(panelSrc), '放大状态不写入按网站存储');
-ok(/togglePanelZoom[\s\S]*applyPanelSize\(\);\n  \}/.test(panelSrc), '切换放大只改当前窗口，不 persist');
+ok(/zoomMode = 'rest'/.test(extractFn(panelSrc, 'loadPageUi')), '加载本页 UI 不恢复放大状态');
+ok(!/zoomMode:/.test(panelSrc), '放大状态不写入按网站存储');
+ok(/zoomMode === 'rest' \? 'set' : \(zoomMode === 'set' \? 'max' : 'rest'\)/.test(extractFn(panelSrc, 'togglePanelZoom')),
+  '缩放按钮在原始、设定、最大之间循环');
+ok(/--wpa-ui-scale/.test(extractFn(panelSrc, 'applyPanelSize')), '面板高度变化时同步内部缩放');
+ok(/--wpa-font-scale/.test(extractFn(panelSrc, 'applyPanelChrome')) && /uiFontScale/.test(extractFn(panelSrc, 'applyPanelChrome')),
+  '字体比例单独写入 --wpa-font-scale');
+ok(/font-size: calc\(16px \* var\(--wpa-font-scale/.test(panelSrc), '正文字号跟字体配置，不跟面板缩放');
+ok(/zoomMode === 'max'/.test(extractFn(panelSrc, 'applyPanelSize')) && /gapX \/ 2/.test(extractFn(panelSrc, 'applyPanelSize')) && /gapY \/ 2/.test(extractFn(panelSrc, 'applyPanelSize')),
+  '最大尺寸时左右、上下留白各自相等');
+ok(/applyInputDisplayHeight/.test(panelSrc) && /inputLogicalH/.test(panelSrc), '输入框高度按逻辑像素随缩放比例变化');
+ok(!/zoom: calc\(1 \/ var\(--wpa-ui-scale/.test(panelSrc), '附件发送按钮不再用反向 zoom');
 ok(/archive-redact-input/.test(panelSrc) && /panel\.archiveRedactLabel/.test(panelSrc), '保存对话二级页提供脱敏指令输入框');
 ok(/cmd === 'redactArchive'/.test(bg) && /function redactArchiveMarkdown\(/.test(bg), '后台可按提示词脱敏存档');
 ok(/maxChars: msg\.maxChars/.test(bg) && /改为按段落分段脱敏/.test(extractFn(bg, 'redactArchiveMarkdown')),

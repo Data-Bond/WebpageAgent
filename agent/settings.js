@@ -508,6 +508,7 @@
       uiOpacity: clampInt($('uiOpacity').value, 20, 100, 80),
       panelScaleX: clampInt($('panelScaleX').value, 30, 100, 50),
       panelScaleY: clampInt($('panelScaleY').value, 30, 100, 90),
+      uiFontScale: clampInt($('uiFontScale').value, 50, 200, 100),
       diagCapKb: clampInt($('diagCapKb').value, 10, 200, 50),
       selectedTextTag: currentConfig ? currentConfig.selectedTextTag : null,
       selectedOcrTag: currentConfig ? currentConfig.selectedOcrTag : null
@@ -567,6 +568,7 @@
     $('uiOpacity').value = String(clampInt(cfg.uiOpacity, 20, 100, 80));
     $('panelScaleX').value = String(clampInt(cfg.panelScaleX, 30, 100, 50));
     $('panelScaleY').value = String(clampInt(cfg.panelScaleY, 30, 100, 90));
+    $('uiFontScale').value = String(clampInt(cfg.uiFontScale, 50, 200, 100));
     if ($('diagCapKb')) $('diagCapKb').value = String(clampInt(cfg.diagCapKb, 10, 200, 50));
     syncOpacityLabel();
     } finally {

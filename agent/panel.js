@@ -42,6 +42,8 @@
       --wpa-alpha: 0.8;
       --wpa-scale-x: 0.5;
       --wpa-scale-y: 0.9;
+      --wpa-ui-scale: 1;
+      --wpa-font-scale: 1;
       --wpa-header-h: 56px;
       position: absolute;
       inset: 0;
@@ -1447,6 +1449,90 @@
       font-weight: 400;
       line-height: 1.4;
     }
+    /* 文字只跟 --wpa-font-scale；框高与内边距仍跟面板高度 --wpa-ui-scale */
+    .header-title { font-size: calc(18px * var(--wpa-font-scale, 1)); }
+    .header-build { font-size: calc(13px * var(--wpa-font-scale, 1)); }
+    .header-action { font-size: calc(15px * var(--wpa-font-scale, 1)); }
+    .settings-panel label,
+    .pdf-parse-label,
+    .settings-card-heading,
+    .settings-status,
+    .modal label,
+    .modal label.modal-check,
+    .modal-warn,
+    .modal-error,
+    .archive-lead,
+    .archive-status,
+    .archive-char-count,
+    .archive-char-tail,
+    .modal label.archive-chunk-row,
+    .bubble.system,
+    .llm-call-meta,
+    .llm-call-actions button,
+    .print-catalog-title,
+    .skill-empty,
+    .skill-card-name,
+    .filter-btn,
+    .skill-search,
+    .tag-field label,
+    .conn-status,
+    .chip,
+    .chip .chip-remove,
+    .settings-panel .btn,
+    .provider-del,
+    .add-provider { font-size: calc(15px * var(--wpa-font-scale, 1)); }
+    .chip .chip-badge { font-size: calc(13px * var(--wpa-font-scale, 1)); }
+    .pdf-parse-hint,
+    .page-config-scope,
+    .page-settings-hint,
+    .assistant-detail-btn,
+    .assistant-output-copy,
+    .assistant-output pre,
+    .llm-call-badge,
+    .print-catalog-copy,
+    .print-catalog-body,
+    .skill-card-url,
+    .skill-card-actions .btn,
+    .skill-lib-status,
+    .skill-build-hint,
+    .archive-redact-hint,
+    .archive-action-hint,
+    .config-io .io-hint { font-size: calc(14px * var(--wpa-font-scale, 1)); }
+    .page-config-tab-head,
+    .bubble,
+    .archive-action-title,
+    .archive-chunk-input { font-size: calc(16px * var(--wpa-font-scale, 1)); }
+    .skill-badge { font-size: calc(13px * var(--wpa-font-scale, 1)); }
+    .modal h3 { font-size: calc(17px * var(--wpa-font-scale, 1)); }
+    .settings-panel input,
+    .modal input,
+    .modal select { font-size: calc(16px * var(--wpa-font-scale, 1)); padding: calc(8px * var(--wpa-ui-scale, 1)) calc(10px * var(--wpa-ui-scale, 1)); }
+    .settings-panel textarea,
+    .modal textarea,
+    .modal input,
+    .modal select { font-size: calc(15px * var(--wpa-font-scale, 1)); }
+    .settings-panel textarea { min-height: calc(60px * var(--wpa-ui-scale, 1)); padding: calc(8px * var(--wpa-ui-scale, 1)) calc(10px * var(--wpa-ui-scale, 1)); }
+    .modal textarea { min-height: calc(80px * var(--wpa-ui-scale, 1)); padding: calc(7px * var(--wpa-ui-scale, 1)) calc(9px * var(--wpa-ui-scale, 1)); }
+    .modal textarea.archive-redact-input { min-height: calc(72px * var(--wpa-ui-scale, 1)); }
+    .modal textarea.archive-doc-input { min-height: calc(120px * var(--wpa-ui-scale, 1)); }
+    #userInput {
+      font-size: calc(16px * var(--wpa-font-scale, 1));
+      padding: calc(9px * var(--wpa-ui-scale, 1)) calc(12px * var(--wpa-ui-scale, 1));
+      min-height: calc(36px * var(--wpa-ui-scale, 1));
+      border-radius: calc(10px * var(--wpa-ui-scale, 1));
+    }
+    .tag-select {
+      font-size: calc(15px * var(--wpa-font-scale, 1));
+      height: calc(22px * var(--wpa-ui-scale, 1));
+      padding: 0 calc(6px * var(--wpa-ui-scale, 1));
+      border-radius: calc(6px * var(--wpa-ui-scale, 1));
+    }
+    .skill-search { padding: calc(6px * var(--wpa-ui-scale, 1)) calc(10px * var(--wpa-ui-scale, 1)); }
+    .assistant-output pre { max-height: calc(280px * var(--wpa-ui-scale, 1)); padding: calc(28px * var(--wpa-ui-scale, 1)) calc(10px * var(--wpa-ui-scale, 1)) calc(10px * var(--wpa-ui-scale, 1)); }
+    .print-catalog-body { max-height: calc(220px * var(--wpa-ui-scale, 1)); }
+    .skill-list { min-height: calc(72px * var(--wpa-ui-scale, 1)); max-height: calc(220px * var(--wpa-ui-scale, 1)); }
+    .archive-chunk-input { font-size: calc(16px * var(--wpa-font-scale, 1)); padding: calc(4px * var(--wpa-ui-scale, 1)) calc(8px * var(--wpa-ui-scale, 1)); }
+    .chips { max-height: calc(96px * var(--wpa-ui-scale, 1)); }
   `;
 
   // ============ 状态 ============
@@ -1469,10 +1555,11 @@
   let awaitingDomReady = false;
   let currentConfig = null; // 最新全局配置（用于重建标签下拉）
   let currentPageConfig = {};
-  let panelExpanded = false;
+  let zoomMode = 'rest';
   const INPUT_H_MIN = 36;
   const INPUT_H_MAX = 280;
   const INPUT_H_DEFAULT = 79; // 两个 36px 按钮高度 + 10%
+  let inputLogicalH = INPUT_H_DEFAULT;
   let cachedSkills = [];
   const selectedSkillIds = {};
   let pendingTriggerSkill = null;
@@ -1745,7 +1832,7 @@
     }
     const header = mk('header', 'app-header');
     const zoomBtn = mk('button', 'zoom-btn', { type: 'button', textContent: '⛶' });
-    zoomBtn.setAttribute('data-i18n-title', 'panel.zoomTitle');
+    zoomBtn.setAttribute('data-i18n-title', 'panel.zoomRest');
     const title = mk('div', 'header-title');
     title.setAttribute('data-i18n', 'panel.iframeTitle');
     const buildBadge = mk('span', 'header-build', { textContent: BUILD_TAG });
@@ -2303,9 +2390,7 @@
       els.archiveRedactBtn.textContent = t('panel.archiveRedactStop');
     }
     if (shell) shell.setAttribute('title', t('panel.iframeTitle'));
-    if (els.zoomBtn) {
-      els.zoomBtn.title = panelExpanded ? t('panel.zoomRestore') : t('panel.zoomTitle');
-    }
+    paintZoomBtn();
     if (!running && !standby && els.sendBtn) {
       els.sendBtn.textContent = t('panel.send.send');
       els.sendBtn.title = t('panel.send.sendTitle');
@@ -3912,17 +3997,61 @@
     return Math.max(0.3, Math.min(1, n));
   }
 
+  function paintZoomBtn() {
+    if (!els || !els.zoomBtn) return;
+    if (zoomMode === 'set') {
+      els.zoomBtn.textContent = '⧉';
+      els.zoomBtn.title = t('panel.zoomSet');
+    } else if (zoomMode === 'max') {
+      els.zoomBtn.textContent = '▣';
+      els.zoomBtn.title = t('panel.zoomMax');
+    } else {
+      els.zoomBtn.textContent = '⛶';
+      els.zoomBtn.title = t('panel.zoomRest');
+    }
+  }
+
+  function currentUiScale() {
+    const n = parseFloat(host.style.getPropertyValue('--wpa-ui-scale'));
+    if (!Number.isFinite(n) || n <= 0) return 1;
+    return n;
+  }
+
+  function applyInputDisplayHeight() {
+    if (!els || !els.userInput) return;
+    const scale = currentUiScale();
+    const h = clampInt(
+      Math.round(inputLogicalH * scale),
+      Math.round(INPUT_H_MIN * scale),
+      Math.round(INPUT_H_MAX * scale),
+      Math.round(INPUT_H_DEFAULT * scale)
+    );
+    els.userInput.style.height = h + 'px';
+  }
+
   function applyPanelSize() {
     const prev = shell.getBoundingClientRect();
     const anchorRight = prev.right;
     const anchorTop = prev.top;
-    if (panelExpanded) {
+    const box = pageViewportBox();
+    let w = 650;
+    let h = 560;
+    if (zoomMode === 'max') {
+      host.classList.add('expanded');
+      const edge = 20;
+      w = Math.max(280, Math.round(box.w - edge * 2));
+      h = Math.max(200, Math.round(box.h - edge * 2));
+      if (w > box.w) w = Math.max(1, Math.round(box.w));
+      if (h > box.h) h = Math.max(1, Math.round(box.h));
+      shell.style.width = w + 'px';
+      shell.style.height = h + 'px';
+      shell.style.maxHeight = h + 'px';
+    } else if (zoomMode === 'set') {
       host.classList.add('expanded');
       const sx = panelScaleFrac('--wpa-scale-x', 0.5);
       const sy = panelScaleFrac('--wpa-scale-y', 0.9);
-      const box = pageViewportBox();
-      const w = Math.max(280, Math.round(Math.min(box.w * sx, box.w - 16)));
-      const h = Math.max(200, Math.round(Math.min(box.h * sy, box.h - 16)));
+      w = Math.max(280, Math.round(Math.min(box.w * sx, box.w - 16)));
+      h = Math.max(200, Math.round(Math.min(box.h * sy, box.h - 16)));
       shell.style.width = w + 'px';
       shell.style.height = h + 'px';
       shell.style.maxHeight = Math.max(200, box.h - 16) + 'px';
@@ -3932,17 +4061,26 @@
       shell.style.height = SHELL_DEFAULT_HEIGHT;
       shell.style.maxHeight = SHELL_DEFAULT_MAX_HEIGHT;
     }
-    if (els.zoomBtn) {
-      els.zoomBtn.textContent = panelExpanded ? '⤡' : '⛶';
-      els.zoomBtn.title = panelExpanded ? t('panel.zoomRestore') : t('panel.zoomTitle');
-    }
+    const rendered = shell.getBoundingClientRect();
+    const scaleBase = rendered.height > 1 ? rendered.height : h;
+    host.style.setProperty('--wpa-ui-scale', String(Math.max(0.5, scaleBase / 560)));
+    applyInputDisplayHeight();
+    paintZoomBtn();
     const next = shell.getBoundingClientRect();
-    if (prev.width > 1 && prev.height > 1) {
+    if (zoomMode === 'max') {
+      const pw = next.width > 1 ? next.width : w;
+      const ph = next.height > 1 ? next.height : h;
+      const gapX = Math.max(0, box.w - pw);
+      const gapY = Math.max(0, box.h - ph);
+      shell.style.right = 'auto';
+      shell.style.left = Math.round(box.x + gapX / 2) + 'px';
+      shell.style.top = Math.round(box.y + gapY / 2) + 'px';
+    } else if (prev.width > 1 && prev.height > 1) {
       shell.style.right = 'auto';
       shell.style.left = Math.round(anchorRight - next.width) + 'px';
       shell.style.top = Math.round(anchorTop) + 'px';
     }
-    if (panelExpanded || shell.style.left) clampHostPosition();
+    if (zoomMode !== 'rest' || shell.style.left) clampHostPosition();
     syncOverlayTop();
   }
 
@@ -3953,7 +4091,7 @@
 
   function onWindowResize() {
     if (shell.hidden) return;
-    if (panelExpanded) applyPanelSize();
+    if (zoomMode !== 'rest') applyPanelSize();
     else clampHostPosition();
     syncOverlayTop();
   }
@@ -3962,24 +4100,25 @@
     const opacity = clampInt(cfg && cfg.uiOpacity, 20, 100, 80);
     const sx = clampInt(cfg && cfg.panelScaleX, 30, 100, 50);
     const sy = clampInt(cfg && cfg.panelScaleY, 30, 100, 90);
+    const fontPct = clampInt(cfg && cfg.uiFontScale, 50, 200, 100);
     host.style.setProperty('--wpa-alpha', String(opacity / 100));
     host.style.setProperty('--wpa-scale-x', String(sx / 100));
     host.style.setProperty('--wpa-scale-y', String(sy / 100));
+    host.style.setProperty('--wpa-font-scale', String(fontPct / 100));
     applyPanelSize();
   }
 
   function persistPageUi() {
     if (!canPersist()) return;
-    const h = parseInt(els.userInput.style.height, 10);
     storeSet({
       [uiKey()]: {
-        inputHeight: Number.isFinite(h) ? h : 0
+        inputHeight: inputLogicalH
       }
     });
   }
 
   async function loadPageUi() {
-    panelExpanded = false;
+    zoomMode = 'rest';
     if (!canPersist()) {
       applyPanelSize();
       return;
@@ -3987,13 +4126,12 @@
     const obj = await storeGet(uiKey());
     const ui = obj[uiKey()] || {};
     const h = clampInt(ui.inputHeight, INPUT_H_MIN, INPUT_H_MAX, 0);
-    if (h) els.userInput.style.height = h + 'px';
-    else els.userInput.style.height = INPUT_H_DEFAULT + 'px';
+    inputLogicalH = h || INPUT_H_DEFAULT;
     applyPanelSize();
   }
 
   function togglePanelZoom() {
-    panelExpanded = !panelExpanded;
+    zoomMode = zoomMode === 'rest' ? 'set' : (zoomMode === 'set' ? 'max' : 'rest');
     applyPanelSize();
   }
 
@@ -4004,8 +4142,14 @@
     function onPageMove(e) {
       if (!drag) return;
       const pt = eventClientInPage(e);
-      const next = clampInt(drag.startH - (pt.y - drag.startY), INPUT_H_MIN, INPUT_H_MAX, INPUT_H_DEFAULT);
-      els.userInput.style.height = next + 'px';
+      const scale = currentUiScale();
+      inputLogicalH = clampInt(
+        drag.startH - (pt.y - drag.startY) / scale,
+        INPUT_H_MIN,
+        INPUT_H_MAX,
+        INPUT_H_DEFAULT
+      );
+      applyInputDisplayHeight();
     }
     function endDrag() {
       if (!drag) return;
@@ -4016,7 +4160,7 @@
     }
     handle.addEventListener('pointerdown', (e) => {
       if (e.button != null && e.button !== 0) return;
-      const startH = els.userInput.getBoundingClientRect().height;
+      const startH = inputLogicalH;
       const pt = eventClientInPage(e);
       drag = { startY: pt.y, startH: startH };
       handle.classList.add('dragging');
