@@ -421,8 +421,13 @@ ok(/function showDelegateFromUrl/.test(panelSrc) &&
   /type: 'delegateFrom'/.test(bg),
   '子 tab 对话框显示 Delegated from URL');
 ok(/\.bubble\.assistant[\s\S]*var\(--wpa-alpha\)/.test(panelSrc) &&
-  /\.bubble\.llm-call[\s\S]*var\(--wpa-alpha\)/.test(panelSrc),
-  '对话气泡卡片背景统一使用 --wpa-alpha');
+  /\.bubble\.llm-call[\s\S]*var\(--wpa-alpha\)/.test(panelSrc) &&
+  /\.bubble\.assistant \{[\s\S]*?color:\s*rgba\(43,\s*47,\s*58,\s*var\(--wpa-alpha\)\)/.test(panelSrc) &&
+  /\.bubble\.user \{[\s\S]*?color:\s*rgba\(255,\s*255,\s*255,\s*var\(--wpa-alpha\)\)/.test(panelSrc) &&
+  /\.btn \{[\s\S]*?color:\s*#2b2f3a/.test(panelSrc) &&
+  WPA_I18N.STR.zh['settings.uiOpacityHint'].indexOf('文字卡与文字使用同一透明度') >= 0 &&
+  WPA_I18N.STR.en['settings.uiOpacityHint'].indexOf('Text cards and text use the same opacity') >= 0,
+  '文字卡与文字使用 --wpa-alpha，按钮文字保持不透明');
 ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
 {
   const a0 = bg.indexOf('function compactOpenedTab');
@@ -2438,7 +2443,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.5.1', '锁步版本为 6.5.1');
+ok(manifestVer === '6.5.2', '锁步版本为 6.5.2');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -2480,6 +2485,37 @@ ok(/id: 'OpenAI-chat-completions'/.test(bg) && /id: 'OpenAI-chat-completions-ima
   'provider 枚举使用 OpenAI-chat-completions / image_url');
 ok(/id: 'OpenAI-chat-completions'/.test(settingsSrc) && /id: 'OpenAI-chat-completions-image_url'/.test(settingsSrc),
   '全局配置页枚举与后台一致');
+{
+  const detectApi = new Function(
+    extractFn(settingsSrc, 'modelsUrlForProvider') + '\n' +
+    extractFn(settingsSrc, 'modelIdsFromListPayload') + '\n' +
+    'return { modelsUrlForProvider: modelsUrlForProvider, modelIdsFromListPayload: modelIdsFromListPayload };'
+  )();
+  ok(detectApi.modelsUrlForProvider('https://api.llm.ustc.edu.cn/v1') === 'https://api.llm.ustc.edu.cn/v1/models',
+    '文本 provider 的 Base URL 直接加 /models');
+  ok(detectApi.modelsUrlForProvider('https://api.llm.ustc.edu.cn') === 'https://api.llm.ustc.edu.cn/models',
+    '无版本后缀的 Base URL 也只加 /models');
+  ok(detectApi.modelIdsFromListPayload({ data: [{ id: 'a' }, { id: 'b' }, { id: 'a' }] }).join(',') === 'a,b',
+    '模型列表取 data[].id 并去重');
+  const compareModelId = new Function(
+    extractFn(settingsSrc, 'compareModelId') + '\nreturn compareModelId;'
+  )();
+  const sortedIds = ['zeta', 'm10', 'alpha', 'm2'].slice().sort(compareModelId);
+  ok(sortedIds.join(',') === 'alpha,m2,m10,zeta', '模型ID按数字感知排序');
+}
+ok(/settings\.provider\.detectModels/.test(settingsSrc) && /if \(!isOcr\)/.test(settingsSrc)
+  && /method: 'GET'/.test(settingsSrc) && /Authorization: 'Bearer ' \+ provider\.apiKey/.test(settingsSrc)
+  && /id="modelIdModal"/.test(settingsHtml) && /id="modelIdInvert"/.test(settingsHtml)
+  && /id="modelIdSort"/.test(settingsHtml)
+  && /function sortModelIdList\(/.test(settingsSrc)
+  && /modelIdSort/.test(settingsSrc)
+  && /checkedModelIds\(\)\.join\(','\)/.test(settingsSrc)
+  && !!WPA_I18N.STR.zh['settings.provider.detectModels']
+  && !!WPA_I18N.STR.en['settings.provider.detectModels']
+  && WPA_I18N.STR.zh['settings.modelIdSort'] === '按模型ID排序'
+  && !!WPA_I18N.STR.en['settings.modelIdSort']
+  && (settingsSrc.match(/#modelIdModal, #downloadCard, #reloadCard/g) || []).length === 2,
+  '文本 provider 卡有自动检测模型ID，弹框可全选、反选，并按模型ID排序后按列表顺序填入');
 ok(!/id: 'Standard-TXT'/.test(bg) && !/id: 'Standard-IMG'/.test(bg),
   '后台枚举不再使用 Standard-TXT/IMG 作为 id');
 ok(!/id: 'Standard-TXT'/.test(settingsSrc) && !/id: 'Standard-IMG'/.test(settingsSrc),

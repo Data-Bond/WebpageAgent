@@ -54,7 +54,7 @@
       background: rgba(244, 246, 251, var(--wpa-alpha));
       overflow: hidden;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
-      color: #23283a;
+      color: rgba(35, 40, 58, var(--wpa-alpha));
       font-size: 16px;
       line-height: 1.5;
     }
@@ -75,7 +75,7 @@
       justify-content: space-between;
       padding: 12px 16px;
       background: linear-gradient(135deg, rgba(79, 124, 255, var(--wpa-alpha)) 0%, rgba(106, 92, 255, var(--wpa-alpha)) 100%);
-      color: #fff;
+      color: rgba(255, 255, 255, var(--wpa-alpha));
       box-shadow: 0 2px 10px rgba(79, 124, 255, 0.3);
       flex-shrink: 0;
       cursor: grab;
@@ -101,7 +101,7 @@
       font-weight: 600;
       letter-spacing: 0.3px;
       background: rgba(255, 255, 255, 0.18);
-      color: #fff;
+      color: rgba(255, 255, 255, var(--wpa-alpha));
       padding: 1px 7px;
       border-radius: 999px;
       white-space: nowrap;
@@ -183,7 +183,7 @@
     .conn-lamp-label {
       font-size: 14px;
       font-weight: 600;
-      color: rgba(255, 255, 255, 0.95);
+      color: rgba(255, 255, 255, var(--wpa-alpha));
       white-space: nowrap;
     }
     @keyframes conn-pulse {
@@ -246,7 +246,7 @@
       top: var(--wpa-header-h, 56px);
       bottom: 0;
       z-index: 25;
-      background: #ffffff;
+      background: rgba(255, 255, 255, var(--wpa-alpha));
       border: none;
       border-top: 1px solid #e6e8f0;
       border-radius: 0;
@@ -278,7 +278,7 @@
       flex-direction: column;
       gap: 4px;
       font-size: 15px;
-      color: #5a6072;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
     }
     .settings-check-row {
       display: flex !important;
@@ -292,7 +292,7 @@
     }
     .pdf-parse-label {
       font-size: 15px;
-      color: #5a6072;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
       margin-top: 4px;
     }
     .pdf-parse-pages-wrap {
@@ -302,7 +302,7 @@
     }
     .pdf-parse-hint {
       font-size: 14px;
-      color: #8a90a0;
+      color: rgba(138, 144, 160, var(--wpa-alpha));
       line-height: 1.45;
     }
     .run-settings {
@@ -312,21 +312,21 @@
       border: 1px solid #e6e8f0;
       border-radius: 8px;
       padding: 8px;
-      background: #fafbff;
+      background: rgba(250, 251, 255, var(--wpa-alpha));
     }
     .page-config-tab {
       border: 2px solid #4f7cff;
       border-radius: 10px;
       overflow: hidden;
-      background: #fff;
+      background: rgba(255, 255, 255, var(--wpa-alpha));
       display: flex;
       flex-direction: column;
       flex: 1 1 auto;
       min-height: 0;
     }
     .page-config-tab-head {
-      background: linear-gradient(135deg, #4f7cff 0%, #6a5cff 100%);
-      color: #fff;
+      background: linear-gradient(135deg, rgba(79, 124, 255, var(--wpa-alpha)) 0%, rgba(106, 92, 255, var(--wpa-alpha)) 100%);
+      color: rgba(255, 255, 255, var(--wpa-alpha));
       font-size: 16px;
       font-weight: 600;
       padding: 7px 14px;
@@ -353,16 +353,16 @@
     }
     .page-config-scope {
       font-size: 14px;
-      color: #5a6072;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
       line-height: 1.45;
-      background: #f4f7ff;
+      background: rgba(244, 247, 255, var(--wpa-alpha));
       border-radius: 6px;
       padding: 6px 8px;
     }
     .settings-card-heading {
       font-size: 15px;
       font-weight: 650;
-      color: #2b2f3a;
+      color: rgba(43, 47, 58, var(--wpa-alpha));
     }
     .settings-row-2 {
       display: grid;
@@ -377,14 +377,14 @@
     }
     .settings-status {
       font-size: 15px;
-      color: #5a6072;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
       min-height: 16px;
     }
     .settings-status.err {
-      color: #b42318;
+      color: rgba(180, 35, 24, var(--wpa-alpha));
     }
     .settings-status.ok {
-      color: #1f7a4d;
+      color: rgba(31, 122, 77, var(--wpa-alpha));
     }
     .settings-panel input {
       border: 1px solid #d8dbe7;
@@ -393,7 +393,7 @@
       font-size: 16px;
       outline: none;
       transition: border-color 0.2s, box-shadow 0.2s;
-      background: #fbfcfe;
+      background: rgba(251, 252, 254, var(--wpa-alpha));
       font-family: inherit;
     }
     .settings-panel input:focus {
@@ -407,7 +407,7 @@
       font-size: 15px;
       outline: none;
       transition: border-color 0.2s, box-shadow 0.2s;
-      background: #fbfcfe;
+      background: rgba(251, 252, 254, var(--wpa-alpha));
       font-family: inherit;
       resize: vertical;
       min-height: 60px;
@@ -425,12 +425,12 @@
       border: 1px dashed #e0e3ef;
       border-radius: 10px;
       padding: 10px;
-      background: #fafbff;
+      background: rgba(250, 251, 255, var(--wpa-alpha));
     }
     .provider-heading {
       font-size: 15px;
       font-weight: 700;
-      color: #4a5270;
+      color: rgba(74, 82, 112, var(--wpa-alpha));
     }
     .provider-list {
       display: flex;
@@ -444,14 +444,14 @@
       padding: 8px;
       border: 1px solid #e8ebf5;
       border-radius: 8px;
-      background: #fff;
+      background: rgba(255, 255, 255, var(--wpa-alpha));
     }
     .provider-field {
       display: flex;
       flex-direction: column;
       gap: 2px;
       font-size: 14px;
-      color: #5a6072;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
     }
     .provider-row input,
     .provider-row select {
@@ -460,7 +460,7 @@
       padding: 6px 8px;
       font-size: 15px;
       outline: none;
-      background: #fff;
+      background: rgba(255, 255, 255, var(--wpa-alpha));
       font-family: inherit;
     }
     .provider-row input:focus,
@@ -489,7 +489,7 @@
     .config-io .io-hint {
       width: 100%;
       font-size: 14px;
-      color: #8a90a6;
+      color: rgba(138, 144, 166, var(--wpa-alpha));
       line-height: 1.4;
     }
     .settings-actions {
@@ -499,7 +499,7 @@
     }
     .settings-status {
       font-size: 15px;
-      color: #6a5cff;
+      color: rgba(106, 92, 255, var(--wpa-alpha));
       min-height: 16px;
       word-break: break-word;
       white-space: pre-wrap;
@@ -550,19 +550,19 @@
       padding: 8px 12px;
       border-radius: 8px;
       font-size: 15px;
-      background: #eef2ff;
-      color: #4a5270;
+      background: rgba(238, 242, 255, var(--wpa-alpha));
+      color: rgba(74, 82, 112, var(--wpa-alpha));
       word-break: break-all;
       flex-shrink: 0;
     }
     .conn-status.error {
-      background: #ffecec;
-      color: #c0392b;
+      background: rgba(255, 236, 236, var(--wpa-alpha));
+      color: rgba(192, 57, 43, var(--wpa-alpha));
     }
     .attach-area {
       margin: 8px 12px 0;
       padding: 10px;
-      background: #ffffff;
+      background: rgba(255, 255, 255, var(--wpa-alpha));
       border: 1px solid #e6e8f0;
       border-radius: 12px;
       display: flex;
@@ -588,8 +588,8 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      background: #eef2ff;
-      color: #3b4b8f;
+      background: rgba(238, 242, 255, var(--wpa-alpha));
+      color: rgba(59, 75, 143, var(--wpa-alpha));
       border-radius: 999px;
       padding: 4px 6px 4px 10px;
       font-size: 15px;
@@ -602,7 +602,7 @@
       white-space: nowrap;
     }
     .chip .chip-size {
-      color: #8a90a6;
+      color: rgba(138, 144, 166, var(--wpa-alpha));
       flex-shrink: 0;
     }
     .chip .chip-remove {
@@ -630,16 +630,16 @@
       line-height: 1.4;
     }
     .chip .chip-badge.text {
-      background: #e3ecff;
-      color: #3b4b8f;
+      background: rgba(227, 236, 255, var(--wpa-alpha));
+      color: rgba(59, 75, 143, var(--wpa-alpha));
     }
     .chip .chip-badge.ocr {
-      background: #fde8d6;
-      color: #b5651d;
+      background: rgba(253, 232, 214, var(--wpa-alpha));
+      color: rgba(181, 101, 29, var(--wpa-alpha));
     }
     .chip .chip-badge.upload {
-      background: #e6f4ea;
-      color: #1e7d4f;
+      background: rgba(230, 244, 234, var(--wpa-alpha));
+      color: rgba(30, 125, 79, var(--wpa-alpha));
     }
     .add-file {
       align-self: flex-start;
@@ -674,7 +674,7 @@
       position: relative;
       align-self: flex-end;
       background: linear-gradient(135deg, rgba(79, 124, 255, var(--wpa-alpha)) 0%, rgba(106, 92, 255, var(--wpa-alpha)) 100%);
-      color: #fff;
+      color: rgba(255, 255, 255, var(--wpa-alpha));
       border-bottom-right-radius: 4px;
       padding-bottom: 28px;
     }
@@ -707,7 +707,7 @@
       position: relative;
       align-self: flex-start;
       background: rgba(255, 255, 255, var(--wpa-alpha));
-      color: #2b2f3a;
+      color: rgba(43, 47, 58, var(--wpa-alpha));
       border: 1px solid #e6e8f0;
       border-bottom-left-radius: 4px;
       box-shadow: 0 2px 8px rgba(35, 40, 58, 0.05);
@@ -728,7 +728,7 @@
     .bubble.system {
       align-self: center;
       background: rgba(238, 240, 246, var(--wpa-alpha));
-      color: #6a7080;
+      color: rgba(106, 112, 128, var(--wpa-alpha));
       font-size: 15px;
       border-radius: 999px;
       padding: 5px 12px;
@@ -737,14 +737,14 @@
     .bubble.status {
       align-self: flex-start;
       background: rgba(255, 248, 230, var(--wpa-alpha));
-      color: #8a6d1a;
+      color: rgba(138, 109, 26, var(--wpa-alpha));
       border: 1px solid #f3e3b0;
     }
     .print-catalog {
       align-self: stretch;
       max-width: 96%;
       background: rgba(244, 247, 251, var(--wpa-alpha));
-      color: #243044;
+      color: rgba(36, 48, 68, var(--wpa-alpha));
       border: 1px solid #d5deea;
       padding: 8px 10px;
     }
@@ -779,14 +779,14 @@
     .bubble.error {
       align-self: flex-start;
       background: rgba(255, 236, 236, var(--wpa-alpha));
-      color: #c0392b;
+      color: rgba(192, 57, 43, var(--wpa-alpha));
       border: 1px solid #f5c6c6;
     }
     .bubble.llm-call {
       align-self: stretch;
       max-width: 96%;
       background: rgba(247, 248, 252, var(--wpa-alpha));
-      color: #2b2f3a;
+      color: rgba(43, 47, 58, var(--wpa-alpha));
       border: 1px solid #e0e3ee;
       padding: 8px 10px;
     }
@@ -804,18 +804,18 @@
       padding: 2px 8px;
       line-height: 1.4;
     }
-    .llm-call-badge.pending { background: #eef2ff; color: #3d5afe; }
-    .llm-call-badge.ok { background: #e7f8ed; color: #1b7a3d; }
-    .llm-call-badge.warn { background: #fff4d6; color: #8a6d1a; }
-    .llm-call-badge.fail { background: #ffecec; color: #c0392b; }
+    .llm-call-badge.pending { background: rgba(238, 242, 255, var(--wpa-alpha)); color: rgba(61, 90, 254, var(--wpa-alpha)); }
+    .llm-call-badge.ok { background: rgba(231, 248, 237, var(--wpa-alpha)); color: rgba(27, 122, 61, var(--wpa-alpha)); }
+    .llm-call-badge.warn { background: rgba(255, 244, 214, var(--wpa-alpha)); color: rgba(138, 109, 26, var(--wpa-alpha)); }
+    .llm-call-badge.fail { background: rgba(255, 236, 236, var(--wpa-alpha)); color: rgba(192, 57, 43, var(--wpa-alpha)); }
     .llm-call-meta {
       flex: 1 1 160px;
       font-size: 15px;
-      color: #4a5160;
+      color: rgba(74, 81, 96, var(--wpa-alpha));
       min-width: 0;
     }
-    .llm-call-title { font-weight: 600; color: #23283a; }
-    .llm-call-note { margin-top: 2px; color: #5c6370; }
+    .llm-call-title { font-weight: 600; color: rgba(35, 40, 58, var(--wpa-alpha)); }
+    .llm-call-note { margin-top: 2px; color: rgba(92, 99, 112, var(--wpa-alpha)); }
     .llm-call-note:empty { display: none; }
     .bubble.llm-call.llm-call-compact .llm-call-head { align-items: center; }
     .llm-call-actions {
@@ -868,7 +868,7 @@
       display: none;
       position: relative;
       align-self: stretch;
-      background: #fff;
+      background: rgba(255, 255, 255, var(--wpa-alpha));
       border: 1px solid #e6e8f0;
       border-radius: 8px;
     }
@@ -897,6 +897,7 @@
       line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
+      color: rgba(43, 47, 58, var(--wpa-alpha));
     }
     @keyframes pop {
       from { transform: translateY(4px); opacity: 0; }
@@ -972,7 +973,7 @@
     }
     .tag-field label {
       font-size: 14px;
-      color: #6a7080;
+      color: rgba(106, 112, 128, var(--wpa-alpha));
       white-space: nowrap;
       flex-shrink: 0;
     }
@@ -986,7 +987,8 @@
       line-height: 1.2;
       height: 22px;
       font-family: inherit;
-      background: #fbfcfe;
+      background: rgba(251, 252, 254, var(--wpa-alpha));
+      color: rgba(35, 40, 58, var(--wpa-alpha));
       outline: none;
       cursor: pointer;
     }
@@ -1008,7 +1010,8 @@
       outline: none;
       line-height: 1.4;
       transition: border-color 0.2s, box-shadow 0.2s;
-      background: #fbfcfe;
+      background: rgba(251, 252, 254, var(--wpa-alpha));
+      color: rgba(35, 40, 58, var(--wpa-alpha));
     }
     #userInput:focus {
       border-color: #4f7cff;
@@ -1052,7 +1055,7 @@
     }
     .page-settings-hint {
       font-size: 14px;
-      color: #8a90a0;
+      color: rgba(138, 144, 160, var(--wpa-alpha));
       line-height: 1.45;
     }
     .hidden {
@@ -1086,7 +1089,8 @@
       font-size: 15px;
       font-family: inherit;
       outline: none;
-      background: #fbfcfe;
+      background: rgba(251, 252, 254, var(--wpa-alpha));
+      color: rgba(35, 40, 58, var(--wpa-alpha));
     }
     .skill-search:focus {
       border-color: #4f7cff;
@@ -1110,7 +1114,7 @@
     }
     .skill-empty {
       font-size: 15px;
-      color: #8a90a6;
+      color: rgba(138, 144, 166, var(--wpa-alpha));
       text-align: center;
       padding: 16px 8px;
     }
@@ -1118,14 +1122,14 @@
       border: 1px solid #e8ebf5;
       border-radius: 8px;
       padding: 8px;
-      background: #fff;
+      background: rgba(255, 255, 255, var(--wpa-alpha));
       display: flex;
       flex-direction: column;
       gap: 4px;
     }
     .skill-card.match {
       border-color: #8fd4aa;
-      background: #f4fbf7;
+      background: rgba(244, 251, 247, var(--wpa-alpha));
     }
     .skill-card-top {
       display: flex;
@@ -1135,14 +1139,14 @@
     .skill-card-name {
       font-size: 15px;
       font-weight: 700;
-      color: #2b2f3a;
+      color: rgba(43, 47, 58, var(--wpa-alpha));
       flex: 1;
       min-width: 0;
       word-break: break-word;
     }
     .skill-card-url {
       font-size: 14px;
-      color: #6a7080;
+      color: rgba(106, 112, 128, var(--wpa-alpha));
       word-break: break-all;
     }
     .skill-card-actions {
@@ -1163,12 +1167,12 @@
       line-height: 1.4;
     }
     .skill-badge.need {
-      background: #fde8d6;
-      color: #b5651d;
+      background: rgba(253, 232, 214, var(--wpa-alpha));
+      color: rgba(181, 101, 29, var(--wpa-alpha));
     }
     .skill-badge.match {
-      background: #e6f4ea;
-      color: #1e7d4f;
+      background: rgba(230, 244, 234, var(--wpa-alpha));
+      color: rgba(30, 125, 79, var(--wpa-alpha));
     }
     .skill-lib-footer {
       display: flex;
@@ -1180,7 +1184,7 @@
     .skill-lib-status {
       width: 100%;
       font-size: 14px;
-      color: #6a5cff;
+      color: rgba(106, 92, 255, var(--wpa-alpha));
       min-height: 14px;
       word-break: break-word;
     }
@@ -1190,7 +1194,7 @@
       align-items: center;
       gap: 6px;
       font-size: 14px;
-      color: #5a6072;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
       width: 100%;
     }
     .skill-lib-export-opt input {
@@ -1227,7 +1231,7 @@
       display: flex;
       flex-direction: column;
       gap: 6px;
-      background: #fbfcfe;
+      background: rgba(251, 252, 254, var(--wpa-alpha));
     }
     .skill-dyn-head {
       display: flex;
@@ -1236,12 +1240,12 @@
       gap: 8px;
       font-size: 14px;
       font-weight: 650;
-      color: #5a6072;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
     }
     .skill-preview {
       font-size: 14px;
-      color: #3a4050;
-      background: #f4f6fb;
+      color: rgba(58, 64, 80, var(--wpa-alpha));
+      background: rgba(244, 246, 251, var(--wpa-alpha));
       border: 1px dashed #d8dbe7;
       border-radius: 8px;
       padding: 8px;
@@ -1253,7 +1257,7 @@
     }
     .skill-build-hint {
       font-size: 14px;
-      color: #6a7080;
+      color: rgba(106, 112, 128, var(--wpa-alpha));
       line-height: 1.45;
     }
     .modal-backdrop {
@@ -1267,7 +1271,7 @@
       padding: 16px;
     }
     .modal {
-      background: #fff;
+      background: rgba(255, 255, 255, var(--wpa-alpha));
       border-radius: 12px;
       padding: 14px;
       width: 100%;
@@ -1282,14 +1286,14 @@
       display: block;
       font-size: 17px;
       font-weight: 700;
-      color: #2b2f3a;
+      color: rgba(43, 47, 58, var(--wpa-alpha));
     }
     .modal label {
       display: flex;
       flex-direction: column;
       gap: 4px;
       font-size: 15px;
-      color: #5a6072;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
     }
     .modal input,
     .modal textarea,
@@ -1300,7 +1304,8 @@
       font-size: 15px;
       font-family: inherit;
       outline: none;
-      background: #fbfcfe;
+      background: rgba(251, 252, 254, var(--wpa-alpha));
+      color: rgba(35, 40, 58, var(--wpa-alpha));
     }
     .modal input:focus,
     .modal textarea:focus,
@@ -1320,7 +1325,7 @@
       align-items: center;
       gap: 8px;
       font-size: 15px;
-      color: #5a6072;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
     }
     .modal label.modal-check input {
       width: auto;
@@ -1335,8 +1340,8 @@
     }
     .modal-warn {
       font-size: 15px;
-      color: #8a6d1a;
-      background: #fff8e6;
+      color: rgba(138, 109, 26, var(--wpa-alpha));
+      background: rgba(255, 248, 230, var(--wpa-alpha));
       border: 1px solid #f3e3b0;
       border-radius: 8px;
       padding: 8px 10px;
@@ -1346,12 +1351,12 @@
     }
     .modal-error {
       font-size: 15px;
-      color: #c0392b;
+      color: rgba(192, 57, 43, var(--wpa-alpha));
       min-height: 14px;
     }
     .archive-lead {
       font-size: 15px;
-      color: #5a6072;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
       line-height: 1.45;
     }
     .archive-actions {
@@ -1381,17 +1386,17 @@
     }
     .archive-redact-hint {
       font-size: 14px;
-      color: #8a90a0;
+      color: rgba(138, 144, 160, var(--wpa-alpha));
       line-height: 1.45;
     }
     .archive-status {
       font-size: 15px;
-      color: #5a6072;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
       min-height: 16px;
       line-height: 1.4;
     }
     .archive-status.err {
-      color: #b42318;
+      color: rgba(180, 35, 24, var(--wpa-alpha));
     }
     .modal textarea.archive-redact-input {
       min-height: 72px;
@@ -1412,13 +1417,13 @@
       align-items: center;
       gap: 4px 8px;
       font-size: 15px;
-      color: #5a6072;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
       line-height: 1.4;
     }
     .archive-char-count,
     .archive-char-tail {
       font-size: 15px;
-      color: #5a6072;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
       line-height: 1.4;
     }
     .archive-chunk-input {

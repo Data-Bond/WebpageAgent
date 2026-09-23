@@ -48,6 +48,7 @@
   let forceFill = true;
   let reconnecting = false;
   let pendingProviderTestId = '';
+  let modelIdFillTarget = null;
   let pendingDownloads = { config: false, diag: false };
   let cachedSkills = [];
   let selectedSkillIds = {};
@@ -130,6 +131,29 @@
     if (!s) return '<未填写>';
     if (s.length <= 8) return s.slice(0, 1) + '****' + s.slice(-1);
     return s.slice(0, 4) + '****' + s.slice(-4);
+  }
+
+  function modelsUrlForProvider(baseURL) {
+    const u = String(baseURL || '').trim().replace(/\/+$/, '');
+    if (!u) return '';
+    return u + '/models';
+  }
+
+  function modelIdsFromListPayload(json) {
+    const list = json && Array.isArray(json.data) ? json.data : (Array.isArray(json) ? json : null);
+    if (!list) return [];
+    const out = [];
+    const seen = {};
+    for (let i = 0; i < list.length; i++) {
+      const item = list[i];
+      let id = '';
+      if (typeof item === 'string') id = item.trim();
+      else if (item && typeof item === 'object') id = String(item.id || '').trim();
+      if (!id || seen[id]) continue;
+      seen[id] = true;
+      out.push(id);
+    }
+    return out;
   }
 
   function chatCompletionsUrlForSample(baseURL) {
@@ -359,6 +383,15 @@
     });
     testBtn.addEventListener('click', () => { testProviderRow(row, kindKey); });
     del.addEventListener('click', () => { row.remove(); });
+    if (!isOcr) {
+      const detectBtn = mk('button', 'btn provider-detect', {
+        type: 'button',
+        textContent: t('settings.provider.detectModels'),
+        title: t('settings.provider.detectModelsTitle')
+      });
+      detectBtn.addEventListener('click', () => { detectModelsForRow(row); });
+      actions.appendChild(detectBtn);
+    }
     actions.appendChild(testBtn);
     actions.appendChild(del);
     row.appendChild(makeField(t('settings.provider.type'), typeSel));
@@ -434,6 +467,115 @@
       body.className = 'modal-pre' + (kind === 'ok' ? ' ok' : kind === 'err' ? ' err' : '');
     }
     openModal('resultModal');
+  }
+
+  function setModelIdStatus(text, kind) {
+    const el = $('modelIdStatus');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = 'status' + (kind === 'ok' ? ' ok' : kind === 'err' ? ' err' : '');
+  }
+
+  function compareModelId(a, b) {
+    return String(a).localeCompare(String(b), 'en', { numeric: true, sensitivity: 'variant' });
+  }
+
+  function checkedModelIds() {
+    const boxes = document.querySelectorAll('#modelIdList input[type="checkbox"]');
+    const picked = [];
+    boxes.forEach((box) => { if (box.checked) picked.push(box.value); });
+    return picked;
+  }
+
+  function sortModelIdList() {
+    const list = $('modelIdList');
+    if (!list) return;
+    const rows = Array.prototype.slice.call(list.children);
+    rows.sort((a, b) => {
+      const ai = a.querySelector ? a.querySelector('input') : null;
+      const bi = b.querySelector ? b.querySelector('input') : null;
+      return compareModelId(ai ? ai.value : '', bi ? bi.value : '');
+    });
+    rows.forEach((row) => list.appendChild(row));
+  }
+
+  function openModelIdPicker(input, ids, currentModels) {
+    const have = {};
+    String(currentModels || '').split(',').forEach((part) => {
+      const id = part.trim();
+      if (id) have[id] = true;
+    });
+    const list = $('modelIdList');
+    if (list) list.textContent = '';
+    const seen = {};
+    function addBox(id, checked) {
+      if (!id || seen[id] || !list) return;
+      seen[id] = true;
+      const label = document.createElement('label');
+      label.className = 'check-row';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.value = id;
+      box.checked = !!checked;
+      const span = document.createElement('span');
+      span.textContent = id;
+      label.appendChild(box);
+      label.appendChild(span);
+      list.appendChild(label);
+    }
+    ids.forEach((id) => addBox(id, !!have[id]));
+    Object.keys(have).forEach((id) => addBox(id, true));
+    modelIdFillTarget = input;
+    setModelIdStatus('', '');
+    openModal('modelIdModal');
+  }
+
+  function applyModelIdSelection() {
+    if (!modelIdFillTarget) return;
+    modelIdFillTarget.value = checkedModelIds().join(',');
+    modelIdFillTarget.dispatchEvent(new Event('input', { bubbles: true }));
+    closeModal('modelIdModal');
+  }
+
+  async function detectModelsForRow(row) {
+    const provider = providerFromRow(row, 'text');
+    const url = modelsUrlForProvider(provider.baseURL);
+    if (!url) {
+      showResultModal(t('settings.modelIdTitle'), t('settings.modelIdNeedUrl'), 'err');
+      return;
+    }
+    if (!provider.apiKey) {
+      showResultModal(t('settings.modelIdTitle'), t('settings.modelIdNeedKey'), 'err');
+      return;
+    }
+    showResultModal(t('settings.modelIdTitle'), t('settings.modelIdFetching') + '\nGET ' + url, '');
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer ' + provider.apiKey }
+      });
+    } catch (e) {
+      showResultModal(t('settings.modelIdTitle'), t('settings.modelIdFail') + '\n' + String(e && e.message || e), 'err');
+      return;
+    }
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch (e) { json = null; }
+    if (!res.ok || !json) {
+      const errObj = json && json.error;
+      const msg = (errObj && (errObj.message || errObj)) || (json && json.message) || text || res.status;
+      showResultModal(t('settings.modelIdTitle'), t('settings.modelIdFail') + '\n' + String(msg).slice(0, 2000), 'err');
+      return;
+    }
+    const ids = modelIdsFromListPayload(json);
+    if (!ids.length) {
+      showResultModal(t('settings.modelIdTitle'), t('settings.modelIdEmpty'), 'err');
+      return;
+    }
+    closeModal('resultModal');
+    const input = row.querySelector('[data-field="models"]');
+    openModelIdPicker(input, ids, provider.models);
   }
 
   function testProviderRow(row, kind) {
@@ -1049,12 +1191,12 @@
     renderSettingsSkillList();
     document.addEventListener('input', (e) => {
       const t = e && e.target;
-      if (t && t.closest && t.closest('#exportPickerModal, #exportSkillsModal, #exportOtherModal, #resultModal, #downloadCard, #reloadCard')) return;
+      if (t && t.closest && t.closest('#exportPickerModal, #exportSkillsModal, #exportOtherModal, #resultModal, #modelIdModal, #downloadCard, #reloadCard')) return;
       markDirty();
     }, true);
     document.addEventListener('change', (e) => {
       const t = e && e.target;
-      if (t && t.closest && t.closest('#exportPickerModal, #exportSkillsModal, #exportOtherModal, #resultModal, #downloadCard, #reloadCard')) return;
+      if (t && t.closest && t.closest('#exportPickerModal, #exportSkillsModal, #exportOtherModal, #resultModal, #modelIdModal, #downloadCard, #reloadCard')) return;
       markDirty();
     }, true);
     document.addEventListener('click', (e) => {
@@ -1160,6 +1302,14 @@
       cachedSkills.forEach((s) => { if (s && s.id) selectedSkillIds[s.id] = true; });
       renderSettingsSkillList();
     });
+    $('modelIdConfirm').addEventListener('click', () => { applyModelIdSelection(); });
+    $('modelIdSelectAll').addEventListener('click', () => {
+      document.querySelectorAll('#modelIdList input[type="checkbox"]').forEach((box) => { box.checked = true; });
+    });
+    $('modelIdInvert').addEventListener('click', () => {
+      document.querySelectorAll('#modelIdList input[type="checkbox"]').forEach((box) => { box.checked = !box.checked; });
+    });
+    $('modelIdSort').addEventListener('click', () => { sortModelIdList(); });
     $('skillInvertBtn').addEventListener('click', () => {
       cachedSkills.forEach((s) => {
         if (!s || !s.id) return;
@@ -1180,6 +1330,7 @@
       closeModal('exportPickerModal');
       closeModal('exportSkillsModal');
       closeModal('exportOtherModal');
+      closeModal('modelIdModal');
     });
     $('importConfigBtn').addEventListener('click', () => {
       if (formDirty && !window.confirm(t('settings.confirm.importDirty'))) return;
