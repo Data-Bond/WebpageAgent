@@ -1368,6 +1368,7 @@
       if (hit && hit.t >= since) trail.push(hit);
     }
     return {
+      appVersion: opts.appVersion || '',
       schemaVersion: DIAG_SCHEMA_VERSION,
       exportedAt: now,
       hours: hours,

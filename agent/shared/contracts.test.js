@@ -155,11 +155,12 @@ describe('WPA contracts kernel', () => {
         { t: now - 2 * 3600 * 1000, p: 'llm', c: 'Error' },
         { t: now, p: 'ocr', c: 'Timeout' }
       ] },
-      { hours: 1, now: now }
+      { hours: 1, now: now, appVersion: '6.5.0' }
     );
     assert.equal(pack.hours, 1);
     assert.equal(pack.rows.length, 1);
     assert.equal(pack.rows[0].p, 'ocr');
+    assert.equal(pack.appVersion, '6.5.0');
     assert.equal(C.clampDiagCapKb(5), 10);
     assert.equal(C.clampDiagCapKb(999), 200);
     assert.equal(C.clampDiagCapKb(50), 50);

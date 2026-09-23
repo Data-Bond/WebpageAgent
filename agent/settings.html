@@ -316,6 +316,11 @@
       margin-top: 4px;
     }
     .provider-actions .btn { flex: 1; }
+    .model-id-list {
+      max-height: 360px;
+      overflow: auto;
+      margin-top: 8px;
+    }
     .modal[hidden] { display: none !important; }
     .modal {
       position: fixed;
@@ -657,6 +662,23 @@
       </div>
       <div class="status" id="downloadOtherStatus"></div>
       <div id="exportRecordsBody"></div>
+    </div>
+  </div>
+  <div class="modal" id="modelIdModal" hidden>
+    <div class="modal-backdrop" data-close-modal="modelIdModal"></div>
+    <div class="modal-dialog" role="dialog" aria-labelledby="modelIdModalTitle" aria-modal="true">
+      <button type="button" class="modal-x" data-close-modal="modelIdModal">×</button>
+      <div class="modal-title" id="modelIdModalTitle" data-i18n="settings.modelIdTitle"></div>
+      <div class="hint" data-i18n="settings.modelIdHint"></div>
+      <div class="io-bar">
+        <button type="button" class="btn primary" id="modelIdConfirm" data-i18n="settings.modelIdConfirm"></button>
+        <button type="button" class="btn" id="modelIdSelectAll" data-i18n="settings.selectAll"></button>
+        <button type="button" class="btn" id="modelIdInvert" data-i18n="settings.invert"></button>
+        <button type="button" class="btn" data-close-modal="modelIdModal" data-i18n="common.cancel"></button>
+        <button type="button" class="btn" id="modelIdSort" data-i18n="settings.modelIdSort"></button>
+      </div>
+      <div class="status" id="modelIdStatus"></div>
+      <div id="modelIdList" class="model-id-list"></div>
     </div>
   </div>
   <script src="shared/i18n.js"></script>
