@@ -332,7 +332,8 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
   ok(pbStart >= 0 && pbEnd > pbStart && (pbEnd - pbStart) < 2800, '运行时手册源码不超过约 2KB');
   const pbSrc = bg.slice(pbStart, pbEnd);
   ok(/get\.limit 默认 10000 字/.test(pbSrc) && /print\.limit 是目录条数/.test(pbSrc), '手册：get/print 的 limit 单位');
-  ok(/无法解析时按观察改写/.test(pbSrc) && /summary 为回答/.test(pbSrc), '手册：解析失败改写、回答用 done.summary');
+  ok(/无法解析时按观察改写/.test(pbSrc) && /结束任务时单独输出 \{"action":"done","summary":"给用户的结束说明"\}/.test(pbSrc),
+    '手册：解析失败改写，结束用 action done 与 summary');
   ok(/勿当 click\/get\/type 的 target/.test(pbSrc) && /提交 idx 或 name/.test(pbSrc), '手册：CSS 只对照快照，点 idx 或 name');
   ok(/click 短文按 name 得 0\/1\/多/.test(pbSrc) && /失败回执带本轮 catalog/.test(pbSrc), '手册：click 短文 0/1/多');
   ok(/先查本轮 idx（含 hidden）/.test(pbSrc) && /不是同一张表/.test(pbSrc),
@@ -1032,7 +1033,9 @@ ok(/Math\.abs\(report\.domChanged\) > 30000/.test(bg), 'SPA 大幅 DOM 变化后
 ok(/jsonNudgeCount/.test(bg), '非 JSON 输出有纠正重试计数');
 ok(/JSON_NUDGE_MAX = 2/.test(bg), '非 JSON 最多纠正两次');
 ok(/function formatUnparsedObservation/.test(bg) && /reason: 'unparsed'/.test(bg), '无法解析写入观察回执');
-ok(/已把无法解析的输出交回，请改写/.test(bg), '无法解析状态文案是交回改写');
+ok(/已把无法解析的输出交回。' \+ unparsedNote \+ '请改为恰当的 JSON 来回复/.test(bg)
+  && /无法解析：' \+ note \+ '\\n请改为恰当的 JSON 来回复/.test(bg),
+  '无法解析说明原因并要求 JSON 回复');
 ok(!/上一轮输出无法解析。下面提供更完整快照/.test(bg), '无法解析不再用完整快照当主路径');
 ok(/只执行最新【当前指令】/.test(bg), '快照要求只执行当前指令');
 ok(/continueAsk: true/.test(bg), '回答提问时继续原任务而不降级历史');
@@ -2443,7 +2446,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.5.2', '锁步版本为 6.5.2');
+ok(manifestVer === '6.5.3', '锁步版本为 6.5.3');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -4396,8 +4399,9 @@ if (runCompactBox.compactRunResult) {
       '因为选错了摘要，应该点预览'
     );
     ok(obs.indexOf('【执行结果】') >= 0 && obs.indexOf('"reason":"unparsed"') >= 0 &&
-      obs.indexOf('回复中没有任何 JSON 对象') >= 0 && obs.indexOf('因为选错了摘要') >= 0,
-      '解析失败观察含 note 与原文节选');
+      obs.indexOf('回复中没有任何 JSON 对象') >= 0 && obs.indexOf('因为选错了摘要') >= 0 &&
+      obs.indexOf('无法解析：回复中没有任何 JSON 对象（多为中文说明），无法执行。\n请改为恰当的 JSON 来回复。') >= 0,
+      '解析失败观察含原因并要求 JSON 回复');
   } catch (e) {
     ok(false, '加载 formatUnparsedObservation 失败: ' + (e && e.message));
   }

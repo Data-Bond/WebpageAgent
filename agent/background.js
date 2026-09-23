@@ -33,7 +33,7 @@ const DEFAULT_CONFIG = {
   selectedTextTag: null,
   selectedOcrTag: null,
   systemPromptText:
-    "你是网页智能体助手。根据用户当前指令，在已打开的网页上自主完成操作。只通过工具读写页面，禁止编造 CSS，禁止输出可执行 JavaScript。缺用户才有的信息时 ask。",
+    "你是网页智能体助手。根据用户当前指令，在已打开的网页上自主完成操作。只通过工具读写页面，禁止编造 CSS，禁止输出可执行 JavaScript。缺用户才有的信息时 ask。结束任务时单独输出 {\"action\":\"done\",\"summary\":\"给用户的结束说明\"}。",
   systemPromptOcr: DEFAULT_SYSTEM_PROMPT_OCR,
   maxSteps: 100,
   snapshotPiiMask: false,
@@ -261,7 +261,7 @@ const RUNTIME_PLAYBOOK =
   '通过工具操作当前页。禁止编造 CSS，禁止输出可执行 JS，禁止 plan/script。\n' +
   '工具：get type click check select scroll wait upload ocr ocrFill officeRead officeFill print memorize recall forget goto delegate returnToParent tabClose。\n' +
   'click/goto 若回执 openedTab 则本批停，下一轮 delegate 或 tabClose。点到带文档 href 的 a 且 target 为新上下文时，回执含 intentUrl/target；程序化打开被拦时引擎仍打开该 URL 并写 openedTab。\n' +
-  'JSON 回退：{"action":"execute","calls":[{"tool":"type","args":{"target":5,"value":"张三"}}]}；ask；done。\n' +
+  'JSON 回退：{"action":"execute","calls":[{"tool":"type","args":{"target":5,"value":"张三"}}]}。结束任务时单独输出 {"action":"done","summary":"给用户的结束说明"}。\n' +
   '定位优先本轮 idx，idx 每轮重排；回执 catalog 编号与上轮快照同批，跨轮作废。用户/技能中的 CSS 只对照本轮快照，勿当 click/get/type 的 target；提交 idx 或 name。\n' +
   'outline 的 role/name 为无障碍名；同串不重复堆字段。click 短文按 name 得 0/1/多：先查本轮 idx（含 hidden），失败回执带本轮 catalog；get 短文仍 live 反查，不是同一张表。\n' +
   '无因果依赖，或页面已清楚、因果序列极大概率能顺完：可一轮多个工具；否则一次一个，后一步看前一步回执。\n' +
@@ -271,7 +271,7 @@ const RUNTIME_PLAYBOOK =
   '只读正文与块状文字在快照 blocks，用其 idx 做 get；print 仍只搜控件。blocks 与 panes 一样，不自动成为 memorize 的 lastRead，要先 get。\n' +
   '快照优先当前覆盖层、文件名、隐藏操作与大块正文；truncated 则 get/print/scroll。get 回执 textKind=filename-label 表示只读到文件名标签，不是文件正文；需打开预览 pane 或 upload 后再 get。\n' +
   '多轮完不成：换 print/get/scroll。get.limit 默认 10000 字，offset 从第 N 字起；truncated 则加大 limit 或设 offset 再 get，见截断尾注，勿换 CSS 重点。print.limit 是目录条数。\n' +
-  '上一轮无法解析时按观察改写；回答用户用 done（summary 为回答）或 ask。\n' +
+  '上一轮无法解析时按观察改写。\n' +
   '缺用户才有的信息才 ask。上传用 upload(控件, 附件key)，禁止 click 上传按钮弹系统框。\n' +
   'ocr/ocrFill 只读当前像素，不点图；换图先 click。statusMessages 含过期或失效时，先 click 验证码图，再 ocrFill。submit 仅当传入才点。\n' +
   'click button=right 只开菜单，不改选中。click / check 点带勾选控件的行时回执 selection 为当前勾选/高亮条目；确认框看 statusMessages 再点。check 回执 reason=not-checkbox 时读 hint；click/check/type/select 回执 near 为操作对象附近可见短文。\n' +
@@ -281,7 +281,7 @@ const RUNTIME_PLAYBOOK =
   PLAYBOOK_END;
 
 const MODERN_SYSTEM_PROMPT =
-  "你是网页智能体助手。根据用户当前指令在已打开的网页上操作。只通过工具读写页面，禁止编造 CSS，禁止输出可执行 JS。缺用户信息才 ask。";
+  "你是网页智能体助手。根据用户当前指令在已打开的网页上操作。只通过工具读写页面，禁止编造 CSS，禁止输出可执行 JS。缺用户信息才 ask。结束任务时单独输出 {\"action\":\"done\",\"summary\":\"给用户的结束说明\"}。";
 
 function stripFossilPrompt(sys) {
   let s = String(sys || '');
@@ -3904,7 +3904,7 @@ function formatUnparsedObservation(parseInfo, llmText) {
     reason: 'unparsed',
     note: note,
     excerpt: excerpt
-  }) + '\n同一意图改为 tools 或 execute/ask/done。' + JSON_ONLY_HINT;
+  }) + '\n无法解析：' + note + '\n请改为恰当的 JSON 来回复。' + JSON_ONLY_HINT;
 }
 
 // 从混有中文说明的模型输出中抽出 execute/ask/done JSON。
@@ -8994,13 +8994,14 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
         role: 'user',
         content: formatUnparsedObservation(parseInfo, llmText)
       });
+      const unparsedNote = String((parseInfo && parseInfo.note) || '未找到可执行的 action=execute/ask/done。');
       if (jsonNudgeCount <= JSON_NUDGE_MAX) {
-        postMsg({ type: 'status', text: '已把无法解析的输出交回，请改写（' + jsonNudgeCount + '/' + JSON_NUDGE_MAX + '）' });
+        postMsg({ type: 'status', text: '已把无法解析的输出交回。' + unparsedNote + '请改为恰当的 JSON 来回复（' + jsonNudgeCount + '/' + JSON_NUDGE_MAX + '）' });
         keepSlotForRetry();
         continue;
       }
-      postMsg({ type: 'status', text: '无法解析输出，已征求是否结束' });
-      return await askExitPermit('无法解析大模型输出');
+      postMsg({ type: 'status', text: '无法解析输出。' + unparsedNote + '已征求是否结束' });
+      return await askExitPermit('无法解析大模型输出：' + unparsedNote);
     }
     jsonNudgeCount = 0;
     exitChanceArmed = false;
