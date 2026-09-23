@@ -300,6 +300,7 @@
       kind: WEB_SKILL_PACK_KIND,
       format: WEB_SKILL_FORMAT,
       exportedAt: new Date().toISOString(),
+      appVersion: (opts && opts.appVersion) || '',
       skills: (skills || []).map(function (s) {
         return includeValues ? publicWebSkill(s) : stripSkillValues(s);
       })

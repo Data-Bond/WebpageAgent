@@ -298,11 +298,12 @@ if (archiveBox.buildArchiveMarkdown) {
         }
       }
     }
-  ], false);
+  ], false, '6.5.0');
   ok(md.indexOf('### 输入 prompt') >= 0 && md.indexOf('你能看到本页是什么吗？') >= 0, '存档含用户 prompt');
   ok(md.indexOf('### API 请求结构') >= 0 && md.indexOf('<页面快照>（约87000字）') >= 0, '存档含 API 请求结构解释词');
   ok(md.indexOf(snapLeak) < 0, '存档不写入快照正文');
   ok(md.indexOf('不含网页快照') >= 0, '存档页头说明不含快照正文');
+  ok(md.indexOf(WPA_I18N.t('panel.archive.version') + '6.5.0') >= 0, '存档页头写入软件版本');
 }
 
 ok(/function coerceAgentAction/.test(bg), '可把 action=click 改写为 execute');
@@ -757,6 +758,13 @@ ok(/typed-not-committed/.test(bridge), 'type/setVal 对级联只打过滤词并�
 ok(/via: 'cascader-option'/.test(bridge), 'click 可见级联选项不再抛禁点');
 ok(/cascaderOptionOf\(el\) && !documentAnchorOf\(el\)/.test(bridge),
   'click 带文档 href 的 a 不走 cascader-option');
+ok(!/fileRowOf\(node\)/.test(extractFn(bridge, 'optionNodeOf')),
+  'optionNodeOf 不因文件行取消选项识别');
+ok(/fileRowOf\(el\) \? retargetFileSelectClick\(el\) : cascaderClickTarget\(el\)/.test(extractAsyncMethod(bridge, 'click')) &&
+  /applyFilePickerState\(optRet, el, optPickerBefore\)/.test(extractAsyncMethod(bridge, 'click')),
+  '级联项同时是勾选行时点勾选图标，回执同时带 selection 与 fieldState');
+ok(/isCascaderChoice\(el\) && !boxKindOf\(el\)/.test(extractAsyncMethod(bridge, 'setChecked')),
+  '没有勾选控件的级联项 check 回 not-checkbox，有控件则勾选');
 ok(/function documentAnchorOf/.test(bridge), 'documentAnchorOf 识别文档链接');
 ok(!/popupHasOptionNodes\(n\)/.test(extractFn(bridge, 'optionNodeOf')),
   'optionNodeOf 不用 popupHasOptionNodes 收正文列表');
@@ -2430,7 +2438,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.5.0', '锁步版本为 6.5.0');
+ok(manifestVer === '6.5.1', '锁步版本为 6.5.1');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -2790,10 +2798,12 @@ const WPA_WEB_SKILL = require(path.join(ROOT, 'shared/webSkill.js'));
     okSkill.skill.variables
   );
   ok(!unknown.ok, '未知槽替换失败');
-  const packed = WPA_WEB_SKILL.exportWebSkillPack([okSkill.skill]);
+  const packed = WPA_WEB_SKILL.exportWebSkillPack([okSkill.skill], { appVersion: '6.5.0' });
   ok(packed.format === 1 && packed.skills[0].variables[0].value === '', '默认导出剥离 value');
-  const packedFull = WPA_WEB_SKILL.exportWebSkillPack([okSkill.skill], { includeValues: true });
+  ok(packed.appVersion === '6.5.0', 'WEB-SKILL 包写入 appVersion');
+  const packedFull = WPA_WEB_SKILL.exportWebSkillPack([okSkill.skill], { includeValues: true, appVersion: '6.5.0' });
   ok(packedFull.skills[0].variables[0].value === 'a@b.com', 'includeValues 保留 value');
+  ok(packedFull.appVersion === '6.5.0', '含 value 的技能包同样写入 appVersion');
   ok(WPA_WEB_SKILL.skillUrlMatches(okSkill.skill, 'https://example.com/app?x=1'), 'origin+path 忽略查询串');
   ok(!WPA_WEB_SKILL.skillUrlMatches(okSkill.skill, 'https://example.com/other'), '不同 path 不匹配');
   ok(WPA_WEB_SKILL.isValidVarName('UserEmail') && WPA_WEB_SKILL.isValidVarName('申请人邮箱'),
@@ -3519,8 +3529,18 @@ ok(!/committed && error && \/请输入/.test(extractFn(bridge, 'collectFieldStat
   'fieldState 不因已有字抹掉 error');
 ok(/reason: 'disabled'/.test(bridge) && /continueBatch/.test(bridge),
   '禁用点击不抛整批失败');
-ok(/tag === 'IMG'/.test(extractFn(bridge, 'retargetFileSelectClick')),
-  '文件行 img 改点 checkmark');
+ok(/tag === 'IMG'/.test(extractFn(bridge, 'retargetFileSelectClick')) &&
+  /img\.parentElement === el/.test(extractFn(bridge, 'retargetFileSelectClick')) &&
+  /return el;/.test(extractFn(bridge, 'retargetFileSelectClick')),
+  '文件行的行、文件名、img 与 img 父节点改点 checkmark，其余子节点保持原目标');
+ok(/fileNameLookupTarget\(rawTarget\)/.test(extractAsyncMethod(bridge, 'setChecked')),
+  'check 文件名按文本匹配勾选行');
+ok(/fileNameLookupTarget\(String\(sel\)\.trim\(\)\)/.test(extractAsyncMethod(bridge, 'click')),
+  'click 文件名走名称点击');
+ok(/\[\\\/\\0\]/.test(extractFn(bridge, 'hasCharRejectedByBothOs')) &&
+  /function fileNameLookupTarget/.test(bridge) &&
+  /\^\[\.#\]/.test(extractFn(bridge, 'fileNameLookupTarget')),
+  '文件名只排除两端都不接受的 / 与 NUL，以 . 或 # 开头仍按选择器');
 ok(/snapshotPiiMask/.test(bg) && /panel\.snapshotPii/.test(settingsHtml), '设置含快照脱敏开关');
 ok(/cfg\.snapshotPiiMask === true/.test(bg), '快照脱敏默认关（仅显式 true 才开）');
 ok(/llmCallGapMs: 500/.test(bg), '调用间隔默认 500ms');
@@ -3556,6 +3576,23 @@ ok(/panel\.pageQuiet/.test(settingsHtml) && /panel\.suggestWait/.test(settingsHt
 ok(/llmCallGapMs/.test(bg) && /function exportPayload\(/.test(bg), '导出含调用间隔');
 ok(/secInputToMs/.test(settingsSrc) && /msToSecValue/.test(settingsSrc), '设置页秒与毫秒互转');
 ok(/function exportPayload\(/.test(bg) && /maskProviderList/.test(bg), '导入导出走白名单且默认掩码密钥');
+{
+  const I18N = require(path.join(ROOT, 'shared/i18n.js'));
+  const diagSlice = bg.slice(bg.indexOf('async function exportDiagForHours'), bg.indexOf('async function clearDiagStore'));
+  const skillSlice = bg.slice(bg.indexOf('exportWebSkillPack(picked'), bg.indexOf('exportWebSkillPack(picked') + 320);
+  ok(/function appVersion\(/.test(bg)
+    && /Object\.assign\(\{ appVersion: appVersion\(\) \}/.test(bg)
+    && /appVersion: appVersion\(\),\r?\n\s*id: rec\.id/.test(bg),
+    '配置导出与调用详情写入 appVersion');
+  ok(/appVersion: appVersion\(\)/.test(skillSlice), 'WEB-SKILL 导出写入 appVersion');
+  ok(/appVersion: appVersion\(\)/.test(diagSlice), '诊断导出写入 appVersion');
+  ok(!!I18N.STR.zh['panel.archive.version'] && !!I18N.STR.en['panel.archive.version']
+    && /t\('panel\.archive\.version'\)/.test(panelSrc)
+    && /buildArchiveMarkdown\(items, !!userOnly, BUILD_VERSION\)/.test(panelSrc)
+    && /const verLine = t\('panel\.archive\.version'\) \+ BUILD_VERSION/.test(panelSrc)
+    && /markdown\.indexOf\(verLine\) < 0/.test(panelSrc),
+    '存档页头含中英版本行且保存前强制补齐');
+}
 ok(/diagCapKb: 50/.test(bg) && /id="diagCapKb"/.test(settingsHtml) && /settings\.diagCap/.test(settingsHtml),
   '诊断探针日志上限默认 50KB 且可在全局配置改');
 ok(/settings\.diag/.test(settingsHtml) && /settings\.diagData/.test(settingsSrc) && /cmd === 'exportDiag'/.test(bg),

@@ -3585,13 +3585,14 @@
     try { return JSON.stringify(shape, null, 2); } catch (e) { return ''; }
   }
 
-  function buildArchiveMarkdown(items, userOnly) {
+  function buildArchiveMarkdown(items, userOnly, appVer) {
     const now = new Date();
     const lines = [
       t('panel.archive.heading'),
       '',
       t('panel.archive.page') + (location.href || ''),
       t('panel.archive.savedAt') + formatLocalDateTime(now),
+      t('panel.archive.version') + (appVer || ''),
       (userOnly ? t('panel.archive.scopeUser') : t('panel.archive.scopeFull')),
       ''
     ];
@@ -3751,7 +3752,7 @@
     const filename = (userOnly ? t('panel.archive.fileUser') : t('panel.archive.fileFull')) + stamp + '.md';
     archiveSaveMeta = { userOnly: !!userOnly, filename: filename };
     if (els.archiveRedactInput) els.archiveRedactInput.value = defaultArchiveRedactHint();
-    if (els.archiveDocInput) els.archiveDocInput.value = buildArchiveMarkdown(items, !!userOnly);
+    if (els.archiveDocInput) els.archiveDocInput.value = buildArchiveMarkdown(items, !!userOnly, BUILD_VERSION);
     if (els.archiveChunkInput && !String(els.archiveChunkInput.value || '').trim()) {
       els.archiveChunkInput.value = '1000000';
     }
@@ -3839,7 +3840,20 @@
     if (archiveBusy) return;
     const filename = (archiveSaveMeta && archiveSaveMeta.filename)
       || (t('panel.archive.fileDefault') + formatStampForFile(new Date()) + '.md');
-    const markdown = String(els.archiveDocInput && els.archiveDocInput.value || '');
+    let markdown = String(els.archiveDocInput && els.archiveDocInput.value || '');
+    const verLine = t('panel.archive.version') + BUILD_VERSION;
+    if (markdown.indexOf(verLine) < 0) {
+      const mark = t('panel.archive.savedAt');
+      const at = markdown.indexOf('\n' + mark);
+      if (at >= 0) {
+        const end = markdown.indexOf('\n', at + 1);
+        const insertAt = end >= 0 ? end + 1 : markdown.length;
+        markdown = markdown.slice(0, insertAt) + verLine + '\n' + markdown.slice(insertAt);
+      } else {
+        markdown = verLine + '\n' + markdown;
+      }
+      if (els.archiveDocInput) els.archiveDocInput.value = markdown;
+    }
     setArchiveBusy(true);
     const saved = await saveArchiveFile(markdown, filename);
     setArchiveBusy(false);

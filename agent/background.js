@@ -493,7 +493,11 @@ async function exportDiagForHours(hours) {
   return enqueueDiagMut(async function () {
     await persistDiagTrail();
     const store = await loadDiagStore();
-    return WPA_CONTRACTS.exportDiagStore(store, { hours: hours, now: Date.now() });
+    return WPA_CONTRACTS.exportDiagStore(store, {
+      hours: hours,
+      now: Date.now(),
+      appVersion: appVersion()
+    });
   });
 }
 
@@ -1054,6 +1058,11 @@ function pickExportPayload(full, pick) {
   return out;
 }
 
+// 下载与保存文件统一写入的当前扩展版本（manifest.version）。
+function appVersion() {
+  return chrome.runtime.getManifest().version;
+}
+
 function exportPayload(cfg, opts) {
   const includeKeys = !!(opts && opts.includeKeys);
   const knobs = applyRuntimeKnobs(cfg);
@@ -1070,8 +1079,8 @@ function exportPayload(cfg, opts) {
       ? cfg.archiveRedactHint.slice(0, 2000)
       : DEFAULT_CONFIG.archiveRedactHint
   }, knobs, applyUiKnobs(cfg), applyDiagKnobs(cfg), normalizePdfParseConfig(cfg), applyPdfTextCap(cfg), applyAttachBudgetKnobs(cfg));
-  if (opts && opts.pick != null) return pickExportPayload(full, opts.pick);
-  return full;
+  const body = opts && opts.pick != null ? pickExportPayload(full, opts.pick) : full;
+  return Object.assign({ appVersion: appVersion() }, body);
 }
 
 // 导入侧把常见别名摊成 normalizeProvider 认识的字段；对不上的键丢掉。
@@ -1946,6 +1955,7 @@ function traceJson(rec) {
   // output 是接口返回的模型原文。整份详情再 JSON.stringify 时只对外层做转义，
   // 不会改写模型文本里的括号；看到 }]]} 说明模型当时就少写了 }。
   const copy = {
+    appVersion: appVersion(),
     id: rec.id,
     label: rec.label,
     model: rec.model,
@@ -9772,7 +9782,10 @@ chrome.runtime.onConnect.addListener((port) => {
           const opts = { includeKeys: includeKeys };
           if (msg.pick && typeof msg.pick === 'object' && !Array.isArray(msg.pick)) opts.pick = msg.pick;
           const payload = exportPayload(cfg, opts);
-          if (!payload || typeof payload !== 'object' || !Object.keys(payload).length) {
+          const bodyKeys = payload && typeof payload === 'object'
+            ? Object.keys(payload).filter((k) => k !== 'appVersion')
+            : [];
+          if (!bodyKeys.length) {
             postMsg({ type: 'status', text: '未选择任何配置项', kind: 'error' });
             return;
           }
@@ -9957,7 +9970,10 @@ chrome.runtime.onConnect.addListener((port) => {
         postMsg({
           type: 'webSkillsExport',
           ok: true,
-          json: JSON.stringify(exportWebSkillPack(picked, { includeValues: !!msg.includeValues }), null, 2),
+          json: JSON.stringify(exportWebSkillPack(picked, {
+            includeValues: !!msg.includeValues,
+            appVersion: appVersion()
+          }), null, 2),
           count: picked.length,
           filename: picked.length === 1 ? 'WebpageAgent-web-skill.json' : 'WebpageAgent-web-skill-pack.json'
         });

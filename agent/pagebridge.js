@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '6.5.0';
+  var BRIDGE_VERSION = '6.5.1';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
   var WAIT_TIMEOUT_MAX_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
@@ -3108,10 +3108,9 @@
         return el.querySelector ? el.querySelector('input[type="checkbox"],input[type="radio"]') : null;
       } catch (e) { return null; }
     }
-    // 返回 'checkbox' | 'radio' | ''（该元素是否复选/单选控件或其包装器）
+    // 返回 'checkbox' | 'radio' | ''。勾选控件与级联项可以同时成立。
     function boxKindOf(el) {
       if (isFileSelectRow(el) || fileRowOf(el)) return 'checkbox';
-      if (isCascaderChoice(el)) return '';
       var inp = innerBoxInput(el);
       if (inp) {
         var t = String(inp.type || '').toLowerCase();
@@ -3207,8 +3206,24 @@
       return '';
     }
 
+    // Linux 与 Windows 都不接受的文件名字符：`/` 与 NUL。`:`、`[`、`>` 等至少一端接受，仍可出现在文件名里。
+    function hasCharRejectedByBothOs(s) {
+      return /[\/\0]/.test(String(s || ''));
+    }
+
     function looksLikeFileName(s) {
-      return /\.[A-Za-z0-9]{1,8}$/.test(String(s || '').trim());
+      var t = String(s || '').trim();
+      if (!t || hasCharRejectedByBothOs(t)) return false;
+      return /\.[A-Za-z0-9]{1,8}$/.test(t);
+    }
+
+    // 带扩展名的文件名走文本查找。以 . # 或标签名开头的仍是选择器。
+    function fileNameLookupTarget(s) {
+      var t = String(s || '').trim();
+      if (!looksLikeFileName(t)) return false;
+      if (/^[.#]/.test(t)) return false;
+      if (/^(div|span|ul|ol|li|section|article|header|nav|main|aside|p|a|button|input|form|img)\b/i.test(t)) return false;
+      return true;
     }
 
     function isFileSelectRow(el) {
@@ -3248,10 +3263,13 @@
       var row = fileRowOf(el);
       if (!row) return el;
       var icon = fileSelectIcon(row);
-      if (!icon) return el;
-      if (el === icon) return el;
+      if (!icon || el === icon) return el;
+      if (el === row || isFileNameEl(el)) return icon;
       var tag = (el.tagName || '').toUpperCase();
-      if (el === row || isFileNameEl(el) || tag === 'IMG') return icon;
+      if (tag === 'IMG') return icon;
+      var img = null;
+      try { img = row.querySelector('img'); } catch (eImg) { img = null; }
+      if (img && img.parentElement === el) return icon;
       return el;
     }
 
@@ -7427,7 +7445,7 @@
       return optionNodeOf(el);
     }
 
-    // 列表/级联项里的方框只是选项样式，不是表单复选框。
+    // 结构上的级联/下拉项。可以同时带勾选控件；没有勾选控件时 check 回 not-checkbox。
     function isCascaderChoice(el) {
       return !!optionNodeOf(el);
     }
@@ -8277,14 +8295,17 @@
             if (sel && typeof sel === 'object' && !Array.isArray(sel) && typeof sel.text === 'string' && !sel.idx && !sel.selector) {
               return await page.clickByText(sel.text, Object.assign({}, sel, clickOpts || {}));
             }
-            if (typeof sel === 'string' && clickOpts && clickOpts.within && !looksLikeCssSelector(sel) && isNumericIdx(sel) == null) {
+            if (typeof sel === 'string' && clickOpts && clickOpts.within && isNumericIdx(sel) == null &&
+                (fileNameLookupTarget(String(sel).trim()) || !looksLikeCssSelector(sel))) {
               return await page.clickByText(sel, clickOpts);
             }
-            if (typeof sel === 'string' && isNumericIdx(sel) == null && !looksLikeCssSelector(sel)) {
+            if (typeof sel === 'string' && isNumericIdx(sel) == null &&
+                (fileNameLookupTarget(String(sel).trim()) || !looksLikeCssSelector(sel))) {
               return await page.clickByText(sel, clickOpts || {});
             }
             if (sel && typeof sel === 'object' && !Array.isArray(sel) && !sel.idx && !sel.selector &&
-                typeof sel.target === 'string' && isNumericIdx(sel.target) == null && !looksLikeCssSelector(sel.target)) {
+                typeof sel.target === 'string' && isNumericIdx(sel.target) == null &&
+                (fileNameLookupTarget(String(sel.target).trim()) || !looksLikeCssSelector(sel.target))) {
               return await page.clickByText(sel.target, Object.assign({}, sel, clickOpts || {}));
             }
             var looked = lookupTarget(sel, function (n, c) { return page.findControls(n, c); }, 20);
@@ -8300,21 +8321,27 @@
               throw new Error('请点分页条上的页码或下一页/上一页按钮，不要点整条分页容器');
             }
             if (cascaderOptionOf(el) && !documentAnchorOf(el)) {
-              try { el.scrollIntoView({ block: 'nearest' }); } catch (eOpt) {}
-              dispatchClick(cascaderClickTarget(el));
+              var optPickerBefore = captureFilePicker();
+              var optTarget = fileRowOf(el) ? retargetFileSelectClick(el) : cascaderClickTarget(el);
+              try { optTarget.scrollIntoView({ block: 'nearest' }); } catch (eOpt) {}
+              dispatchClick(optTarget);
+              if (fileRowOf(el) || fileRowOf(optTarget)) await sleepMs(80);
               var optUs;
-              try { optUs = uniqueSelector(el); } catch (eOu) { optUs = null; }
+              try { optUs = uniqueSelector(optTarget); } catch (eOu) { optUs = null; }
               var cascLift = null;
               try { cascLift = optionClickLift(el); } catch (eCl) { cascLift = null; }
               var cascFsEl = cascaderHostOf(el, { probe: true });
-              return withResolved({
+              var optRet = {
                 ok: true, kind: 'action', via: 'cascader-option', verified: null,
                 selector: optUs && optUs.selector ? optUs.selector : '',
                 name: (cascLift && cascLift.name) || optionTextOf(el) || '',
+                retargeted: optTarget !== el,
                 fieldState: (cascLift && cascLift.fieldState) || collectFieldState(cascFsEl || el, { harvest: true })
-              }, looked);
+              };
+              applyFilePickerState(optRet, el, optPickerBefore);
+              return withResolved(optRet, looked);
             }
-            var cascadeClickHost = cascaderHostOf(el, { probe: true });
+            var cascadeClickHost = fileRowOf(el) ? null : cascaderHostOf(el, { probe: true });
             if (cascadeClickHost) {
               var opened = await ensureOpenDropdown(cascaderTriggerOf(cascadeClickHost, el));
               var cus;
@@ -8795,12 +8822,18 @@
               if (r && r.winner) {
                 withSel(r.winner);
                 try { r.winner.el.scrollIntoView({ block: 'nearest' }); } catch (e) {}
-                dispatchClick(cascaderOptionOf(r.winner.el) ? cascaderClickTarget(r.winner.el) : r.winner.el);
-                return {
+                var optPickBefore = captureFilePicker();
+                var optClickEl = fileRowOf(r.winner.el)
+                  ? retargetFileSelectClick(r.winner.el)
+                  : (cascaderOptionOf(r.winner.el) ? cascaderClickTarget(r.winner.el) : r.winner.el);
+                dispatchClick(optClickEl);
+                var optClickRet = {
                   ok: true, kind: 'action', text: r.winner.text, value: r.winner.value,
                   selector: r.winner.selector, verified: null,
                   fieldState: collectFieldState(r.winner.el, { harvest: true })
                 };
+                applyFilePickerState(optClickRet, r.winner.el, optPickBefore);
+                return optClickRet;
               }
               if (r && r.ambiguous) {
                 return catalogPayload(list, { ok: false, reason: 'ambiguous', query: raw, opened: true });
@@ -8978,16 +9011,26 @@
           setChecked: async function (target, want) {
             var wantB = (want === undefined) ? true : !!want;
             var el = null;
+            var textNeedle = '';
             if (target && typeof target === 'object' && typeof target.text === 'string') {
+              textNeedle = String(target.text || '').trim();
+            } else if (typeof target === 'string') {
+              var rawTarget = target.trim();
+              if (isNumericIdx(rawTarget) == null &&
+                  (fileNameLookupTarget(rawTarget) || !looksLikeCssSelector(rawTarget))) {
+                textNeedle = rawTarget;
+              }
+            }
+            if (textNeedle || (target && typeof target === 'object' && typeof target.text === 'string')) {
               // 按可见文本定位复选框（歧义抛候选，宁缺毋滥）
-              var raw = String(target.text || '').trim();
+              var raw = textNeedle;
               if (!raw) throw new Error('setChecked: 目标文本为空');
               var all = queryAllDeep(CHECKBOX_SEL);
               var cands = [];
               var seenEl = new Set();
               for (var i = 0; i < all.length; i++) {
                 var e = all[i];
-                if (isCascaderChoice(e)) continue;
+                if (isCascaderChoice(e) && !boxKindOf(e)) continue;
                 if (!isVisible(e)) continue;
                 var t = (e.innerText || e.textContent || '').trim();
                 if (!t) continue;
@@ -9016,13 +9059,18 @@
             } else {
               el = page.q(target);
               if (!el) throw notFoundError(target);
-              if (isCascaderChoice(el)) {
-                return {
+              if (isCascaderChoice(el) && !boxKindOf(el)) {
+                var refuse = {
                   ok: false,
                   reason: 'not-checkbox',
                   continueBatch: true,
                   hint: '目标是级联/下拉项，reason=not-checkbox。'
                 };
+                try {
+                  var refuseHost = cascaderHostOf(el, { probe: true });
+                  refuse.fieldState = collectFieldState(refuseHost || el, { harvest: true });
+                } catch (eRefuse) {}
+                return refuse;
               }
               if (!boxKindOf(el)) throw new Error('目标不是复选/单选框: ' + describeTarget(target));
             }
@@ -9030,12 +9078,20 @@
               try { return String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80); }
               catch (e) { return ''; }
             }
+            function attachChoiceState(ret, node) {
+              if (!ret || !node || !isCascaderChoice(node) || ret.fieldState) return ret;
+              var host = null;
+              try { host = cascaderHostOf(node, { probe: true }); } catch (eH) { host = null; }
+              try { ret.fieldState = collectFieldState(host || node, { harvest: true }); } catch (eFs) {}
+              return ret;
+            }
             var cur = readBoxChecked(el);
             var checkPickerBefore = captureFilePicker();
             if (cur === wantB) {
               var sameRet = { ok: true, kind: 'mutation', changed: false, checked: cur, verified: true,
                 note: '已是目标状态，未点击', label: boxLabelText(el) };
               applyFilePickerState(sameRet, el, checkPickerBefore);
+              attachChoiceState(sameRet, el);
               return sameRet;
             }
             await waitElementStable(el);
@@ -9048,6 +9104,7 @@
             var changedRet = { ok: true, kind: 'mutation', changed: now !== cur, checked: now, verified: now === wantB,
               label: boxLabelText(el) };
             applyFilePickerState(changedRet, el, checkPickerBefore);
+            attachChoiceState(changedRet, el);
             return changedRet;
           },
           waitFor: function (test, opts) {
