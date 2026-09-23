@@ -655,7 +655,7 @@
 
   function outlineLineBand(line) {
     var s = String(line || '');
-    if (s.indexOf('<PANE') >= 0) return 0;
+    if (s.indexOf('<PANE') >= 0 || s.indexOf('<BLOCK') >= 0) return 0;
     if (s.charAt(0) === '\t' || s.indexOf('<OPT') >= 0) return 0;
     if (/icon=/.test(s)) return 1;
     if (/\b(?:text|label|name)=[\w.\-\u4e00-\u9fff]+\.[A-Za-z0-9]{1,8}(?:\s|>)/.test(s)) return 1;
@@ -830,24 +830,55 @@
   function packStagePanes(messages, targetChars) {
     var list = messages || [];
     var cap = Math.max(80, Number(targetChars) || SNAPSHOT_PANE_CHARS);
+    var lastSnap = -1;
+    var j;
+    for (j = list.length - 1; j >= 0; j--) {
+      if (packedMsgKind(list[j]) === 'snapshot') { lastSnap = j; break; }
+    }
     for (var i = list.length - 1; i >= 0; i--) {
       if (packedMsgKind(list[i]) !== 'snapshot') continue;
       var parsed = parseSnapPayload(list[i].content);
-      if (!parsed || !Array.isArray(parsed.obj.panes) || !parsed.obj.panes.length) continue;
-      var best = -1;
-      var bestLen = 0;
-      var p;
-      for (p = 0; p < parsed.obj.panes.length; p++) {
-        var row = parsed.obj.panes[p];
-        var tl = row && typeof row.text === 'string' ? row.text.length : 0;
-        if (tl > bestLen) { bestLen = tl; best = p; }
+      if (!parsed || !parsed.obj) continue;
+      var note = '';
+      var folded = false;
+      if (Array.isArray(parsed.obj.panes) && parsed.obj.panes.length) {
+        var best = -1;
+        var bestLen = 0;
+        var p;
+        for (p = 0; p < parsed.obj.panes.length; p++) {
+          var row = parsed.obj.panes[p];
+          var tl = row && typeof row.text === 'string' ? row.text.length : 0;
+          if (tl > bestLen) { bestLen = tl; best = p; }
+        }
+        if (best >= 0 && bestLen > cap) {
+          var pane = parsed.obj.panes[best];
+          var fullChars = pane.chars != null ? pane.chars : bestLen;
+          applyTextBudgetSlice(pane, cap, 'pane');
+          note = formatTruncNote('pane', cap, pane.offset || 0, fullChars);
+          folded = true;
+        }
       }
-      if (best < 0 || bestLen <= cap) continue;
-      var pane = parsed.obj.panes[best];
-      var fullChars = pane.chars != null ? pane.chars : bestLen;
-      applyTextBudgetSlice(pane, cap, 'pane');
+      if (!folded && i !== lastSnap && Array.isArray(parsed.obj.blocks) && parsed.obj.blocks.length) {
+        var bb = -1;
+        var bl = 0;
+        var b;
+        for (b = 0; b < parsed.obj.blocks.length; b++) {
+          var brow = parsed.obj.blocks[b];
+          var btl = brow && typeof brow.text === 'string' ? brow.text.length : 0;
+          if (btl > bl) { bl = btl; bb = b; }
+        }
+        if (bb >= 0 && bl > 0) {
+          var block = parsed.obj.blocks[bb];
+          var blockChars = block.chars != null ? block.chars : bl;
+          delete block.text;
+          block.chars = blockChars;
+          block.truncated = true;
+          note = formatTruncNote('block', 0, 0, blockChars);
+          folded = true;
+        }
+      }
+      if (!folded) continue;
       parsed.obj.truncated = true;
-      var note = formatTruncNote('pane', cap, pane.offset || 0, fullChars);
       list[i].content = writeSnapPayload(parsed, note);
       return true;
     }
