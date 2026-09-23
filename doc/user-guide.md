@@ -41,6 +41,8 @@ When the snapshot is truncated (`truncated`), have the model `get` / `print` / `
 
 Overlay and iframe content appear in snapshot `panes` or `<PANE>` lines; use those idx values for `get` / `scroll`.
 
+Read-only prose and block text live in snapshot `blocks`; `get` that idx. `print` still searches controls only. Like panes, `blocks` do not become `memorize` lastRead until you `get` them.
+
 Captcha images appear in the outline (e.g. `[n]<IMG captcha w=… h=…>`) and in `images[]` (with round idx). `print` searching “captcha” lists images, not only inputs.
 
 ### 1.4 Targeting: idx, name—do not use CSS as a handle
@@ -347,7 +349,7 @@ Cross-step text (URL, read body, confirmed values). Each snapshot header lists m
 2. Else `lastRead`;
 3. Else fail (`missing-source`).
 
-Snapshot panes are not backfill sources. ~32 slots max; long text truncated like `get`. Same name overwrites.
+Snapshot panes and blocks are not backfill sources. ~32 slots max; long text truncated like `get`. Same name overwrites.
 
 ---
 

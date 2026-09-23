@@ -351,6 +351,9 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
     '手册：memorize/recall 与记忆目录');
   ok(/不必再 recall/.test(pbSrc) && /\{\} 或缺 value/.test(pbSrc) && /快照 panes 不算/.test(pbSrc),
     '手册：历史够用则不必 recall；空对象不是 value');
+  ok(/只读正文与块状文字在快照 blocks/.test(pbSrc) && /print 仍只搜控件/.test(pbSrc) &&
+    /不自动成为 memorize 的 lastRead，要先 get/.test(pbSrc),
+    '手册：块状文字在 blocks，用 idx get');
   ok(/ocr\/ocrFill 只读当前像素/.test(pbSrc) && /换图先 click/.test(pbSrc) && /submit 仅当传入才点/.test(pbSrc),
     '手册：ocr/ocrFill 只读像素，换图先 click');
   ok(/button=right 只开菜单/.test(pbSrc) && /回执 selection/.test(pbSrc) && /statusMessages 再点/.test(pbSrc),
@@ -2427,7 +2430,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.4.0', '锁步版本为 6.4.0');
+ok(manifestVer === '6.5.0', '锁步版本为 6.5.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -2881,6 +2884,160 @@ ok(/l0Cap/.test(snapFn) && /full \? SNAPSHOT_L0_CAP_FULL : SNAPSHOT_L0_CAP/.test
 ok(/collectOpenPanes/.test(snapFn) &&
   snapFn.indexOf('collectOpenPanes') < snapFn.indexOf('queryAllDeep(INTERACTIVE_SELECTOR)'),
   'snapshot 先采 panes 再扫 INTERACTIVE');
+ok(snapFn.indexOf('panes = collectOpenPanes()') < snapFn.indexOf('blocks = collectTextBlocks()'),
+  'snapshot 在 panes 之后收块状文字');
+ok(/<BLOCK tag=/.test(snapFn) && /blocks: blocks/.test(snapFn), '大纲只有 BLOCK 指针，正文在 blocks');
+ok(/TEXT_ACTION_MAX_LEN = 80/.test(bridge), '可点短文字上限仍是 80');
+ok(/'input', 'select', 'textarea', 'button', 'a'/.test(bridge), '控件选择器仍从 input、select、textarea、button、a 开始');
+ok(!/BLOCK_TEXT/.test(extractFn(bridge, 'findControls')), 'findControls 不收块状文字');
+ok(/readableTextOf\(el\)/.test(extractAsyncMethod(bridge, 'get')) &&
+  /sliceGetTextResult\(/.test(extractAsyncMethod(bridge, 'get')),
+  'get 按定位到的元素读全文');
+{
+  const guideCn = fs.readFileSync(path.join(__dirname, 'doc/user-guide-cn.md'), 'utf8');
+  const guideEn = fs.readFileSync(path.join(__dirname, 'doc/user-guide.md'), 'utf8');
+  ok(/快照 `blocks`/.test(guideCn) && /要先 `get`/.test(guideCn), '中文说明：blocks 用 idx 做 get');
+  ok(/snapshot `blocks`/.test(guideEn) && /lastRead/.test(guideEn), '英文说明：blocks 先 get 再进 lastRead');
+}
+{
+  const blockBox = {
+    BLOCK_TEXT_MIN: 12,
+    BLOCK_TEXT_INLINE: 800,
+    BLOCK_TEXT_SEL: 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, figcaption, caption, dt, dd, address, td, th, div, section, article, main',
+    GET_TEXT_DEFAULT: 10000,
+    GET_TEXT_HARD: 500000,
+    listedNodes: [],
+    snapIndex: [],
+    idx: 0
+  };
+  const blockSrc = [
+    'function timedOut() { return false; }',
+    'function queryAllDeep() { return listedNodes; }',
+    'function isLaidOut() { return true; }',
+    'function queryDeep(sel) {',
+    '  var m = String(sel || "").match(/data-wpa-i=\\"(\\d+)\\"/);',
+    '  if (!m) return null;',
+    '  return snapIndex[Number(m[1])] || null;',
+    '}',
+    'function registerSnapEl(live) {',
+    '  if (!live) return 0;',
+    '  idx += 1;',
+    '  snapIndex[idx] = live;',
+    '  try { live.setAttribute("data-wpa-i", String(idx)); } catch (e) {}',
+    '  return idx;',
+    '}',
+    'function makeEl(tag, own, kids) {',
+    '  var node = {',
+    '    tagName: String(tag || "").toUpperCase(),',
+    '    nodeType: 1,',
+    '    parentElement: null,',
+    '    childNodes: [],',
+    '    children: [],',
+    '    innerText: "",',
+    '    textContent: "",',
+    '    _attr: {},',
+    '    setAttribute: function (k, v) { this._attr[k] = v; },',
+    '    getAttribute: function (k) { return this._attr[k]; }',
+    '  };',
+    '  if (own) node.childNodes.push({ nodeType: 3, nodeValue: own });',
+    '  var parts = [];',
+    '  if (own) parts.push(own);',
+    '  var list = kids || [];',
+    '  for (var i = 0; i < list.length; i++) {',
+    '    list[i].parentElement = node;',
+    '    node.childNodes.push(list[i]);',
+    '    node.children.push(list[i]);',
+    '    parts.push(list[i].innerText || "");',
+    '  }',
+    '  node.innerText = parts.join("\\n");',
+    '  node.textContent = node.innerText;',
+    '  return node;',
+    '}',
+    extractFn(bridge, 'compactText'),
+    extractFn(bridge, 'ownText'),
+    extractFn(bridge, 'isAssistantFrame'),
+    extractFn(bridge, 'isIgnored'),
+    extractFn(bridge, 'sameOriginFrameDoc'),
+    extractFn(bridge, 'enterSameOriginFrame'),
+    extractFn(bridge, 'readableTextOf'),
+    extractFn(bridge, 'selectTextBlockNodes'),
+    extractFn(bridge, 'isNumericIdx'),
+    extractFn(bridge, 'resolveTarget'),
+    extractFn(bridge, 'clampGetTextLimit'),
+    extractFn(bridge, 'clampGetTextOffset'),
+    extractFn(bridge, 'sliceGetTextResult'),
+    extractFn(bridge, 'collectTextBlocks'),
+    'var pShort = makeEl("p", "一二三四五六七八九十一");',
+    'var pLeaf = makeEl("p", "科学网博客正文里的函子解释需要被快照收录");',
+    'var pLeaf2 = makeEl("p", "另一段摘要同样超过十二字并应单独成块");',
+    'var article = makeEl("article", "", [pLeaf, pLeaf2]);',
+    'var wrap = makeEl("div", "", [article, pShort]);',
+    'var own = "容器自身直接文本超过十二字";',
+    'var pChild = makeEl("p", "子孙段落单独成块超过十二字");',
+    'var mixed = makeEl("div", own, [pChild]);',
+    'var long = makeEl("p", "段".repeat(900));',
+    'listedNodes = [wrap, article, pLeaf, pLeaf2, pShort, mixed, pChild, long];',
+    'var blocks = collectTextBlocks();',
+    'this.blocks = blocks;',
+    'this.snapIndex = snapIndex;'
+  ].join('\n');
+  try {
+    vm.runInNewContext(blockSrc, blockBox);
+    ok(true, '块状文字采集可在测试中加载');
+  } catch (e) {
+    ok(false, '块状文字采集加载失败: ' + (e && e.message));
+  }
+  if (blockBox.blocks) {
+    const texts = blockBox.blocks.map((b) => b.text);
+    const joined = '科学网博客正文里的函子解释需要被快照收录\n另一段摘要同样超过十二字并应单独成块';
+    ok(texts.indexOf('科学网博客正文里的函子解释需要被快照收录') >= 0, '叶子段落进入 blocks');
+    ok(texts.indexOf('另一段摘要同样超过十二字并应单独成块') >= 0, '相邻叶子段落各自成块');
+    ok(texts.indexOf('一二三四五六七八九十一') < 0, '短于 12 字不入 blocks');
+    ok(texts.indexOf(joined) < 0, '外层包裹不重复全文');
+    ok(texts.indexOf('容器自身直接文本超过十二字') >= 0, '容器直接文本单独成块');
+    ok(texts.indexOf('子孙段落单独成块超过十二字') >= 0, '容器里的子孙块单独成块');
+    const mixedRow = blockBox.blocks.filter((b) => b.text === '容器自身直接文本超过十二字')[0];
+    ok(!!mixedRow && mixedRow.text.indexOf('子孙段落') < 0, '容器块不含子孙全文');
+    const longRow = blockBox.blocks.filter((b) => b.chars === 900)[0];
+    ok(!!longRow && longRow.text.length === 800 && longRow.truncated === true, '单块快照正文最多 800 字');
+    let full = '';
+    let viaIdx = null;
+    try {
+      viaIdx = blockBox.snapIndex[longRow.idx];
+      const readSrc = [
+        extractFn(bridge, 'compactText'),
+        extractFn(bridge, 'isAssistantFrame'),
+        extractFn(bridge, 'isIgnored'),
+        extractFn(bridge, 'sameOriginFrameDoc'),
+        extractFn(bridge, 'enterSameOriginFrame'),
+        extractFn(bridge, 'readableTextOf'),
+        extractFn(bridge, 'isNumericIdx'),
+        extractFn(bridge, 'resolveTarget'),
+        extractFn(bridge, 'clampGetTextLimit'),
+        extractFn(bridge, 'clampGetTextOffset'),
+        extractFn(bridge, 'sliceGetTextResult'),
+        'this.hit = resolveTarget(' + longRow.idx + ');',
+        'this.sliced = sliceGetTextResult(readableTextOf(this.hit), {});'
+      ].join('\n');
+      const readBox = {
+        GET_TEXT_DEFAULT: 10000,
+        GET_TEXT_HARD: 500000,
+        snapIndex: blockBox.snapIndex,
+        queryDeep: function (sel) {
+          const m = String(sel || '').match(/data-wpa-i="(\d+)"/);
+          if (!m) return null;
+          return blockBox.snapIndex[Number(m[1])] || null;
+        }
+      };
+      vm.runInNewContext(readSrc, readBox);
+      full = readBox.sliced && readBox.sliced.text;
+      ok(readBox.hit === viaIdx, 'get 的 idx 指到该块元素');
+      ok(full && full.length === 900 && readBox.sliced.truncated === false, 'get 该 idx 读到全文');
+    } catch (e2) {
+      ok(false, 'get idx 全文失败: ' + (e2 && e2.message));
+    }
+  }
+}
 ok(/skipSelector:\s*true/.test(snapFn) && /collectPageTextActions\(\{ skipSelector: true \}\)/.test(snapFn),
   'textActions 快照路径无 uniqueSelector');
 ok(!/queryAllDeep\(['"]\*['"]\)/.test(extractFn(bridge, 'collectScrollableCandidates')),
@@ -3124,6 +3281,17 @@ if (stringifyBox.stringifySnapshot) {
   }, 80000);
   ok(withPanes.indexOf('"panes"') < withPanes.indexOf('"elements"') && withPanes.indexOf('FILEBODY-LINE-1') >= 0,
     'panes 排在 elements 之前且保留正文');
+  const withBlocks = stringifyBox.stringifySnapshot({
+    outline: '[4]<BLOCK tag=P chars=900>',
+    blocks: [{ idx: 4, tag: 'P', chars: 900, text: '段'.repeat(900), truncated: true }],
+    elements: [{ idx: 1, tag: 'A', text: 'x' }],
+    textActions: [], images: []
+  }, 80000);
+  const parsedBlocks = JSON.parse(withBlocks);
+  ok(withBlocks.indexOf('"blocks"') < withBlocks.indexOf('"elements"') &&
+    parsedBlocks.blocks[0].text.length === 800 && parsedBlocks.blocks[0].chars === 900 &&
+    parsedBlocks.blocks[0].truncated === true,
+    'blocks 排在 elements 之前，单块正文最多 800 字');
   const withSel = stringifyBox.stringifySnapshot({
     outline: 'SHORT',
     elements: [{ idx: 1, tag: 'A', selector: '.keep-if-room', cls: 'c', text: 'x' }],
