@@ -45,6 +45,8 @@
 
 覆盖层、iframe 正文出现在快照的 panes 或 `<PANE>` 行，用那些行上的 idx 去 `get` / `scroll`。
 
+只读正文与块状文字在快照 `blocks`，用其 idx 做 `get`；`print` 仍只搜控件。`blocks` 与 panes 一样，不自动成为 `memorize` 的 lastRead，要先 `get`。
+
 验证码一类图会出现在 outline（如 `[n]<IMG captcha w=… h=…>`）和 `images[]`（带本轮 idx）。`print` 按「验证码」等词搜时也会列出图，不只是输入框。
 
 ### 1.4 定位：idx、name、不要把 CSS 当句柄
@@ -106,7 +108,7 @@
 - 定位到 **0** 或 **多** 个：`ok: false`，`reason` 为 `not-found` 或 `ambiguous`，`catalog` 为本轮目录。短文走 live 反查（截断后仍可能读到未画出 outline 的控件）。
 - `truncated: true`：正文被切片截断。加大 `limit`，或设 `offset` 再 `get`，不要换 CSS 重读。
 
-读到的正文若要跨步留着，用 `memorize`；快照里的 panes 正文不算记忆来源。
+读到的正文若要跨步留着，用 `memorize`；快照里的 panes 与 blocks 正文不算记忆来源。
 
 ---
 
@@ -420,7 +422,7 @@
 2. 否则上一拍 `lastRead`；
 3. 再没有则失败（`missing-source`）。
 
-快照 panes 不会被当成回填来源。最多约 32 条；超长截到与 `get` 相同的硬顶。同名则覆盖。
+快照 panes 与 blocks 不会被当成回填来源。最多约 32 条；超长截到与 `get` 相同的硬顶。同名则覆盖。
 
 ---
 

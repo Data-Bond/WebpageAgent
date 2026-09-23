@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '6.4.0';
+  var BRIDGE_VERSION = '6.5.0';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
   var WAIT_TIMEOUT_MAX_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
@@ -12,6 +12,9 @@
   var SNAPSHOT_PANE_MAX = 6;
   var SNAPSHOT_PANE_CHARS = 100000;
   var PREVIEW_PANE_CHARS = 50000;
+  var BLOCK_TEXT_MIN = 12;
+  var BLOCK_TEXT_INLINE = 800;
+  var BLOCK_TEXT_SEL = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, figcaption, caption, dt, dd, address, td, th, div, section, article, main';
   var SNAPSHOT_HIDDEN_ICON_MAX = 160;
   var SNAPSHOT_FILE_NAME_MAX = 80;
   var GET_TEXT_DEFAULT = 10000;
@@ -4071,6 +4074,49 @@
       return { items: out, sig: keys.join('\n'), truncated: out.length >= maxItems };
     }
 
+    // 调用方按树前序传入已可见的块级节点。从后往前看：子孙已达标则不再交整段，只在自身直接文本也达标时另交一块。
+    function selectTextBlockNodes(nodes, shouldStop) {
+      var listed = [];
+      var indexOf = new WeakMap();
+      var descFlag = [];
+      var src = nodes || [];
+      for (var i = 0; i < src.length; i++) {
+        var el = src[i];
+        if (!el || indexOf.has(el)) continue;
+        indexOf.set(el, listed.length);
+        listed.push(el);
+        descFlag.push(false);
+      }
+      function markAncestors(el) {
+        var p = el && el.parentElement;
+        while (p) {
+          var ix = indexOf.get(p);
+          if (ix !== undefined) {
+            if (descFlag[ix]) return;
+            descFlag[ix] = true;
+          }
+          p = p.parentElement;
+        }
+      }
+      var picked = [];
+      for (var j = listed.length - 1; j >= 0; j--) {
+        if (typeof shouldStop === 'function' && shouldStop()) break;
+        var node = listed[j];
+        var full = '';
+        try { full = readableTextOf(node) || ''; } catch (eR) { full = ''; }
+        var direct = '';
+        try { direct = ownText(node); } catch (eO) { direct = ''; }
+        if (descFlag[j]) {
+          if (compactText(direct).length >= BLOCK_TEXT_MIN) picked.push({ el: node, text: direct });
+        } else if (compactText(full).length >= BLOCK_TEXT_MIN) {
+          picked.push({ el: node, text: full });
+          markAncestors(node);
+        }
+      }
+      picked.reverse();
+      return picked;
+    }
+
     function snapshot(opts) {
       var tSnap = Date.now();
       var full = !!(opts && opts.full);
@@ -4349,6 +4395,39 @@
         }
         return out;
       }
+      function collectTextBlocks() {
+        var nodes = [];
+        try { nodes = queryAllDeep(BLOCK_TEXT_SEL); } catch (eQb) { nodes = []; }
+        var listed = [];
+        for (var i = 0; i < nodes.length; i++) {
+          if (timedOut()) break;
+          var el = nodes[i];
+          if (!el || isIgnored(el)) continue;
+          var laid = false;
+          try { laid = isLaidOut(el); } catch (eL) { laid = false; }
+          if (!laid) continue;
+          listed.push(el);
+        }
+        var picked = selectTextBlockNodes(listed, timedOut);
+        var out = [];
+        for (var k = 0; k < picked.length; k++) {
+          if (timedOut()) break;
+          var item = picked[k];
+          var raw = String(item.text || '');
+          var id = registerSnapEl(item.el);
+          if (!id) continue;
+          var tag = '';
+          try { tag = String(item.el.tagName || '').toUpperCase(); } catch (eTag) { tag = ''; }
+          out.push({
+            idx: id,
+            tag: tag,
+            chars: raw.length,
+            text: raw.length > BLOCK_TEXT_INLINE ? raw.slice(0, BLOCK_TEXT_INLINE) : raw,
+            truncated: raw.length > BLOCK_TEXT_INLINE
+          });
+        }
+        return out;
+      }
       function addFileNameEl(el) {
         if (!el || isIgnored(el)) return;
         try { if (snapIdxOf(el)) return; } catch (eHave) {}
@@ -4373,6 +4452,8 @@
       }
       var panes = [];
       try { panes = collectOpenPanes(); } catch (ePn) { panes = []; }
+      var blocks = [];
+      try { blocks = collectTextBlocks(); } catch (eBk) { blocks = []; }
 
       var ovRoots = [];
       try { ovRoots = overlayRootEls(); } catch (eOv) { ovRoots = []; }
@@ -4504,6 +4585,10 @@
           'pane'
         );
       }
+      for (var bzi = 0; bzi < blocks.length; bzi++) {
+        var bz = blocks[bzi];
+        pushOutline('[' + bz.idx + ']<BLOCK tag=' + bz.tag + ' chars=' + bz.chars + '>', 'pane');
+      }
       var nextPrev = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
       for (var oi = 0; oi < elements.length; oi++) {
         var ent = elements[oi];
@@ -4614,6 +4699,7 @@
       return JSON.parse(JSON.stringify({
         outline: outlineLines.join('\n'),
         panes: panes,
+        blocks: blocks,
         starFields: starFields,
         officeContext: (function () {
           try {

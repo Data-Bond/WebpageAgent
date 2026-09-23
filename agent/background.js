@@ -268,6 +268,7 @@ const RUNTIME_PLAYBOOK =
   '页面正文用 get。跨步保留用 memorize；{} 或缺 value 从本批成功 get/print 或上一拍 lastRead 回填（预览开关打开等大 DOM 变化后会清空 lastRead，须先 get），快照 panes 不算。每轮【记忆】只给目录（name/chars/same/短头），不倒全文。取槽里全文或续读用 recall；若本段历史【执行结果】或先前 get 已有同 same、未 truncated、字段已够当前判断，不必再 recall。看回执 chars。forget 删槽。goto 打开记住的页。读 URL 用 get(target=url) 再 memorize。memorize 的 args 可以是 ["name","value"] 或 {"name":"...","value":"..."}。\n' +
   'print 搜控件打目录进对话，不算字数。type 只打字，不自动点选项。若附近列表出现或选项变了则本批停，按回执 catalog 或下一轮快照再点。check 只用于真正复选/单选。\n' +
   'click 的 button：省略或 left 为左键；hover 只移指针不点击；right 只发右键菜单；dblclick 为双击。移上去才出现的控件：本轮快照已有（常 hidden）用本轮 idx 点；没有则 hover，本批停，按回执 catalog 或下一轮快照再点。不要同批点刚出现的项。覆盖层/iframe 正文在快照 panes 或 <PANE>，用其 idx get/scroll。\n' +
+  '只读正文与块状文字在快照 blocks，用其 idx 做 get；print 仍只搜控件。blocks 与 panes 一样，不自动成为 memorize 的 lastRead，要先 get。\n' +
   '快照优先当前覆盖层、文件名、隐藏操作与大块正文；truncated 则 get/print/scroll。get 回执 textKind=filename-label 表示只读到文件名标签，不是文件正文；需打开预览 pane 或 upload 后再 get。\n' +
   '多轮完不成：换 print/get/scroll。get.limit 默认 10000 字，offset 从第 N 字起；truncated 则加大 limit 或设 offset 再 get，见截断尾注，勿换 CSS 重点。print.limit 是目录条数。\n' +
   '上一轮无法解析时按观察改写；回答用户用 done（summary 为回答）或 ask。\n' +
@@ -6270,7 +6271,7 @@ function snapshotElementBandRank(el) {
 
 function snapshotOutlineLineBand(line) {
   const s = String(line || '');
-  if (s.indexOf('<PANE') >= 0) return 0;
+  if (s.indexOf('<PANE') >= 0 || s.indexOf('<BLOCK') >= 0) return 0;
   if (s.charAt(0) === '\t' || s.indexOf('<OPT') >= 0) return 0;
   if (/icon=/.test(s)) return 1;
   if (/\b(?:text|label|name)=[\w.\-\u4e00-\u9fff]+\.[A-Za-z0-9]{1,8}(?:\s|>)/.test(s)) return 1;
@@ -6347,6 +6348,8 @@ function maskSnapshotPiiInPlace(copy) {
   for (let k = 0; k < stars.length; k++) maskObjFields(stars[k], ['label', 'hint']);
   const sels = Array.isArray(copy.selection) ? copy.selection : [];
   for (let se = 0; se < sels.length; se++) maskObjFields(sels[se], ['name', 'text']);
+  const blocks = Array.isArray(copy.blocks) ? copy.blocks : [];
+  for (let bi = 0; bi < blocks.length; bi++) maskObjFields(blocks[bi], ['text']);
   const views = Array.isArray(copy.viewItems) ? copy.viewItems : [];
   for (let v = 0; v < views.length; v++) {
     maskObjFields(views[v], ['label', 'hint', 'near', 'text', 'value', 'html']);
@@ -6414,10 +6417,27 @@ function stringifySnapshot(snapshot, maxChars, opts) {
       return row;
     });
   }
+  if (Array.isArray(src.blocks) && src.blocks.length) {
+    copy.blocks = src.blocks.map(function (b) {
+      if (!b || typeof b !== 'object') return b;
+      const raw = String(b.text || '');
+      const row = {
+        idx: b.idx,
+        tag: b.tag,
+        chars: b.chars != null ? b.chars : raw.length,
+        text: raw.slice(0, 800),
+        truncated: !!b.truncated || raw.length > 800
+      };
+      if (opts && opts.dedupSeen && WPA_CONTRACTS && typeof WPA_CONTRACTS.applyFoldToTextField === 'function') {
+        WPA_CONTRACTS.applyFoldToTextField(row, opts.dedupSeen);
+      }
+      return row;
+    });
+  }
   const keys = Object.keys(src);
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i];
-    if (k === 'outline' || k === 'snapshotMs' || k === 'starFields' || k === 'viewItems' || k === 'officeContext' || k === 'panes' || k === 'selection') continue;
+    if (k === 'outline' || k === 'snapshotMs' || k === 'starFields' || k === 'viewItems' || k === 'officeContext' || k === 'panes' || k === 'blocks' || k === 'selection') continue;
     copy[k] = src[k];
   }
   copy.elements = Array.isArray(copy.elements) ? copy.elements.slice() : [];
@@ -6521,6 +6541,17 @@ function stringifySnapshot(snapshot, maxChars, opts) {
     markCharsTruncated();
     text = JSON.stringify(copy);
   }
+  while (text.length > max && Array.isArray(copy.blocks) && copy.blocks.length) {
+    const lastBlock = copy.blocks[copy.blocks.length - 1];
+    if (lastBlock && lastBlock.text && String(lastBlock.text).length > 80) {
+      lastBlock.text = String(lastBlock.text).slice(0, Math.max(80, Math.floor(String(lastBlock.text).length * 0.6)));
+      lastBlock.truncated = true;
+    } else {
+      copy.blocks.pop();
+    }
+    markCharsTruncated();
+    text = JSON.stringify(copy);
+  }
   const slimOc = copy.officeContext && typeof copy.officeContext === 'object' ? {
     kind: copy.officeContext.kind || 'none',
     host: copy.officeContext.host || '',
@@ -6538,6 +6569,14 @@ function stringifySnapshot(snapshot, maxChars, opts) {
       return {
         idx: p.idx, via: p.via, tag: p.tag, chars: p.chars,
         text: String(p.text || '').slice(0, 800),
+        truncated: true
+      };
+    }) : [],
+    blocks: Array.isArray(copy.blocks) ? copy.blocks.slice(0, 8).map(function (b) {
+      if (!b || typeof b !== 'object') return b;
+      return {
+        idx: b.idx, tag: b.tag, chars: b.chars,
+        text: String(b.text || '').slice(0, 800),
         truncated: true
       };
     }) : [],
