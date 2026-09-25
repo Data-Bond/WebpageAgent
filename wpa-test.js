@@ -1052,6 +1052,10 @@ ok(/function taskLeaseKey\(/.test(bg) && /function taskAlarmName\(/.test(bg)
   && /waitingAsk/.test(bg)
   && /function finishResurrectedChild\(/.test(bg)
   && /function nudgeParentTaskAlarm\(/.test(bg)
+  && /function ensureOriginEpochs\(/.test(bg)
+  && /originEpoch:/.test(bg)
+  && /function appendDelegateReceipt\(/.test(bg)
+  && /function handoffResurrectedChild\(/.test(bg)
   && /将按保存的会话续跑/.test(bg),
   '活动任务用一次性闹钟续跑，进程仍在则再预约而不重复启动');
 {
@@ -2477,7 +2481,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.6.0', '锁步版本为 6.6.0');
+ok(manifestVer === '6.6.1', '锁步版本为 6.6.1');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');

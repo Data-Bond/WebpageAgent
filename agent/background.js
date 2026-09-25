@@ -5811,14 +5811,57 @@ async function releaseStaleChildrenForParent(parentTabId) {
   }
 }
 
+async function parentLeaseOrigin(parentTabId) {
+  if (parentTabId == null) return '';
+  const live = activeTasks.get(parentTabId);
+  if (live && live.origin) return String(live.origin);
+  try {
+    const saved = await chrome.storage.session.get(taskLeaseKey(parentTabId));
+    const lease = saved && saved[taskLeaseKey(parentTabId)];
+    if (lease && lease.origin && !lease.cancelled) return String(lease.origin);
+  } catch (e) {}
+  return '';
+}
+
+async function appendDelegateReceipt(job) {
+  if (!job || !job.resurrected || !job.payload || job.receiptWritten) return;
+  const origin = await parentLeaseOrigin(job.parentTabId);
+  if (!origin) return;
+  await ensureOriginEpochs();
+  if (originSessionDiscarded(origin)) return;
+  const messages = await loadHistory(origin);
+  const packed = compactOneHelperValue('delegate', job.payload);
+  const body = '【执行结果】\n' + JSON.stringify({ kind: 'batch', results: [packed] });
+  const childId = job.childTabId == null ? '' : String(Math.round(Number(job.childTabId)));
+  const marker = childId ? ('"childTabId":' + childId) : '';
+  if (marker) {
+    for (let i = messages.length - 1; i >= 0 && i >= messages.length - 8; i--) {
+      const text = messages[i] && String(messages[i].content || '');
+      if (text.indexOf('【执行结果】') === 0 && text.indexOf(marker) >= 0 && text.indexOf('"via":"delegate"') >= 0) {
+        job.receiptWritten = true;
+        return;
+      }
+    }
+  }
+  messages.push({ role: 'user', kind: 'delegate-receipt', content: body });
+  await saveHistory(origin, messages);
+  job.receiptWritten = true;
+}
+
+async function handoffResurrectedChild(job) {
+  if (!job || !job.resurrected || job.closing) return;
+  const parentId = job.parentTabId;
+  await appendDelegateReceipt(job);
+  await closeChildAfterDelegate(job);
+  await nudgeParentTaskAlarm(parentId);
+}
+
 async function finishResurrectedChild(tabId, result) {
   settleChildJobIfNeeded(tabId, result);
   const job = childJobs.get(tabId);
   if (!job || !job.resurrected || job.closing) return;
   if (result === 'ask' || result === 'returned') return;
-  const parentId = job.parentTabId;
-  await closeChildAfterDelegate(job);
-  await nudgeParentTaskAlarm(parentId);
+  await handoffResurrectedChild(job);
 }
 
 function abortChildJob(job, reason) {
@@ -5844,7 +5887,10 @@ function abortChildJob(job, reason) {
     missing: (job.returnKeys || []).slice()
   });
   forgetChildJobSession(job.childTabId);
-  void nudgeParentTaskAlarm(job.parentTabId);
+  void (async function () {
+    if (job.resurrected) await appendDelegateReceipt(job);
+    await nudgeParentTaskAlarm(job.parentTabId);
+  })();
 }
 
 function stopChildJobsForParent(parentTabId) {
@@ -6195,6 +6241,7 @@ function persistTaskMemory(origin) {
 }
 
 async function hydrateTaskMemory(origin) {
+  await ensureOriginEpochs();
   const key = String(origin || '');
   if (originSessionDiscarded(origin)) {
     taskMemories.set(key, []);
@@ -6273,11 +6320,7 @@ async function runSessionOp(tabId, opName, args, origin, priorResults, ctx) {
       returned: returned,
       missing: missing
     });
-    if (job.resurrected) {
-      const parentId = job.parentTabId;
-      await closeChildAfterDelegate(job);
-      await nudgeParentTaskAlarm(parentId);
-    }
+    if (job.resurrected) await handoffResurrectedChild(job);
     return { ok: true, via: 'returnToParent', returned: returned, missing: missing, yieldBatch: true };
   }
   if (opName === 'tabClose') {
@@ -6776,7 +6819,7 @@ function compactOneHelperValue(op, val) {
   if (val.reason) o.reason = String(val.reason).slice(0, 40);
   if (val.hint) o.hint = String(val.hint).slice(0, 80);
   if (val.url) o.url = String(val.url).slice(0, 300);
-  if (val.name && (op === 'memorize' || op === 'recall' || op === 'forget' || op === 'goto' || op === 'click' || op === 'check' || op === 'setChecked')) o.name = String(val.name).slice(0, 40);
+  if (val.name && (op === 'memorize' || op === 'recall' || op === 'forget' || op === 'goto' || op === 'click' || op === 'check' || op === 'setChecked' || op === 'delegate')) o.name = String(val.name).slice(0, 40);
   if (val.checked != null && (op === 'click' || op === 'check' || op === 'setChecked')) o.checked = !!val.checked;
     if (Array.isArray(val.catalog)) {
       if (val.catalog.length) {
@@ -8489,6 +8532,45 @@ function getOriginSession(origin) {
   return originSessions.get(key);
 }
 
+function originEpochKey(origin) {
+  return 'originEpoch:' + originKey(origin);
+}
+
+function persistOriginEpoch(origin) {
+  const s = getOriginSession(origin);
+  try {
+    const write = chrome.storage.session.set({
+      [originEpochKey(origin)]: { epoch: s.epoch, discarded: !!s.discarded, savedAt: Date.now() }
+    });
+    if (write && typeof write.catch === 'function') write.catch(function () {});
+  } catch (e) {}
+}
+
+let originEpochRestoreP = null;
+function ensureOriginEpochs() {
+  if (!originEpochRestoreP) originEpochRestoreP = restoreOriginEpochs();
+  return originEpochRestoreP;
+}
+
+async function restoreOriginEpochs() {
+  let all = null;
+  try { all = await chrome.storage.session.get(null); } catch (e) { return; }
+  if (!all || typeof all !== 'object') return;
+  const keys = Object.keys(all);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (key.indexOf('originEpoch:') !== 0) continue;
+    const origin = key.slice('originEpoch:'.length);
+    if (originSessions.has(originKey(origin))) continue;
+    const rec = all[key];
+    if (!rec || !Number.isFinite(Number(rec.epoch))) continue;
+    originSessions.set(originKey(origin), {
+      epoch: Math.max(0, Math.round(Number(rec.epoch))),
+      discarded: !!rec.discarded
+    });
+  }
+}
+
 function originSessionToken(origin) {
   const key = originKey(origin);
   const s = getOriginSession(origin);
@@ -8522,13 +8604,16 @@ function discardOriginSession(origin) {
   checkpointSaveChains.delete(key);
   clearTaskMemory(origin);
   clearResumeCheckpoint(origin);
+  persistOriginEpoch(origin);
 }
 
 function allowOriginSession(origin) {
   getOriginSession(origin).discarded = false;
+  persistOriginEpoch(origin);
 }
 
 async function loadHistory(origin) {
+  await ensureOriginEpochs();
   if (originSessionDiscarded(origin)) return [];
   const key = 'hist:' + origin;
   const saved = await storageGet(key);
@@ -8836,6 +8921,7 @@ async function resumeTaskFromAlarm(tabId) {
       await clearTaskLease(id);
       return;
     }
+    await ensureOriginEpochs();
     if (!sessionEpochMatches(lease.origin, lease.sessionEpoch)) {
       await clearTaskLease(id);
       return;
@@ -9971,6 +10057,7 @@ chrome.runtime.onConnect.addListener((port) => {
     let taskResuming = false;
     if (!active && tabId != null && !taskResumeBlocked.has(tabId)) {
       try {
+        await ensureOriginEpochs();
         const saved = await chrome.storage.session.get(taskLeaseKey(tabId));
         const lease = saved && saved[taskLeaseKey(tabId)];
         if (lease && lease.origin && !lease.cancelled
@@ -10850,6 +10937,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 async function bootKernel() {
+  try { await ensureOriginEpochs(); } catch (e) {}
   try { await ensureStorageSchema(); } catch (e) {}
   try { await lockTrustedStorage(); } catch (e) {}
   try {
