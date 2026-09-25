@@ -1032,6 +1032,37 @@ ok(!/opsWantFreshCaptcha/.test(bg), '验证码不再作为重复护栏例外');
 ok(/Math\.abs\(report\.domChanged\) > 30000/.test(bg), 'SPA 大幅 DOM 变化后等 DOM 安静再快照');
 ok(/jsonNudgeCount/.test(bg), '非 JSON 输出有纠正重试计数');
 ok(/JSON_NUDGE_MAX = 2/.test(bg), '非 JSON 最多纠正两次');
+ok(/function taskLeaseKey\(/.test(bg) && /function taskAlarmName\(/.test(bg)
+  && /delayInMinutes: TASK_ALARM_DELAY_MIN/.test(bg) && /TASK_ALARM_DELAY_MIN = 0\.5/.test(bg)
+  && /Service Worker 被浏览器终止，上一步可能未完成/.test(bg)
+  && /if \(activeTasks\.has\(id\)\) \{\s*scheduleTaskAlarm\(id\);\s*return;\s*\}/.test(bg)
+  && /function ensureTaskAlarms\(/.test(bg)
+  && /if \(!preserveLease && !taskResumeBlocked\.has\(tabId\)\) await clearTaskLease\(tabId\)/.test(bg)
+  && /workerResume/.test(bg)
+  && /lease\.remain/.test(bg)
+  && /loadStoredTaskFiles\(/.test(bg)
+  && /taskResumeBlocked/.test(bg)
+  && /cancelled: true/.test(bg)
+  && /TASK_CRASH_RESUME_MAX = 5/.test(bg)
+  && /workerResumeExtraSlots/.test(bg)
+  && /function parentHasLiveChildWork\(/.test(bg)
+  && /function childWillContinue\(/.test(bg)
+  && /function releaseStaleChildrenForParent\(/.test(bg)
+  && /function forgetChildJobSession\(/.test(bg)
+  && /waitingAsk/.test(bg)
+  && /function finishResurrectedChild\(/.test(bg)
+  && /function nudgeParentTaskAlarm\(/.test(bg)
+  && /将按保存的会话续跑/.test(bg),
+  '活动任务用一次性闹钟续跑，进程仍在则再预约而不重复启动');
+{
+  const leaseApi = new Function(
+    extractFn(bg, 'taskLeaseKey') + '\n' +
+    extractFn(bg, 'taskAlarmName') + '\n' +
+    'return { taskLeaseKey: taskLeaseKey, taskAlarmName: taskAlarmName };'
+  )();
+  ok(leaseApi.taskLeaseKey(7) === 'taskLease:7' && leaseApi.taskAlarmName(7) === 'wpa-task:7',
+    '任务租约与闹钟按标签页命名');
+}
 ok(/function formatUnparsedObservation/.test(bg) && /reason: 'unparsed'/.test(bg), '无法解析写入观察回执');
 ok(/已把无法解析的输出交回。' \+ unparsedNote \+ '请改为恰当的 JSON 来回复/.test(bg)
   && /无法解析：' \+ note \+ '\\n请改为恰当的 JSON 来回复/.test(bg),
@@ -2446,7 +2477,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.5.3', '锁步版本为 6.5.3');
+ok(manifestVer === '6.6.0', '锁步版本为 6.6.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');

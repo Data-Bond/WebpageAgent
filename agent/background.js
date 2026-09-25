@@ -5656,7 +5656,8 @@ function persistChildJob(job) {
     name: job.name,
     task: job.task,
     returnKeys: job.returnKeys,
-    createdAt: job.createdAt
+    createdAt: job.createdAt,
+    waitingAsk: !!job.waitingAsk
   };
   try {
     const write = chrome.storage.session.set({ [childJobSessionKey(job.childTabId)]: rec });
@@ -5720,8 +5721,109 @@ function settleChildJobIfNeeded(tabId, result) {
   settleJob(job, packChildRunEnd(job, result));
 }
 
+async function childTabAlive(tabId) {
+  if (tabId == null) return false;
+  try { return !!(await chrome.tabs.get(tabId)); } catch (e) { return false; }
+}
+
+function forgetChildJobSession(childTabId) {
+  if (childTabId == null) return;
+  childJobs.delete(childTabId);
+  try {
+    const rm = chrome.storage.session.remove(childJobSessionKey(childTabId));
+    if (rm && typeof rm.catch === 'function') rm.catch(function () {});
+  } catch (e) {}
+}
+
+async function collectChildTabIdsForParent(parentTabId) {
+  const seen = new Set();
+  if (parentTabId == null) return seen;
+  childJobs.forEach(function (job) {
+    if (job && job.parentTabId === parentTabId && job.childTabId != null) seen.add(job.childTabId);
+  });
+  try {
+    const all = await chrome.storage.session.get(null);
+    const keys = all ? Object.keys(all) : [];
+    for (let i = 0; i < keys.length; i++) {
+      if (keys[i].indexOf('childJob:') !== 0) continue;
+      const rec = all[keys[i]];
+      if (rec && rec.parentTabId === parentTabId && rec.childTabId != null) seen.add(rec.childTabId);
+    }
+  } catch (e) {}
+  return seen;
+}
+
+async function childWillContinue(childTabId) {
+  if (childTabId == null) return false;
+  if (activeTasks.has(childTabId) || taskResumeInflight.has(childTabId)) return true;
+  if (pendingInstructions.has(childTabId) || pausedOrigins.has(childTabId)) return true;
+  const mem = childJobs.get(childTabId);
+  if (mem && mem.waitingAsk && !mem.settled && !mem.closing) return true;
+  let lease = null;
+  try {
+    const saved = await chrome.storage.session.get(taskLeaseKey(childTabId));
+    lease = saved && saved[taskLeaseKey(childTabId)];
+  } catch (eL) {}
+  if (lease && lease.origin && !lease.cancelled
+    && Date.now() - Number(lease.savedAt || 0) <= TASK_LEASE_MAX_AGE_MS) {
+    return true;
+  }
+  try {
+    const pk = pendingSessionKey(childTabId);
+    const savedP = await chrome.storage.session.get(pk);
+    const recP = savedP && savedP[pk];
+    if (recP && Date.now() - Number(recP.savedAt || 0) <= TASK_LEASE_MAX_AGE_MS && (recP.state || recP.origin)) {
+      return true;
+    }
+  } catch (eP) {}
+  try {
+    const sk = childJobSessionKey(childTabId);
+    const savedJ = await chrome.storage.session.get(sk);
+    const recJ = savedJ && savedJ[sk];
+    if (recJ && recJ.waitingAsk) return true;
+  } catch (eJ) {}
+  return false;
+}
+
+async function parentHasLiveChildWork(parentTabId) {
+  if (parentTabId == null) return false;
+  const ids = Array.from(await collectChildTabIdsForParent(parentTabId));
+  for (let i = 0; i < ids.length; i++) {
+    if (!(await childTabAlive(ids[i]))) continue;
+    if (await childWillContinue(ids[i])) return true;
+  }
+  return false;
+}
+
+async function releaseStaleChildrenForParent(parentTabId) {
+  if (parentTabId == null) return;
+  const ids = Array.from(await collectChildTabIdsForParent(parentTabId));
+  for (let i = 0; i < ids.length; i++) {
+    const childTabId = ids[i];
+    if (await childWillContinue(childTabId)) continue;
+    const job = await loadChildJob(childTabId);
+    if (!job || job.closing) {
+      forgetChildJobSession(childTabId);
+      continue;
+    }
+    if (!job.settled) settleJob(job, packChildRunEnd(job, 'error'));
+    await closeChildAfterDelegate(job);
+  }
+}
+
+async function finishResurrectedChild(tabId, result) {
+  settleChildJobIfNeeded(tabId, result);
+  const job = childJobs.get(tabId);
+  if (!job || !job.resurrected || job.closing) return;
+  if (result === 'ask' || result === 'returned') return;
+  const parentId = job.parentTabId;
+  await closeChildAfterDelegate(job);
+  await nudgeParentTaskAlarm(parentId);
+}
+
 function abortChildJob(job, reason) {
   if (!job) return;
+  if (job.childTabId != null) blockTaskResume(job.childTabId);
   if (job.childCancelRef && typeof job.childCancelRef.abort === 'function') {
     try { job.childCancelRef.abort(); } catch (e) {}
   }
@@ -5741,6 +5843,8 @@ function abortChildJob(job, reason) {
     returned: {},
     missing: (job.returnKeys || []).slice()
   });
+  forgetChildJobSession(job.childTabId);
+  void nudgeParentTaskAlarm(job.parentTabId);
 }
 
 function stopChildJobsForParent(parentTabId) {
@@ -5756,6 +5860,7 @@ async function closeChildAfterDelegate(job) {
   if (!job || job.closing) return;
   job.closing = true;
   const childTabId = job.childTabId;
+  blockTaskResume(childTabId);
   if (job.childCancelRef && typeof job.childCancelRef.abort === 'function') {
     try { job.childCancelRef.abort(); } catch (e) {}
   }
@@ -5833,7 +5938,8 @@ async function loadChildJob(childTabId) {
         settled: false,
         payload: null,
         exitChild: false,
-        closing: false
+        closing: false,
+        waitingAsk: !!rec.waitingAsk
       };
       job.wait = new Promise(function (resolve) { job._resolveWait = resolve; });
       job.resurrected = true;
@@ -5998,6 +6104,10 @@ async function runDelegateOp(parentTabId, spec, origin, priorResults, ctx) {
     if (result === 'ask') {
       const curAsk = activeTasks.get(childTabId);
       if (curAsk && curAsk.cancelRef === childCancel) activeTasks.delete(childTabId);
+      job.waitingAsk = true;
+      persistChildJob(job);
+      pausedOrigins.set(childTabId, job.childPageOrigin || origin);
+      persistPendingState(childTabId);
       if (parentPost) parentPost({ type: 'status', text: '等待子标签页用户回复：' + name });
       await job.wait;
     } else if (!job.settled) {
@@ -6164,8 +6274,9 @@ async function runSessionOp(tabId, opName, args, origin, priorResults, ctx) {
       missing: missing
     });
     if (job.resurrected) {
-      // SW 重启后复活的 job 没有等待者，也不会再走 closeChildAfterDelegate，就地关自己
+      const parentId = job.parentTabId;
       await closeChildAfterDelegate(job);
+      await nudgeParentTaskAlarm(parentId);
     }
     return { ok: true, via: 'returnToParent', returned: returned, missing: missing, yieldBatch: true };
   }
@@ -8530,10 +8641,17 @@ function postToTab(tabId, fallbackPort, obj) {
 const activeTasks = new Map();
 
 function stopActiveTask(tabId, opts) {
+  taskRemainByTab.delete(tabId);
+  blockTaskResume(tabId);
   stopChildJobsForParent(tabId);
   clearPendingDelegateForParent(tabId);
   const asChild = childJobs.get(tabId);
   if (asChild) abortChildJob(asChild, 'cancelled');
+  else {
+    void loadChildJob(tabId).then(function (job) {
+      if (job && !job.settled) abortChildJob(job, 'cancelled');
+    });
+  }
   const a = activeTasks.get(tabId);
   if (a && a.cancelRef) {
     if (typeof a.cancelRef.abort === 'function') a.cancelRef.abort();
@@ -8562,6 +8680,261 @@ const skillContexts = new Map();
 const skillDraftRuns = new Map();
 
 function pendingSessionKey(tabId) { return 'pendingTask:' + tabId; }
+
+const TASK_LEASE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const TASK_ALARM_DELAY_MIN = 0.5;
+const TASK_CRASH_RESUME_MAX = 5;
+const WORKER_INTERRUPT_NOTE = '【引擎】Service Worker 被浏览器终止，上一步可能未完成。以下是新的页面快照，请根据快照决定下一步。';
+const taskResumeInflight = new Set();
+const taskRemainByTab = new Map();
+const taskResumeBlocked = new Set();
+
+function taskLeaseKey(tabId) { return 'taskLease:' + tabId; }
+function taskAlarmName(tabId) { return 'wpa-task:' + tabId; }
+
+function scheduleTaskAlarm(tabId) {
+  if (tabId == null || !chrome.alarms || !chrome.alarms.create) return;
+  chrome.alarms.create(taskAlarmName(tabId), { delayInMinutes: TASK_ALARM_DELAY_MIN });
+}
+
+async function nudgeParentTaskAlarm(parentTabId) {
+  if (parentTabId == null) return;
+  if (taskResumeBlocked.has(parentTabId)) return;
+  if (activeTasks.has(parentTabId) || taskResumeInflight.has(parentTabId)) return;
+  let lease = null;
+  try {
+    const saved = await chrome.storage.session.get(taskLeaseKey(parentTabId));
+    lease = saved && saved[taskLeaseKey(parentTabId)];
+  } catch (e) {}
+  if (!lease || !lease.origin || lease.cancelled) return;
+  if (Date.now() - Number(lease.savedAt || 0) > TASK_LEASE_MAX_AGE_MS) return;
+  scheduleTaskAlarm(parentTabId);
+}
+
+function blockTaskResume(tabId) {
+  if (tabId == null) return;
+  taskResumeBlocked.add(tabId);
+  try {
+    const write = chrome.storage.session.set({
+      [taskLeaseKey(tabId)]: { cancelled: true, savedAt: Date.now() }
+    });
+    if (write && typeof write.catch === 'function') write.catch(function () {});
+  } catch (e) {}
+  try {
+    if (chrome.alarms && chrome.alarms.clear) chrome.alarms.clear(taskAlarmName(tabId));
+  } catch (e2) {}
+}
+
+async function clearTaskLease(tabId) {
+  if (tabId == null) return;
+  try { await chrome.storage.session.remove(taskLeaseKey(tabId)); } catch (e) {}
+  try {
+    if (chrome.alarms && chrome.alarms.clear) await chrome.alarms.clear(taskAlarmName(tabId));
+  } catch (e2) {}
+}
+
+async function armTaskLease(tabId, origin, pageOrigin, step, phase, extraSlotsArg) {
+  if (tabId == null || !origin) return;
+  if (taskResumeBlocked.has(tabId)) return;
+  const token = originSessionToken(origin);
+  let prev = null;
+  try {
+    const saved = await chrome.storage.session.get(taskLeaseKey(tabId));
+    prev = saved && saved[taskLeaseKey(tabId)];
+  } catch (e) {}
+  const payload = {
+    origin: origin,
+    pageOrigin: pageOrigin || origin,
+    step: Number(step) || 0,
+    phase: phase === 'execute' ? 'execute' : 'llm',
+    sessionEpoch: token.epoch,
+    savedAt: Date.now()
+  };
+  if (taskRemainByTab.has(tabId)) payload.remain = taskRemainByTab.get(tabId);
+  else if (prev && Array.isArray(prev.remain)) payload.remain = prev.remain;
+  const liveSkill = skillContexts.get(tabId);
+  if (liveSkill) payload.skillContext = liveSkill;
+  else if (prev && prev.skillContext) payload.skillContext = prev.skillContext;
+  if (extraSlotsArg != null && Number.isFinite(Number(extraSlotsArg))) {
+    payload.extraSlots = Math.max(0, Number(extraSlotsArg));
+  } else if (prev && prev.extraSlots != null) {
+    payload.extraSlots = prev.extraSlots;
+  }
+  if (prev && !prev.cancelled && Number(prev.step) === Number(payload.step)) {
+    payload.crashResumeCount = Number(prev.crashResumeCount) || 0;
+  } else {
+    payload.crashResumeCount = 0;
+  }
+  if (taskResumeBlocked.has(tabId)) return;
+  await chrome.storage.session.set({ [taskLeaseKey(tabId)]: payload });
+  scheduleTaskAlarm(tabId);
+}
+
+async function ensureTaskAlarms() {
+  let all = null;
+  try { all = await chrome.storage.session.get(null); } catch (e) { return; }
+  if (!all || typeof all !== 'object') return;
+  const keys = Object.keys(all);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (key.indexOf('taskLease:') !== 0) continue;
+    const tabId = Number(key.slice('taskLease:'.length));
+    const lease = all[key];
+    if (!Number.isFinite(tabId) || !lease) continue;
+    if (lease.cancelled || !lease.origin) {
+      await clearTaskLease(tabId);
+      continue;
+    }
+    if (Date.now() - Number(lease.savedAt || 0) > TASK_LEASE_MAX_AGE_MS) {
+      await clearTaskLease(tabId);
+      continue;
+    }
+    let existing = null;
+    try {
+      if (chrome.alarms && chrome.alarms.get) existing = await chrome.alarms.get(taskAlarmName(tabId));
+    } catch (e2) {}
+    if (!existing) scheduleTaskAlarm(tabId);
+  }
+}
+
+async function loadStoredTaskFiles(origin) {
+  const saved = await storageGet('files:' + origin);
+  const rows = saved && saved['files:' + origin];
+  if (!rows) return [];
+  return hydrateFileRows(origin, rows);
+}
+
+async function resumeTaskFromAlarm(tabId) {
+  const id = Number(tabId);
+  if (!Number.isFinite(id)) return;
+  if (taskResumeBlocked.has(id)) {
+    await clearTaskLease(id);
+    hideBusyMaskTab(id);
+    postToTab(id, panelPorts.get(id) || null, { type: 'taskState', running: false });
+    return;
+  }
+  if (activeTasks.has(id)) {
+    scheduleTaskAlarm(id);
+    return;
+  }
+  if (taskResumeInflight.has(id)) return;
+  taskResumeInflight.add(id);
+  let port = null;
+  const cancelRef = makeCancelRef();
+  let doneResolve = null;
+  const done = new Promise(function (r) { doneResolve = r; });
+  try {
+    const saved = await chrome.storage.session.get(taskLeaseKey(id));
+    const lease = saved && saved[taskLeaseKey(id)];
+    if (!lease) return;
+    if (lease.cancelled || !lease.origin) {
+      await clearTaskLease(id);
+      hideBusyMaskTab(id);
+      return;
+    }
+    if (Date.now() - Number(lease.savedAt || 0) > TASK_LEASE_MAX_AGE_MS) {
+      await clearTaskLease(id);
+      return;
+    }
+    if (!sessionEpochMatches(lease.origin, lease.sessionEpoch)) {
+      await clearTaskLease(id);
+      return;
+    }
+    let tabAlive = false;
+    try { tabAlive = !!(await chrome.tabs.get(id)); } catch (eTab) { tabAlive = false; }
+    if (!tabAlive) {
+      await clearTaskLease(id);
+      return;
+    }
+    if (activeTasks.has(id)) {
+      scheduleTaskAlarm(id);
+      return;
+    }
+    if (await parentHasLiveChildWork(id)) {
+      scheduleTaskAlarm(id);
+      return;
+    }
+    await releaseStaleChildrenForParent(id);
+    const crashN = Number(lease.crashResumeCount) || 0;
+    if (crashN >= TASK_CRASH_RESUME_MAX) {
+      await clearTaskLease(id);
+      hideBusyMaskTab(id);
+      postToTab(id, panelPorts.get(id) || null, {
+        type: 'error',
+        message: '同一进度连续中断过多次，已停止自动续跑。请重新发送指令。'
+      });
+      postToTab(id, panelPorts.get(id) || null, { type: 'taskState', running: false });
+      return;
+    }
+    lease.crashResumeCount = crashN + 1;
+    try { await chrome.storage.session.set({ [taskLeaseKey(id)]: lease }); } catch (eCrash) {}
+    try { await inject(id); } catch (eInj) {}
+    hideBusyMaskTab(id);
+    port = panelPorts.get(id) || null;
+    activeTasks.set(id, { cancelRef: cancelRef, done: done, origin: lease.origin });
+    if (lease.skillContext) {
+      const restoredSkill = WPA_WEB_SKILL.sanitizeSkillContext(lease.skillContext);
+      if (restoredSkill) skillContexts.set(id, restoredSkill);
+    }
+    let childJob = null;
+    if (String(lease.origin).indexOf('delegate:') === 0) {
+      childJob = await loadChildJob(id);
+    }
+    const fileOrigin = lease.pageOrigin || lease.origin;
+    const files = await loadStoredTaskFiles(fileOrigin);
+    const remain = Array.isArray(lease.remain) ? lease.remain.filter(function (item) { return !!item; }) : [];
+    if (remain.length) taskRemainByTab.set(id, remain);
+    postToTab(id, port, { type: 'taskState', running: true, text: 'Service Worker 被浏览器终止，正在从保存的会话续跑…' });
+    const resumed = await runStreamingTask({
+      tabId: id,
+      origin: childJob ? fileOrigin : lease.origin,
+      task: '',
+      files: files,
+      port: port,
+      cancelRef: cancelRef,
+      keepRunning: remain.length > 0,
+      workerResume: true,
+      workerResumeStep: lease.step,
+      workerResumeExtraSlots: lease.extraSlots,
+      childJob: childJob || undefined
+    });
+    await finishResurrectedChild(id, resumed);
+    if (cancelRef.cancelled) return;
+    if (resumed === 'ask') {
+      taskRemainByTab.delete(id);
+      pausedOrigins.set(id, fileOrigin);
+      if (remain.length) pendingInstructions.set(id, { items: remain, origin: fileOrigin });
+      if (childJob) {
+        childJob.waitingAsk = true;
+        persistChildJob(childJob);
+      }
+      persistPendingState(id);
+      return;
+    }
+    if (resumed === 'done' && remain.length) {
+      await runMultiTask({
+        tabId: id,
+        origin: fileOrigin,
+        instructions: remain,
+        files: files,
+        port: port,
+        cancelRef: cancelRef
+      });
+    }
+  } catch (e) {
+    diagFail('unhandled', e);
+    postToTab(id, port, { type: 'error', message: '任务续跑失败：' + String(e && e.message || e) });
+    await clearTaskLease(id);
+  } finally {
+    taskResumeInflight.delete(id);
+    if (doneResolve) doneResolve();
+    const cur = activeTasks.get(id);
+    if (cur && cur.cancelRef === cancelRef) {
+      activeTasks.delete(id);
+      postToTab(id, port, { type: 'taskState', running: false });
+    }
+  }
+}
 
 function persistPendingState(tabId) {
   try {
@@ -8606,7 +8979,7 @@ async function restorePendingState(tabId) {
 }
 
 // 返回终端状态：'done' | 'ask' | 'error' | 'cancelled' | 'maxsteps'
-async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, continueAsk, keepRunning, childJob }) {
+async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, continueAsk, keepRunning, childJob, workerResume, workerResumeStep, workerResumeExtraSlots }) {
   const pageOrigin = origin;
   if (childJob && childJob.jobId) origin = 'delegate:' + childJob.jobId;
   const postMsg = (obj) => postToTab(tabId, port, obj);
@@ -8655,22 +9028,33 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
     postMsg({ type: 'error', message: '没有找到可继续的原任务。请重新发送完整指令。' });
     return 'error';
   }
-  if (!continueAsk && hasPriorUserTask(messages)) {
+  if (!workerResume && !continueAsk && hasPriorUserTask(messages)) {
     const demoted = demotePriorUserTasks(messages);
     messages = demoted.messages;
     if (demoted.changed && !resumeMeta) {
       postMsg({ type: 'status', text: '已将此前对话视为背景，本次只执行新发送的指令。' });
     }
   }
-  if (resumeMeta) {
-    postMsg({ type: 'status', text: '已从中断处恢复原任务，将跳过已验证完成的步骤。' });
-  }
   const skillCtx = skillContexts.get(tabId) || null;
-  messages.push({
-    role: 'user',
-    kind: continueAsk ? 'continue' : (resumeMeta ? 'resume' : 'task'),
-    content: buildUserPrompt(task, files, continueAsk ? 'continue' : (resumeMeta ? 'resume' : 'current'), resumeMeta, skillCtx && skillCtx.variables)
-  });
+  if (workerResume) {
+    const last = messages.length ? messages[messages.length - 1] : null;
+    if (!last || String(last.content || '') !== WORKER_INTERRUPT_NOTE) {
+      messages.push({ role: 'user', kind: 'worker-resume', content: WORKER_INTERRUPT_NOTE });
+    }
+    await saveHistory(origin, messages);
+    postMsg({ type: 'status', text: 'Service Worker 被浏览器终止，已从保存的会话续跑。' });
+  } else {
+    if (resumeMeta) {
+      postMsg({ type: 'status', text: '已从中断处恢复原任务，将跳过已验证完成的步骤。' });
+    }
+    messages.push({
+      role: 'user',
+      kind: continueAsk ? 'continue' : (resumeMeta ? 'resume' : 'task'),
+      content: buildUserPrompt(task, files, continueAsk ? 'continue' : (resumeMeta ? 'resume' : 'current'), resumeMeta, skillCtx && skillCtx.variables)
+    });
+    await armTaskLease(tabId, origin, pageOrigin, 0, 'llm');
+    await saveHistory(origin, messages);
+  }
 
   // 文件字节仍同步到页面（上传用）。正文不预提取：前缀缓存要求历史只追加不改写，
   // 正文只在本步确实要抽字段时钉入对话一次，且不写入持久化历史。
@@ -8772,11 +9156,12 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
   let jsonNudgeCount = 0;
   let prevStepUrl = '';
   let formSessionTargets = [];
-  let extraSlots = 0;
+  let extraSlots = workerResume ? Math.max(0, Math.min(1, Number(workerResumeExtraSlots) || 0)) : 0;
   let pendingFullSnap = false;
   let promptKind = 'normal';
   let exitChanceArmed = false;
   let stepI = 0;
+  let preserveLease = false;
   cancelRef.tabId = tabId;
 
   function keepSlotForRetry() {
@@ -8808,11 +9193,17 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
 
   try {
   showBusyMaskTab(tabId, config.busyMaskEnabled === true);
-  for (let i = 1; i <= maxSteps + extraSlots; i++) {
+  const loopCap = maxSteps + extraSlots;
+  const loopStart = workerResume
+    ? Math.max(1, Math.min(loopCap, Number(workerResumeStep) || 1))
+    : 1;
+  for (let i = loopStart; i <= maxSteps + extraSlots; i++) {
     stepI = i;
     if (cancelRef.cancelled) {
       return await notifyCancelled(postMsg, cancelRef, origin, messages);
     }
+    await armTaskLease(tabId, origin, pageOrigin, stepI, 'llm', extraSlots);
+    await saveHistory(origin, messages);
 
     const thisKind = promptKind;
     const wantFull = pendingFullSnap || thisKind === 'submit' || thisKind === 'exit';
@@ -9073,6 +9464,8 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       }
       try {
       const hintTask = (resumeMeta && resumeMeta.originalTask) || task;
+      await armTaskLease(tabId, origin, pageOrigin, stepI, 'execute', extraSlots);
+      await saveHistory(origin, messages);
       const execution = await runOperationsSafe(tabId, attachTaskHintToOps(parsed.operations, hintTask), { postMsg, cancelRef, origin, config: config, flags: flagsFromPage(config), skillContext: skillContexts.get(tabId) || null, openerWatch: openerWatch });
       const { resp: runResp, navigated } = execution;
       if (cancelRef.cancelled || execution.cancelled) {
@@ -9332,6 +9725,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       postMsg({ type: 'done', summary: parsed.summary || llmText, output: llmText, running: !!keepRunning });
       await saveHistory(origin, messages);
       clearResumeCheckpoint(origin);
+      if (keepRunning) preserveLease = true;
       return 'done';
     }
     if (action === 'ask') {
@@ -9357,6 +9751,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
   return await askExitPermit('达到最大步数');
   } finally {
     hideBusyMaskTab(tabId);
+    if (!preserveLease && !taskResumeBlocked.has(tabId)) await clearTaskLease(tabId);
   }
 }
 
@@ -9370,6 +9765,7 @@ async function runMultiTask({ tabId, origin, instructions, files, port, cancelRe
     }
 
     const task = instructions[idx];
+    taskRemainByTab.set(tabId, instructions.slice(idx + 1));
     if (instructions.length > 1) {
       postMsg({ type: 'status', text: `指令 ${idx + 1}/${instructions.length}：${truncate(task, 60)}` });
     }
@@ -9382,6 +9778,7 @@ async function runMultiTask({ tabId, origin, instructions, files, port, cancelRe
 
     // ask 暂停：保存剩余指令，等用户回复后继续
     if (result === 'ask') {
+      taskRemainByTab.delete(tabId);
       pausedOrigins.set(tabId, origin);
       if (idx < instructions.length - 1) {
         pendingInstructions.set(tabId, { items: instructions.slice(idx + 1), origin: origin });
@@ -9394,6 +9791,7 @@ async function runMultiTask({ tabId, origin, instructions, files, port, cancelRe
     if (result === 'cancelled') return 'cancelled';
 
     if (result === 'maxsteps') {
+      taskRemainByTab.delete(tabId);
       pendingInstructions.delete(tabId);
       pausedOrigins.delete(tabId);
       clearPendingCheckpoint(tabId);
@@ -9404,6 +9802,7 @@ async function runMultiTask({ tabId, origin, instructions, files, port, cancelRe
     // 单条指令出错即停止整批（PLAN 补充6 修复“出错仍继续 → 瞬间连发 N 个失败请求”）：
     // 清空 pending 并返回，不再执行后续指令
     if (result === 'error') {
+      taskRemainByTab.delete(tabId);
       pendingInstructions.delete(tabId);
       pausedOrigins.delete(tabId);
       clearPendingCheckpoint(tabId);
@@ -9427,6 +9826,7 @@ async function runMultiTask({ tabId, origin, instructions, files, port, cancelRe
   pendingInstructions.delete(tabId);
   pausedOrigins.delete(tabId);
   clearPendingCheckpoint(tabId);
+  taskRemainByTab.delete(tabId);
   return 'done';
 }
 
@@ -9445,12 +9845,14 @@ async function resumePendingInstructions({ tabId, origin, files, port, cancelRef
       return true;
     }
     const task = pending[idx];
+    taskRemainByTab.set(tabId, pending.slice(idx + 1));
     postMsg({ type: 'status', text: `继续指令 ${idx + 1}/${pending.length}：${truncate(task, 60)}` });
 
     const keepRunning = idx < pending.length - 1;
     const result = await runStreamingTask({ tabId, origin, task, files, port, cancelRef, keepRunning });
 
     if (result === 'ask') {
+      taskRemainByTab.delete(tabId);
       pausedOrigins.set(tabId, origin);
       if (idx < pending.length - 1) {
         pendingInstructions.set(tabId, { items: pending.slice(idx + 1), origin: origin });
@@ -9463,6 +9865,7 @@ async function resumePendingInstructions({ tabId, origin, files, port, cancelRef
     if (result === 'cancelled') return true;
 
     if (result === 'maxsteps') {
+      taskRemainByTab.delete(tabId);
       pendingInstructions.delete(tabId);
       pausedOrigins.delete(tabId);
       clearPendingCheckpoint(tabId);
@@ -9472,6 +9875,7 @@ async function resumePendingInstructions({ tabId, origin, files, port, cancelRef
 
     // 单条指令出错即停止整批（避免连发失败），并清空 pending
     if (result === 'error') {
+      taskRemainByTab.delete(tabId);
       pendingInstructions.delete(tabId);
       pausedOrigins.delete(tabId);
       clearPendingCheckpoint(tabId);
@@ -9499,6 +9903,7 @@ async function resumePendingInstructions({ tabId, origin, files, port, cancelRef
 
   pausedOrigins.delete(tabId);
   clearPendingCheckpoint(tabId);
+  taskRemainByTab.delete(tabId);
   return true;
 }
 
@@ -9563,16 +9968,31 @@ chrome.runtime.onConnect.addListener((port) => {
       }
     }
     const active = activeTasks.get(tabId);
+    let taskResuming = false;
+    if (!active && tabId != null && !taskResumeBlocked.has(tabId)) {
+      try {
+        const saved = await chrome.storage.session.get(taskLeaseKey(tabId));
+        const lease = saved && saved[taskLeaseKey(tabId)];
+        if (lease && lease.origin && !lease.cancelled
+          && Date.now() - Number(lease.savedAt || 0) <= TASK_LEASE_MAX_AGE_MS
+          && sessionEpochMatches(lease.origin, lease.sessionEpoch)) {
+          taskResuming = true;
+        }
+      } catch (eLease) {}
+    }
     const sessionOrigin = (active && active.origin) || pausedOrigins.get(tabId) || origin;
     const pendingDelegate = childPendingDelegateInfo(tabId);
     postMsg({
       type: 'ready', tabId, origin: sessionOrigin, pageOrigin: origin,
-      injected, injectError, taskRunning: activeTasks.has(tabId),
+      injected, injectError, taskRunning: !!active || taskResuming,
       pendingDelegate: !!pendingDelegate,
       delegateFromUrl: pendingDelegate ? pendingDelegate.parentUrl : ''
     });
-    if (activeTasks.has(tabId)) {
+    if (active) {
       postMsg({ type: 'taskState', running: true, text: '页面已跳转，正在继续原任务…' });
+    } else if (taskResuming) {
+      postMsg({ type: 'status', text: '浏览器后台已重启，将按保存的会话续跑。' });
+      postMsg({ type: 'taskState', running: true, text: '等待闹钟续跑…' });
     } else if (pendingDelegate) {
       postMsg({
         type: 'taskState',
@@ -10074,7 +10494,7 @@ chrome.runtime.onConnect.addListener((port) => {
       const a = stopActiveTask(tabId, { closeOffscreen: false });
       postMsg({ type: 'status', text: '正在停止…' });
       if (!a) {
-        postMsg({ type: 'cancelled', summary: '当前没有运行中的任务' });
+        postMsg({ type: 'cancelled', summary: '已停止当前任务' });
       }
     } else if (cmd === 'downloadLlmCall' || cmd === 'getLlmCall') {
       (async () => {
@@ -10242,11 +10662,13 @@ chrome.runtime.onConnect.addListener((port) => {
           stopActiveTask(tabId, { closeOffscreen: false });
           try { await prev.done; } catch (e) {}
         }
-        const liveJob = childJobs.get(tabId);
+        const liveJob = await loadChildJob(tabId);
         const childContinue = !!(liveJob && !liveJob.settled);
         const cancelRef = makeCancelRef();
         let doneResolve;
         const done = new Promise((r) => { doneResolve = r; });
+        taskResumeBlocked.delete(tabId);
+        taskRemainByTab.delete(tabId);
         activeTasks.set(tabId, { cancelRef, done });
         try {
           await restorePendingState(tabId);
@@ -10278,7 +10700,12 @@ chrome.runtime.onConnect.addListener((port) => {
               childJob: liveJob || undefined
             });
             settleChildJobIfNeeded(tabId, replyResult);
+            await finishResurrectedChild(tabId, replyResult);
             if (replyResult === 'ask') {
+              if (liveJob) {
+                liveJob.waitingAsk = true;
+                persistChildJob(liveJob);
+              }
               pausedOrigins.set(tabId, taskOrigin);
               persistPendingState(tabId);
             } else if (replyResult === 'error') {
@@ -10311,7 +10738,12 @@ chrome.runtime.onConnect.addListener((port) => {
                 childJob: liveJob || undefined
               });
               settleChildJobIfNeeded(tabId, singleResult);
+              await finishResurrectedChild(tabId, singleResult);
               if (singleResult === 'ask') {
+                if (liveJob) {
+                  liveJob.waitingAsk = true;
+                  persistChildJob(liveJob);
+                }
                 pausedOrigins.set(tabId, taskOrigin);
                 persistPendingState(tabId);
               } else {
@@ -10379,6 +10811,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     void closeChildAfterDelegate(parentJobs[i]);
   }
   const asChild = childJobs.get(tabId);
+  const parentToNudge = asChild && asChild.parentTabId;
   if (asChild && !asChild.settled) abortChildJob(asChild, 'cancelled');
   visibleTabs.delete(tabId);
   panelPorts.delete(tabId);
@@ -10401,6 +10834,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   clearPendingDelegateForParent(tabId);
   stopActiveTask(tabId, { closeOffscreen: false });
   activeTasks.delete(tabId);
+  if (parentToNudge != null) void nudgeParentTaskAlarm(parentToNudge);
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -10423,6 +10857,7 @@ async function bootKernel() {
     noteDiagCap(cfg);
   } catch (e) {}
   try { await loadDiagStore(); } catch (e) {}
+  try { await ensureTaskAlarms(); } catch (e) {}
   try {
     if (chrome.alarms && chrome.alarms.create) chrome.alarms.create('wpa-gc', { periodInMinutes: 1 });
   } catch (e) {}
@@ -10446,7 +10881,15 @@ try {
 
 if (chrome.alarms && chrome.alarms.onAlarm) {
   chrome.alarms.onAlarm.addListener((a) => {
-    if (a && a.name === 'wpa-gc') void maybeCloseOffscreen();
+    if (!a || !a.name) return;
+    if (a.name === 'wpa-gc') {
+      void maybeCloseOffscreen();
+      return;
+    }
+    if (a.name.indexOf('wpa-task:') === 0) {
+      const tabId = Number(a.name.slice('wpa-task:'.length));
+      void resumeTaskFromAlarm(tabId);
+    }
   });
 }
 if (chrome.runtime && chrome.runtime.onStartup) chrome.runtime.onStartup.addListener(() => { void bootKernel(); });
