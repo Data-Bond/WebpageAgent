@@ -1,0 +1,7 @@
+{
+  "name": "webpage-agent",
+  "private": true,
+  "dependencies": {
+    "@xmldom/xmldom": "0.9.12"
+  }
+}

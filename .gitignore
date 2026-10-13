@@ -17,6 +17,13 @@ bin-release/
 # should NOT be excluded as they contain compiler settings and other important
 # information for Eclipse / Flash Builder.
 
+node_modules/
+
+# Agent tooling workspaces and the sibling pageagent project
+.cursor/
+.mimocode/
+pageagent/
+
 # Local planning notes, not tracked
 PLAN.md
 AGENTS.md
