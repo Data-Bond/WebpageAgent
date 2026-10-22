@@ -269,7 +269,7 @@ const RUNTIME_PLAYBOOK =
   'print 搜控件打目录进对话，不算字数。type 只打字，不自动点选项。若附近列表出现或选项变了则本批停，按回执 catalog 或下一轮快照再点。check 只用于真正复选/单选。\n' +
   'click 的 button：省略或 left 为左键；hover 只移指针不点击；right 只发右键菜单；dblclick 为双击。移上去才出现的控件：本轮快照已有（常 hidden）用本轮 idx 点；没有则 hover，本批停，按回执 catalog 或下一轮快照再点。不要同批点刚出现的项。覆盖层/iframe 正文在快照 panes 或 <PANE>，用其 idx get/scroll。\n' +
   '只读正文与块状文字在快照 blocks，用其 idx 做 get；print 仍只搜控件。blocks 与 panes 一样，不自动成为 memorize 的 lastRead，要先 get。\n' +
-  '快照优先当前覆盖层、文件名、隐藏操作与大块正文；truncated 则 get/print/scroll。get 回执 textKind=filename-label 表示只读到文件名标签，不是文件正文；需打开预览 pane 或 upload 后再 get。\n' +
+  '快照优先当前覆盖层、文件名、隐藏操作与大块正文；truncated 则 get/print/scroll。get 回执 textKind=filename-label 表示只读到文件名标签，不是文件正文；需打开预览 pane 或 upload 后再 get。当前页是 PDF 用 get(document)。点击若产生文件，回执带 file，不弹系统保存框。回执 savedTo 记录保存去向（kind 为 local/webdav/none，path 为路径）；保存去向由用户在弹出的选择框决定，模型只读回执。\n' +
   '多轮完不成：换 print/get/scroll。get.limit 默认 10000 字，offset 从第 N 字起；truncated 则加大 limit 或设 offset 再 get，见截断尾注，勿换 CSS 重点。print.limit 是目录条数。\n' +
   '上一轮无法解析时按观察改写。\n' +
   '缺用户才有的信息才 ask。上传用 upload(控件, 附件key)，禁止 click 上传按钮弹系统框。\n' +
@@ -391,6 +391,46 @@ function diagFail(probe, err, extra) {
   });
   if (!rec) return;
   enqueueDiagWrite(rec);
+}
+
+const EXTERNAL_WAIT_LOG_MS = 20000;
+
+function formatWaitLog(waiter, external, seconds) {
+  const who = String(waiter || 'unknown').replace(/[^\w$.]/g, '').slice(0, 64) || 'unknown';
+  const what = String(external || 'unknown').replace(/[^\w$.]/g, '').slice(0, 64) || 'unknown';
+  const sec = Math.max(0, Math.floor(Number(seconds) || 0));
+  return '当前函数[' + who + ']正在等待外部函数[' + what + ']的完成，已等待[' + sec + ']秒';
+}
+
+function diagWait(waiter, external, seconds) {
+  const msg = formatWaitLog(waiter, external, seconds);
+  const rec = WPA_CONTRACTS.makeDiagRecord({
+    probe: 'wait',
+    code: 'Info',
+    ms: Math.max(0, Math.floor(Number(seconds) || 0)) * 1000,
+    world: 'sw',
+    message: msg,
+    now: Date.now()
+  });
+  if (!rec) return;
+  enqueueDiagWrite(rec);
+}
+
+function withExternalWait(waiter, external, promise) {
+  const started = Date.now();
+  const timer = setInterval(function () {
+    diagWait(waiter, external, Math.floor((Date.now() - started) / 1000));
+  }, EXTERNAL_WAIT_LOG_MS);
+  function stop() {
+    try { clearInterval(timer); } catch (e) {}
+  }
+  return Promise.resolve(promise).then(function (value) {
+    stop();
+    return value;
+  }, function (err) {
+    stop();
+    throw err;
+  });
 }
 
 function diagCancel(probe, extra) {
@@ -577,7 +617,7 @@ function flagsFromPage(page) {
 
 async function bindWorld(tabId, world) {
   const nonce = 'wpa' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-  const results = await chrome.scripting.executeScript({
+  const results = await withExternalWait('bindWorld', 'chrome.scripting.executeScript', chrome.scripting.executeScript({
     target: { tabId: tabId },
     world: world,
     func: function (nonce) {
@@ -587,7 +627,7 @@ async function bindWorld(tabId, world) {
       return { ok: true, version: inst.version || '' };
     },
     args: [nonce]
-  });
+  }));
   const ret = results && results[0] && results[0].result;
   if (!ret || !ret.ok) throw new Error('绑定页面桥失败: ' + ((ret && ret.error) || 'no result'));
   return nonce;
@@ -607,7 +647,7 @@ async function callBridge(tabId, world, cmd, payload) {
   const chromeWorld = world === 'ISOLATED' ? 'ISOLATED' : 'MAIN';
   const nonce = chromeWorld === 'ISOLATED' ? slot.isolated : slot.main;
   try {
-    const results = await chrome.scripting.executeScript({
+    const results = await withExternalWait('callBridge', 'chrome.scripting.executeScript', chrome.scripting.executeScript({
       target: { tabId: tabId },
       world: chromeWorld,
       func: async function (key, cmd, payload) {
@@ -616,7 +656,7 @@ async function callBridge(tabId, world, cmd, payload) {
         return await fn(cmd, payload);
       },
       args: [nonce, cmd, payload == null ? {} : payload]
-    });
+    }));
     const ret = results && results[0] && results[0].result;
     if (ret == null) {
       diagFail('bridge', { message: 'empty bridge result' }, { world: chromeWorld });
@@ -882,6 +922,17 @@ function modelsOf(provider) {
     .filter((s) => s.length > 0);
 }
 
+// WebDAV 保存去向配置：密码明文存 chrome.storage.local，与 apiKey 同级。
+function normalizeWebdavConfig(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  return {
+    url: String(src.url || '').trim(),
+    username: String(src.username || '').trim(),
+    password: String(src.password || ''),
+    root: String(src.root || '').trim()
+  };
+}
+
 // 新结构合并 + 旧配置迁移 + 标签解析回退。传入 origin 时用该站 pageCfg 覆盖运行参数。
 async function getConfigMerged(origin) {
   const saved = await storageGet('assistantConfig');
@@ -913,6 +964,7 @@ async function getConfigMerged(origin) {
     ocrProviders,
     selectedTextTag: cfg.selectedTextTag || null,
     selectedOcrTag: cfg.selectedOcrTag || null,
+    webdav: normalizeWebdavConfig(cfg.webdav),
     systemPromptText,
     systemPromptOcr,
     maxSteps: clampInt(cfg.maxSteps, 1, 100, DEFAULT_CONFIG.maxSteps),
@@ -969,6 +1021,7 @@ function configPayload(cfg) {
     ocrProviders: cfg.ocrProviders,
     selectedTextTag: cfg.selectedTextTag,
     selectedOcrTag: cfg.selectedOcrTag,
+    webdav: normalizeWebdavConfig(cfg.webdav),
     systemPromptText: cfg.systemPromptText,
     systemPromptOcr: cfg.systemPromptOcr,
     maxSteps: cfg.maxSteps,
@@ -1754,12 +1807,12 @@ async function callChatCompletions(baseURL, apiKey, model, messages, options) {
       }, timeoutMs);
       linkAbort(controller, opts.signal);
       try {
-        return await fetch(url, {
+        return await withExternalWait('callChatCompletions', 'fetch', fetch(url, {
           method: 'POST',
           headers: headers,
           body: JSON.stringify(payload),
           signal: controller.signal
-        });
+        }));
       } catch (e) {
         if (isUserCancelled(e, opts.signal)) throw cancelledError();
         if (timedOut) {
@@ -2102,13 +2155,13 @@ let ocrQueue = Promise.resolve();
 function runOcrExclusive(taskFn) {
   const p = ocrQueue.then(function () { return taskFn(); });
   ocrQueue = p.catch(function () { /* 让后续请求不被前一次失败打断排队 */ });
-  return p;
+  return withExternalWait('runOcrExclusive', 'OCR 队列', p);
 }
 let pdfQueue = Promise.resolve();
 function runPdfExclusive(taskFn) {
   const p = pdfQueue.then(function () { return taskFn(); });
   pdfQueue = p.catch(function () { /* 后续 PDF 不继承前一次失败 */ });
-  return p;
+  return withExternalWait('runPdfExclusive', 'offscreen 文档', p);
 }
 // origin → 连续失败计数；达到阈值即熔断（不再发任何 OCR 请求），用户“修复后再试”动作复位。
 const ocrBreaker = new Map();
@@ -2506,37 +2559,405 @@ function markdownDownloadDataUrl(text) {
   return { url: 'data:text/markdown;base64,' + btoa(bin) };
 }
 
+let extensionDownloadHold = 0;
+let pageDownloadWatch = null;
+
+function isOwnDownload(item) {
+  if (extensionDownloadHold > 0) return true;
+  try {
+    if (item && item.byExtensionId && chrome.runtime && item.byExtensionId === chrome.runtime.id) return true;
+  } catch (e) {}
+  return false;
+}
+
+function noteWatchedDownload(item) {
+  const watch = pageDownloadWatch;
+  if (!watch || isOwnDownload(item)) return;
+  // 布防是全局单例：只拦截与布防标签页同站的下载，
+  // 避免误取消用户在其他标签页或窗口开始的下载
+  const watchHost = String(watch.host || '');
+  const itemUrl = String((item && (item.finalUrl || item.url)) || '');
+  let itemHost = '';
+  try { itemHost = new URL(itemUrl).host; } catch (e) {}
+  if (watchHost && itemHost && watchHost !== itemHost) return;
+  watch.item = item;
+  try { chrome.downloads.cancel(item.id); } catch (e) {}
+}
+
+function armPageDownloadWatch(tabId) {
+  const watch = { tabId: tabId, host: '', saveDialog: false, item: null };
+  pageDownloadWatch = watch;
+  // host 到位前的下载维持拦截（与既有行为一致）；到位后即按同站过滤
+  try {
+    chrome.tabs.get(tabId).then(function (tab) {
+      if (pageDownloadWatch !== watch || !tab || !tab.url) return;
+      try { watch.host = new URL(tab.url).host; } catch (e) {}
+    }).catch(function () {});
+  } catch (e) {}
+}
+
+function disarmPageDownloadWatch() {
+  const watch = pageDownloadWatch;
+  pageDownloadWatch = null;
+  return watch;
+}
+
+if (chrome.downloads && chrome.downloads.onCreated) {
+  chrome.downloads.onCreated.addListener(function (item) { noteWatchedDownload(item); });
+}
+if (chrome.downloads && chrome.downloads.onDeterminingFilename) {
+  chrome.downloads.onDeterminingFilename.addListener(function (item, suggest) {
+    if (pageDownloadWatch && !isOwnDownload(item)) {
+      pageDownloadWatch.saveDialog = true;
+      noteWatchedDownload(item);
+    }
+    try { suggest({ filename: (item && item.filename) || 'download' }); } catch (e) {}
+  });
+}
+
 function safeDownloadFilename(name, fallback) {
   const s = String(name || fallback || 'archive.md').replace(/[\\/:*?"<>|]/g, '_').trim();
   return s || (fallback || 'archive.md');
 }
 
-function downloadTextAsFile(text, filename) {
-  return new Promise((resolve) => {
-    if (!chrome.downloads || typeof chrome.downloads.download !== 'function') {
-      resolve({ ok: false, error: 'no-downloads' });
+// ===== 保存去向编排：暂存字节 → 选择框窗口 → 本地下载或 WebDAV PUT =====
+// 字节以 Blob 暂存于 offscreen 同源的 IndexedDB（'wpa-dav'/'blobs'），
+// 选择框（savepicker 窗口）只读元数据；同一时刻只处理一个请求，FIFO 排队。
+const SAVE_STAGE_PREFIX = 'dav:save:';
+const SAVE_BLOB_URL_TIMEOUT_MS = 15000;
+const saveRequests = new Map();
+const saveQueue = [];
+const saveBlobUrlWaiters = new Map();
+const davSaveWaiters = new Map();
+let saveActiveId = '';
+let savePickerWindowId = null;
+
+function openSaveStageDb() {
+  const topo = WPA_CONTRACTS.DAV_DB;
+  return new Promise(function (resolve, reject) {
+    const req = indexedDB.open(topo.NAME, topo.VERSION);
+    req.onupgradeneeded = function () {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(topo.TASKS)) db.createObjectStore(topo.TASKS);
+      if (!db.objectStoreNames.contains(topo.BLOBS)) db.createObjectStore(topo.BLOBS);
+    };
+    req.onsuccess = function () { resolve(req.result); };
+    req.onerror = function () { reject(req.error || new Error('打开暂存 IndexedDB 失败')); };
+  });
+}
+
+async function saveStagePut(key, blob) {
+  const store = WPA_CONTRACTS.DAV_DB.BLOBS;
+  const db = await openSaveStageDb();
+  return new Promise(function (resolve, reject) {
+    const tx = db.transaction(store, 'readwrite');
+    tx.objectStore(store).put(blob, key);
+    tx.oncomplete = function () { try { db.close(); } catch (e) {} resolve(true); };
+    tx.onerror = function () { try { db.close(); } catch (e) {} reject(tx.error); };
+  });
+}
+
+async function saveStageDrop(key) {
+  try {
+    const store = WPA_CONTRACTS.DAV_DB.BLOBS;
+    const db = await openSaveStageDb();
+    await new Promise(function (resolve, reject) {
+      const tx = db.transaction(store, 'readwrite');
+      tx.objectStore(store).delete(key);
+      tx.oncomplete = function () { try { db.close(); } catch (e) {} resolve(true); };
+      tx.onerror = function () { try { db.close(); } catch (e) {} reject(tx.error); };
+    });
+  } catch (e) {}
+}
+
+function publicSaveRequest(req) {
+  if (!req) return null;
+  return {
+    id: req.id,
+    name: req.name,
+    mime: req.mime,
+    size: req.size,
+    source: req.source,
+    createdAt: req.createdAt
+  };
+}
+
+function notifySavePicker() {
+  try { chrome.runtime.sendMessage({ cmd: 'saveAdvance' }); } catch (e) {}
+}
+
+async function openSavePickerWindow() {
+  if (savePickerWindowId != null) {
+    try {
+      await chrome.windows.update(savePickerWindowId, { focused: true });
       return;
+    } catch (e) {
+      savePickerWindowId = null;
     }
-    const data = markdownDownloadDataUrl(text);
-    if (data.error) {
-      resolve({ ok: false, error: data.error });
+  }
+  const win = await chrome.windows.create({
+    url: chrome.runtime.getURL('savepicker.html'),
+    type: 'popup',
+    width: 560,
+    height: 640,
+    focused: true
+  });
+  savePickerWindowId = win && win.id != null ? win.id : null;
+}
+
+function closeSavePickerWindow() {
+  const id = savePickerWindowId;
+  savePickerWindowId = null;
+  if (id != null) {
+    try { chrome.windows.remove(id); } catch (e) {}
+  }
+}
+
+function finishSaveRequest(req, result) {
+  if (!req) return;
+  saveRequests.delete(req.id);
+  if (saveActiveId === req.id) saveActiveId = '';
+  void saveStageDrop(SAVE_STAGE_PREFIX + req.id);
+  offscreenRelease('save:' + req.id);
+  if (typeof req.resolve === 'function') req.resolve(result);
+  notifySavePicker();
+  void pumpSaveQueue();
+}
+
+async function pumpSaveQueue() {
+  if (saveActiveId) return;
+  const nextId = saveQueue.shift();
+  if (!nextId) {
+    closeSavePickerWindow();
+    return;
+  }
+  const req = saveRequests.get(nextId);
+  if (!req) {
+    void pumpSaveQueue();
+    return;
+  }
+  try {
+    const blob = await (await fetch(req.dataUrl)).blob();
+    await saveStagePut(SAVE_STAGE_PREFIX + req.id, blob);
+    req.size = blob.size;
+    req.dataUrl = '';
+    saveActiveId = req.id;
+    await openSavePickerWindow();
+    notifySavePicker();
+  } catch (e) {
+    finishSaveRequest(req, { kind: 'none', error: String(e && e.message || e) });
+  }
+}
+
+function requestSaveDestination(input) {
+  const src = input || {};
+  const req = {
+    id: 'save' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    name: safeDownloadFilename(src.name, 'download'),
+    mime: String(src.mime || 'application/octet-stream'),
+    dataUrl: String(src.dataUrl || ''),
+    source: src.source === 'page' ? 'page' : 'export',
+    size: 0,
+    createdAt: Date.now(),
+    davTarget: '',
+    resolve: null
+  };
+  const promise = new Promise(function (resolve) { req.resolve = resolve; });
+  saveRequests.set(req.id, req);
+  saveQueue.push(req.id);
+  void pumpSaveQueue();
+  return withExternalWait('requestSaveDestination', 'savepicker 窗口', promise);
+}
+
+function requestSaveBlobUrl(key) {
+  return new Promise(function (resolve) {
+    const timer = setTimeout(function () {
+      saveBlobUrlWaiters.delete(key);
+      resolve('');
+    }, SAVE_BLOB_URL_TIMEOUT_MS);
+    saveBlobUrlWaiters.set(key, function (url) {
+      clearTimeout(timer);
+      resolve(url);
+    });
+    try { offscreenPort.postMessage({ cmd: 'saveBlobUrl', id: key }); }
+    catch (e) {
+      clearTimeout(timer);
+      saveBlobUrlWaiters.delete(key);
+      resolve('');
+    }
+  });
+}
+
+function noteSaveBlobUrl(msg) {
+  const key = String(msg && msg.id || '');
+  const fn = saveBlobUrlWaiters.get(key);
+  if (!fn) return;
+  saveBlobUrlWaiters.delete(key);
+  fn(msg.ok ? String(msg.url || '') : '');
+}
+
+function downloadFromPicker(url, filename) {
+  extensionDownloadHold += 1;
+  return withExternalWait('downloadFromPicker', 'chrome.downloads.download', new Promise(function (resolve) {
+    function finish(row) {
+      extensionDownloadHold = Math.max(0, extensionDownloadHold - 1);
+      resolve(row);
+    }
+    if (!chrome.downloads || typeof chrome.downloads.download !== 'function') {
+      finish({ ok: false, error: 'no-downloads' });
       return;
     }
     chrome.downloads.download({
-      url: data.url,
-      filename: safeDownloadFilename(filename, '对话存档.md'),
+      url: url,
+      filename: filename,
       saveAs: true,
       conflictAction: 'uniquify'
-    }, (id) => {
+    }, function (dlId) {
       const err = chrome.runtime.lastError;
       if (err) {
         const msg = String(err.message || '');
-        resolve({ ok: false, error: msg, cancelled: /cancel/i.test(msg) });
+        finish({ ok: false, error: msg, cancelled: /cancel/i.test(msg) });
       } else {
-        resolve({ ok: true, id: id });
+        finish({ ok: true, id: dlId });
       }
     });
+  }));
+}
+
+const SAVE_URL_REVOKE_TIMEOUT_MS = 60 * 60 * 1000;
+
+// 下载进入终态（complete/interrupted）后再回收 offscreen 的 blob URL 与暂存字节；
+// 提前 revoke 会截断仍在拷贝的大文件下载
+function dropSaveUrlWhenSettled(downloadId, key) {
+  function drop() {
+    try { if (offscreenPort) offscreenPort.postMessage({ cmd: 'saveDropUrl', id: key }); } catch (e) {}
+  }
+  if (downloadId == null || !chrome.downloads || !chrome.downloads.onChanged) {
+    drop();
+    return;
+  }
+  const timer = setTimeout(drop, SAVE_URL_REVOKE_TIMEOUT_MS);
+  function onChanged(delta) {
+    if (!delta || delta.id !== downloadId || !delta.state) return;
+    const state = delta.state.current;
+    if (state !== 'complete' && state !== 'interrupted') return;
+    clearTimeout(timer);
+    try { chrome.downloads.onChanged.removeListener(onChanged); } catch (e) {}
+    drop();
+  }
+  chrome.downloads.onChanged.addListener(onChanged);
+}
+
+function dropSaveUrlNow(key) {
+  try { if (offscreenPort) offscreenPort.postMessage({ cmd: 'saveDropUrl', id: key }); } catch (e) {}
+}
+
+async function doSaveLocal(id) {
+  const req = saveRequests.get(id);
+  if (!req || saveActiveId !== id) return;
+  try {
+    await ensureOffscreen();
+    if (!offscreenPort) throw new Error('offscreen 不可用');
+    offscreenRetain('save:' + id);
+    const blobUrl = await requestSaveBlobUrl(SAVE_STAGE_PREFIX + id);
+    if (!blobUrl) throw new Error('暂存字节不可用');
+    const dl = await downloadFromPicker(blobUrl, req.name);
+    if (!dl.ok) {
+      // 失败保留暂存字节与 blob URL，重试（本地或改选 WebDAV）仍可用
+      if (dl.cancelled) {
+        dropSaveUrlNow(SAVE_STAGE_PREFIX + id);
+        finishSaveRequest(req, { kind: 'none', cancelled: true });
+        return;
+      }
+      throw new Error(dl.error || '下载失败');
+    }
+    finishSaveRequest(req, { kind: 'local', path: req.name });
+    dropSaveUrlWhenSettled(dl.id, SAVE_STAGE_PREFIX + id);
+  } catch (e) {
+    try { chrome.runtime.sendMessage({ cmd: 'saveLocalResult', id: id, ok: false, error: String(e && e.message || e) }); } catch (e2) {}
+  }
+}
+
+async function doSaveDav(id, targetUrl) {
+  const req = saveRequests.get(id);
+  if (!req || saveActiveId !== id) return;
+  const cfg = await getConfigMerged('');
+  const dav = cfg && cfg.webdav;
+  if (!dav || !dav.url) {
+    try { chrome.runtime.sendMessage({ cmd: 'saveDavResult', id: id, ok: false, error: '请先在设置页填写 WebDAV 配置' }); } catch (e2) {}
+    return;
+  }
+  req.davTarget = String(targetUrl || '');
+  davSaveWaiters.set(id, req);
+  try {
+    await startDavTask({ task: {
+      id: 'save:' + id,
+      method: 'PUT',
+      url: req.davTarget,
+      username: dav.username || '',
+      password: dav.password || '',
+      mime: req.mime
+    } });
+  } catch (e) {
+    davSaveWaiters.delete(id);
+    try { chrome.runtime.sendMessage({ cmd: 'saveDavResult', id: id, ok: false, error: String(e && e.message || e) }); } catch (e2) {}
+  }
+}
+
+function noteDavSaveDone(id, msg) {
+  const saveId = String(id || '').indexOf('save:') === 0 ? String(id).slice('save:'.length) : '';
+  if (!saveId) return;
+  const waiter = davSaveWaiters.get(saveId);
+  if (!waiter) {
+    // SW 回收后由闹钟续跑完成的保存任务没有等待方：仍回收暂存字节，避免泄漏
+    if (msg && msg.ok) void saveStageDrop(SAVE_STAGE_PREFIX + saveId);
+    return;
+  }
+  davSaveWaiters.delete(saveId);
+  if (msg.ok) {
+    finishSaveRequest(waiter, { kind: 'webdav', path: waiter.davTarget || '' });
+    return;
+  }
+  try { chrome.runtime.sendMessage({ cmd: 'saveDavResult', id: saveId, ok: false, error: String(msg.error || 'PUT 失败') }); } catch (e2) {}
+}
+
+if (chrome.windows && chrome.windows.onRemoved) {
+  chrome.windows.onRemoved.addListener(function (windowId) {
+    if (savePickerWindowId == null || windowId !== savePickerWindowId) return;
+    savePickerWindowId = null;
+    const active = saveActiveId ? saveRequests.get(saveActiveId) : null;
+    if (active) finishSaveRequest(active, { kind: 'none', cancelled: true });
+    while (saveQueue.length) {
+      const q = saveRequests.get(saveQueue.shift());
+      if (q) finishSaveRequest(q, { kind: 'none', cancelled: true });
+    }
   });
+}
+
+function downloadTextAsFile(text, filename) {
+  const data = markdownDownloadDataUrl(text);
+  if (data.error) return Promise.resolve({ ok: false, error: data.error });
+  return requestSaveDestination({
+    name: safeDownloadFilename(filename, '对话存档.md'),
+    mime: 'text/markdown',
+    dataUrl: data.url,
+    source: 'export'
+  }).then(function (r) {
+    const savedTo = { kind: r.kind || 'none', path: r.path || '' };
+    if (r.kind === 'local' || r.kind === 'webdav') return { ok: true, savedTo: savedTo };
+    return { ok: false, error: r.error || '', cancelled: r.cancelled !== false, savedTo: savedTo };
+  });
+}
+
+async function offerSaveDestination(captured, target) {
+  if (!captured || !captured.dataUrl || !target) return;
+  const r = await requestSaveDestination({
+    name: safeDownloadFilename(captured.name || (target.file && target.file.name) || 'download', 'download'),
+    mime: captured.mime || 'application/octet-stream',
+    dataUrl: captured.dataUrl,
+    source: 'page'
+  });
+  target.savedTo = { kind: r.kind || 'none', path: r.path || '' };
 }
 
 async function copyTextOffscreen(text) {
@@ -2545,7 +2966,7 @@ async function copyTextOffscreen(text) {
     if (!offscreenPort) return { ok: false, error: 'offscreen 不可用' };
     const id = 'copy' + Date.now().toString(36);
     const port = offscreenPort;
-    return await new Promise((resolve) => {
+    return await withExternalWait('copyTextOffscreen', 'offscreen', new Promise((resolve) => {
       const timer = setTimeout(() => {
         try { port.onMessage.removeListener(onMsg); } catch (e) {}
         resolve({ ok: false, error: 'copy timeout' });
@@ -2563,7 +2984,7 @@ async function copyTextOffscreen(text) {
         try { port.onMessage.removeListener(onMsg); } catch (e2) {}
         resolve({ ok: false, error: String(e && e.message || e) });
       }
-    });
+    }));
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }
@@ -2740,9 +3161,9 @@ async function ocrSourceToBlob(source, fileName) {
     const controller = new AbortController();
     const timer = setTimeout(function () { controller.abort(); }, 60000);
     try {
-      const res = await fetch(raw, { signal: controller.signal });
+      const res = await withExternalWait('ocrSourceToBlob', 'fetch', fetch(raw, { signal: controller.signal }));
       if (!res.ok) throw new Error('无法读取图片 URL HTTP ' + res.status);
-      blob = await res.blob();
+      blob = await withExternalWait('ocrSourceToBlob', 'Response.blob', res.blob());
     } finally {
       clearTimeout(timer);
     }
@@ -2847,12 +3268,12 @@ async function callOcrScnet({ fileName, uploadName, pngDataUrl, approxBytes, sig
     const timer = setTimeout(function () { controller.abort(); }, LLM_OCR_TIMEOUT_MS);
     linkAbort(controller, signal);
     try {
-      return await awaitOrCancel(fetch(url, {
+      return await withExternalWait('callOcrScnet', 'fetch', awaitOrCancel(fetch(url, {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + (tag.apiKey || '') },
         body: fd,
         signal: controller.signal
-      }), signal, 'ocr');
+      }), signal, 'ocr'));
     } finally {
       clearTimeout(timer);
     }
@@ -2880,7 +3301,7 @@ async function callOcrScnet({ fileName, uploadName, pngDataUrl, approxBytes, sig
     throw err;
   }
   if (isCancelledNow(signal)) throw cancelledError();
-  const raw = await awaitOrCancel(res.text(), signal, 'ocr');
+  const raw = await withExternalWait('callOcrScnet', 'Response.text', awaitOrCancel(res.text(), signal, 'ocr'));
   if (!res.ok) {
     const err = new Error('SCNet OCR 请求失败 HTTP ' + res.status + ' @ ' + url + ': ' + String(raw || '').slice(0, 300));
     if (reporter) reporter.failure('OCR', url, err);
@@ -3036,9 +3457,9 @@ async function fetchMineruTextUrl(textUrl, apiUrl, apiKey, signal) {
   const timer = setTimeout(function () { controller.abort(); }, 60000);
   linkAbort(controller, signal);
   try {
-    const res = await awaitOrCancel(fetch(textUrl, { headers: headers, signal: controller.signal }), signal, 'ocr');
+    const res = await withExternalWait('fetchMineruTextUrl', 'fetch', awaitOrCancel(fetch(textUrl, { headers: headers, signal: controller.signal }), signal, 'ocr'));
     if (!res.ok) return null;
-    const body = await awaitOrCancel(res.text(), signal, 'ocr');
+    const body = await withExternalWait('fetchMineruTextUrl', 'Response.text', awaitOrCancel(res.text(), signal, 'ocr'));
     if (!body.trim()) return null;
     let parsed = null;
     try { parsed = JSON.parse(body); } catch (e) { parsed = null; }
@@ -3102,12 +3523,12 @@ async function callOcrMinerU({ fileName, uploadName, pngDataUrl, approxBytes, si
   try {
   let res;
   try {
-    res = await awaitOrCancel(fetch(url, {
+    res = await withExternalWait('callOcrMinerU', 'fetch', awaitOrCancel(fetch(url, {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + (tag.apiKey || '') },
       body: fd,
       signal: controller.signal
-    }), signal, 'ocr');
+    }), signal, 'ocr'));
   } catch (e) {
     clearTimeout(timer);
     if (isUserCancelled(e, signal)) throw cancelledError();
@@ -3125,7 +3546,7 @@ async function callOcrMinerU({ fileName, uploadName, pngDataUrl, approxBytes, si
     throw err;
   }
   // 不依赖 content-type：先读全部文本，再探测 JSON
-  const raw = await awaitOrCancel(res.text(), signal, 'ocr');
+  const raw = await withExternalWait('callOcrMinerU', 'Response.text', awaitOrCancel(res.text(), signal, 'ocr'));
   let data = null;
   try { data = JSON.parse(raw); } catch (e) { data = null; }
   let out;
@@ -3179,6 +3600,15 @@ function attachOffscreenPort(port) {
     offscreenPortReadyResolve(port);
     offscreenPortReadyResolve = null;
   }
+  port.onMessage.addListener((msg) => {
+    if (!msg) return;
+    if (msg.type === 'saveBlobUrl') {
+      noteSaveBlobUrl(msg);
+      return;
+    }
+    if (msg.type !== 'davProgress' && msg.type !== 'davDone' && msg.type !== 'davWait') return;
+    void noteDavMessage(msg);
+  });
   port.onDisconnect.addListener(() => {
     void chrome.runtime.lastError;
     if (offscreenPort === port) resetOffscreenPort();
@@ -3206,7 +3636,7 @@ async function ensureOffscreen() {
     }
   if (offscreenPort) return true;
   if (offscreenCreating) {
-    await offscreenCreating;
+    await withExternalWait('ensureOffscreen', 'chrome.offscreen.createDocument', offscreenCreating);
     if (offscreenPort) return true;
   }
 
@@ -3228,13 +3658,13 @@ async function ensureOffscreen() {
   }).finally(() => {
     offscreenCreating = null;
   });
-  await offscreenCreating;
+  await withExternalWait('ensureOffscreen', 'chrome.offscreen.createDocument', offscreenCreating);
 
   const ready = offscreenPortReady || Promise.resolve(null);
-  const port = await Promise.race([
+  const port = await withExternalWait('ensureOffscreen', 'offscreenPort', Promise.race([
     ready,
     new Promise((_, reject) => setTimeout(() => reject(new Error('offscreen 端口连接超时')), 8000))
-  ]);
+  ]));
   if (!port && !offscreenPort) throw new Error('offscreen 端口未连接');
   return true;
   } catch (e) {
@@ -3313,7 +3743,7 @@ async function processPdfOnce(dataUrl, cancelRef, pageSpec) {
   await pdfJobPut(jobId, bytes);
   const port = offscreenPort;
   try {
-    return await new Promise((resolve, reject) => {
+    return await withExternalWait('processPdfOnce', 'offscreen', new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         try { port.postMessage({ cmd: 'cancelPdf', id: id }); } catch (e) {}
         cleanup();
@@ -3369,7 +3799,7 @@ async function processPdfOnce(dataUrl, cancelRef, pageSpec) {
         cleanup();
         reject(e);
       }
-    });
+    }));
   } finally {
     offscreenRelease(id);
     try { await pdfJobDelete(jobId); } catch (e) {}
@@ -3613,11 +4043,11 @@ async function inject(tabId) {
   const failures = [];
   for (const entry of files) {
     try {
-      await chrome.scripting.executeScript({
+      await withExternalWait('inject', 'chrome.scripting.executeScript', chrome.scripting.executeScript({
         target: { tabId: tabId },
         files: entry.files,
         world: entry.world
-      });
+      }));
     } catch (e) {
       failures.push(entry.files.join(',') + ' [' + entry.world + ']：' + String(e && e.message || e));
     }
@@ -5452,7 +5882,7 @@ function createTabFromClickIntent(intentUrl, openerTabId, config, cancelRef) {
   return enqueueNewTabOpen(async function () {
     await waitNewTabOpenGap(config, cancelRef);
     if (isCancelledNow(cancelRef)) return null;
-    return await new Promise(function (resolve) {
+    return await withExternalWait('createTabFromClickIntent', 'chrome.tabs.create', new Promise(function (resolve) {
       try {
         chrome.tabs.create({
           url: String(intentUrl).slice(0, 2000),
@@ -5469,7 +5899,7 @@ function createTabFromClickIntent(intentUrl, openerTabId, config, cancelRef) {
       } catch (e) {
         resolve(null);
       }
-    });
+    }));
   });
 }
 
@@ -5551,7 +5981,7 @@ function startOpenerWatch(parentTabId) {
     };
     // 有 openerTabId 为确定归属；同窗口时间窗内的记录不带 openerTabId，归属交模型判断
     if (byOpener) rec.openerTabId = parentTabId;
-    return new Promise(function (resolve) {
+    return withExternalWait('startOpenerWatch', 'chrome.tabs.onUpdated', new Promise(function (resolve) {
       let finished = false;
       function done() {
         if (finished) return;
@@ -5597,7 +6027,7 @@ function startOpenerWatch(parentTabId) {
         if (finished) return;
         pull();
       }, 1500);
-    });
+    }));
   }
   function onCreated(tab) {
     if (!tab || tab.id == null) return;
@@ -6138,7 +6568,7 @@ async function runDelegateOp(parentTabId, spec, origin, priorResults, ctx) {
       job.childPageOrigin = origin;
     }
     const childPort = panelPorts.get(childTabId) || null;
-    const result = await runStreamingTask({
+    const result = await withExternalWait('runDelegateOp', 'runStreamingTask', runStreamingTask({
       tabId: childTabId,
       origin: job.childPageOrigin || origin,
       task: task,
@@ -6146,7 +6576,7 @@ async function runDelegateOp(parentTabId, spec, origin, priorResults, ctx) {
       port: childPort,
       cancelRef: childCancel,
       childJob: job
-    });
+    }));
     if (result === 'ask') {
       const curAsk = activeTasks.get(childTabId);
       if (curAsk && curAsk.cancelRef === childCancel) activeTasks.delete(childTabId);
@@ -6155,7 +6585,7 @@ async function runDelegateOp(parentTabId, spec, origin, priorResults, ctx) {
       pausedOrigins.set(childTabId, job.childPageOrigin || origin);
       persistPendingState(childTabId);
       if (parentPost) parentPost({ type: 'status', text: '等待子标签页用户回复：' + name });
-      await job.wait;
+      await withExternalWait('runDelegateOp', 'job.wait', job.wait);
     } else if (!job.settled) {
       settleJob(job, packChildRunEnd(job, result));
     }
@@ -6840,6 +7270,29 @@ function compactOneHelperValue(op, val) {
         o.idxRoundOnly = true;
       }
     }
+  if (val.saveDialog) o.saveDialog = true;
+  if (val.file && typeof val.file === 'object') {
+    const rawFile = val.file.text != null ? String(val.file.text) : '';
+    const fileCap = (WPA_CONTRACTS && WPA_CONTRACTS.GET_TEXT_DEFAULT) || 10000;
+    const fileRow = {
+      name: String(val.file.name || '').slice(0, 120),
+      mime: String(val.file.mime || '').slice(0, 80)
+    };
+    if (val.file.chars != null) fileRow.chars = val.file.chars;
+    else if (rawFile) fileRow.chars = rawFile.length;
+    if (rawFile) {
+      fileRow.text = rawFile.length > fileCap ? rawFile.slice(0, fileCap) : rawFile;
+      if (rawFile.length > fileCap || val.file.truncated) fileRow.truncated = true;
+    } else if (val.file.truncated) fileRow.truncated = true;
+    if (val.file.error) fileRow.error = String(val.file.error).split('\n')[0].slice(0, 160);
+    o.file = fileRow;
+  }
+  if (val.savedTo && typeof val.savedTo === 'object') {
+    o.savedTo = {
+      kind: String(val.savedTo.kind || 'none').slice(0, 16),
+      path: String(val.savedTo.path || '').slice(0, 300)
+    };
+  }
   if (Array.isArray(val.selection)) {
     o.selection = val.selection.slice(0, 24).map(function (x) {
       if (!x || typeof x !== 'object') return String(x || '').slice(0, 80);
@@ -7318,7 +7771,7 @@ function showBusyMaskTab(tabId, enabled) {
 }
 
 async function sendToContent(tabId, msg) {
-  return new Promise((resolve) => {
+  return withExternalWait('sendToContent', 'chrome.tabs.sendMessage', new Promise((resolve) => {
     chrome.tabs.sendMessage(tabId, msg, (resp) => {
       if (chrome.runtime.lastError) {
         resolve({ __error: chrome.runtime.lastError.message });
@@ -7326,7 +7779,7 @@ async function sendToContent(tabId, msg) {
       }
       resolve(resp);
     });
-  });
+  }));
 }
 
 // 桥接出错时（如整页刷新后 content script 丢失），重新注入并重试一次
@@ -7360,7 +7813,12 @@ function waitForPageStable(tabId, settleMs, cancelRef) {
     let safetyId = null;
     let settleTimer = null;
 
+    const waitStarted = Date.now();
+    const waitLog = setInterval(function () {
+      diagWait('waitForPageStable', 'chrome.tabs.onUpdated', Math.floor((Date.now() - waitStarted) / 1000));
+    }, EXTERNAL_WAIT_LOG_MS);
     function cleanup() {
+      try { clearInterval(waitLog); } catch (eLog) {}
       try { chrome.tabs.onUpdated.removeListener(onUpdated); } catch (e) {}
       try {
         if (cancelRef && cancelRef.signal) cancelRef.signal.removeEventListener('abort', onAbort);
@@ -7879,6 +8337,182 @@ function mergePageOpResults(resp) {
   return [{ op: 'batch', value: resp.result }];
 }
 
+function uint8ToDataUrl(bytes, mime) {
+  const CHUNK = 0x2000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const sub = bytes.subarray(i, Math.min(i + CHUNK, bytes.length));
+    binary += String.fromCharCode.apply(null, sub);
+  }
+  return 'data:' + (mime || 'application/octet-stream') + ';base64,' + btoa(binary);
+}
+
+function sliceStoredText(text, limit, offset) {
+  const t = String(text || '');
+  let n = Number(limit);
+  if (!Number.isFinite(n) || n <= 0) n = (WPA_CONTRACTS && WPA_CONTRACTS.GET_TEXT_DEFAULT) || 10000;
+  const hard = (WPA_CONTRACTS && WPA_CONTRACTS.GET_TEXT_HARD) || 500000;
+  n = Math.max(1, Math.min(Math.round(n), hard));
+  let off = Number(offset);
+  if (!Number.isFinite(off) || off < 0) off = 0;
+  off = Math.max(0, Math.round(off));
+  return {
+    text: t.slice(off, off + n),
+    chars: t.length,
+    limit: n,
+    offset: off,
+    truncated: off > 0 || n < t.length
+  };
+}
+
+const pdfTextCache = new Map();
+
+async function pdfPlainText(dataUrl, meta, ctx) {
+  const url = String((meta && meta.url) || '');
+  const byteLength = Number(meta && meta.byteLength) || 0;
+  const key = url + '\0' + byteLength;
+  if (url && byteLength && pdfTextCache.has(key)) return pdfTextCache.get(key);
+  const origin = (ctx && ctx.origin) || '';
+  const cfg = (ctx && ctx.config) || await getConfigMerged(origin);
+  const text = await runPdfOrImageParse({
+    name: (meta && meta.name) || 'document.pdf',
+    dataUrl: dataUrl,
+    size: byteLength
+  }, 'pdf', {
+    origin: origin,
+    cfg: cfg,
+    postMsg: (ctx && ctx.postMsg) || function () {},
+    reporter: ctx && ctx.reporter
+  });
+  if (url && byteLength) {
+    pdfTextCache.set(key, text);
+    if (pdfTextCache.size > 6) pdfTextCache.delete(pdfTextCache.keys().next().value);
+  }
+  return text;
+}
+
+async function swFetchUrlBytes(url) {
+  const res = await fetch(url, { credentials: 'include' });
+  if (!res.ok) return { ok: false, error: 'HTTP ' + res.status, url: url };
+  const buf = new Uint8Array(await res.arrayBuffer());
+  if (buf.byteLength > 32 * 1024 * 1024) {
+    return { ok: false, reason: 'too-large', byteLength: buf.byteLength, url: url };
+  }
+  const mime = String(res.headers.get('content-type') || 'application/octet-stream').split(';')[0].trim();
+  return { ok: true, url: url, mime: mime, byteLength: buf.byteLength, dataUrl: uint8ToDataUrl(buf, mime) };
+}
+
+async function fileFromCaptured(got, ctx, limit, offset) {
+  if (!got || got.ok === false || !got.dataUrl) {
+    return {
+      name: (got && got.name) || '',
+      mime: (got && got.mime) || '',
+      error: (got && (got.error || got.reason)) || '未能读取文件'
+    };
+  }
+  const name = got.name || '';
+  const mime = got.mime || '';
+  const pdf = /pdf/i.test(mime) || /\.pdf$/i.test(name) || /\.pdf($|\?)/i.test(got.url || '');
+  if (!pdf) {
+    if (/^text\//i.test(mime)) {
+      const raw = await fetch(got.dataUrl).then(function (r) { return r.text(); });
+      const sliced = sliceStoredText(raw, limit, offset);
+      return { name: name, mime: mime, text: sliced.text, chars: sliced.chars, truncated: sliced.truncated, limit: sliced.limit, offset: sliced.offset };
+    }
+    return { name: name, mime: mime, chars: 0, byteLength: got.byteLength || 0 };
+  }
+  const text = await pdfPlainText(got.dataUrl, got, ctx);
+  const sliced = sliceStoredText(text, limit, offset);
+  return {
+    name: name || 'document.pdf',
+    mime: mime || 'application/pdf',
+    text: sliced.text,
+    chars: sliced.chars,
+    truncated: sliced.truncated,
+    limit: sliced.limit,
+    offset: sliced.offset
+  };
+}
+
+async function enrichPdfResults(tabId, rows, ctx, watchClick) {
+  const list = Array.isArray(rows) ? rows : [];
+  for (let i = 0; i < list.length; i++) {
+    const row = list[i];
+    const val = row && row.value;
+    if (!val || typeof val !== 'object' || row.op !== 'get' || !val.needsPdf) continue;
+    const bytes = await callBridgeRetry(tabId, 'MAIN', 'readDocumentBytes', {});
+    delete val.needsPdf;
+    if (!bytes || bytes.__error || bytes.ok === false) {
+      val.ok = false;
+      val.reason = (bytes && bytes.reason) || 'fetch-failed';
+      val.error = (bytes && (bytes.error || bytes.__error)) || '未能读取当前 PDF';
+      continue;
+    }
+    try {
+      const file = await fileFromCaptured(bytes, Object.assign({ url: val.url || bytes.url }, ctx || {}), val.limit, val.offset);
+      if (file.error && file.text == null) {
+        val.ok = false;
+        val.error = file.error;
+        val.name = file.name;
+        continue;
+      }
+      val.ok = true;
+      val.via = 'document';
+      val.text = file.text || '';
+      val.chars = file.chars;
+      val.truncated = !!file.truncated;
+      val.limit = file.limit;
+      val.offset = file.offset;
+      val.name = file.name || val.name;
+      val.mime = file.mime;
+    } catch (e) {
+      val.ok = false;
+      val.error = String(e && e.message || e);
+    }
+  }
+  if (!watchClick) return;
+  const watch = pageDownloadWatch;
+  let target = null;
+  for (let j = list.length - 1; j >= 0; j--) {
+    const row = list[j];
+    if (row && (row.op === 'click' || row.op === 'dblclick') && row.value && typeof row.value === 'object') {
+      target = row.value;
+      break;
+    }
+  }
+  if (!target) return;
+  const wants = !!target.fileReady;
+  delete target.fileReady;
+  let captured = null;
+  if (wants) captured = await callBridgeRetry(tabId, 'MAIN', 'takeDownloadCapture', {});
+  if (captured && captured.dataUrl) {
+    try { target.file = await fileFromCaptured(captured, ctx); }
+    catch (e) { target.file = { name: captured.name || '', mime: captured.mime || '', error: String(e && e.message || e) }; }
+    await offerSaveDestination(captured, target);
+    return;
+  }
+  const item = watch && watch.item;
+  const dlUrl = (captured && /^https?:/i.test(captured.url || '') && captured.url) ||
+    (item && (item.finalUrl || item.url));
+  if (dlUrl && !/^blob:/i.test(dlUrl)) {
+    let got = await callBridgeRetry(tabId, 'MAIN', 'fetchUrlBytes', { url: dlUrl });
+    if (!got || got.__error || got.ok === false) {
+      try { got = await swFetchUrlBytes(dlUrl); }
+      catch (e2) { got = { ok: false, error: String(e2 && e2.message || e2) }; }
+    }
+    if (got && got.dataUrl) {
+      if (!got.name && item && item.filename) got.name = String(item.filename).split(/[/\\]/).pop();
+      try { target.file = await fileFromCaptured(got, ctx); }
+      catch (e3) { target.file = { name: got.name || '', mime: got.mime || '', error: String(e3 && e3.message || e3) }; }
+      await offerSaveDestination(got, target);
+      return;
+    }
+    target.file = { name: (item && item.filename) || '', mime: (got && got.mime) || '', error: (got && (got.error || got.__error)) || '未能读取下载地址' };
+    return;
+  }
+  if (watch && watch.saveDialog) target.saveDialog = true;
+}
+
 async function runPageOpsBatch(tabId, operations, ctx) {
   const list = Array.isArray(operations) ? operations : [];
   const flags = (ctx && ctx.flags) || WPA_CONTRACTS.DEFAULT_FLAGS;
@@ -7890,37 +8524,46 @@ async function runPageOpsBatch(tabId, operations, ctx) {
 
   async function runChunk(world, chunk) {
     if (!chunk.length) return { ok: true };
-    let resp;
-    if (world === 'upload') {
-      resp = await sendToContent(tabId, { cmd: 'runOps', operations: chunk });
-    } else {
-      resp = await callBridge(tabId, world, 'runOps', { operations: chunk });
-    }
-    if (resp && resp.__error) {
-      await new Promise((r) => setTimeout(r, 300));
-      const status = await getTabStatus(tabId);
-      if (status === 'loading') return { navigated: true, resp: resp };
-      try { await inject(tabId); } catch (e) {}
-      return { resp: resp, navigated: false, stop: true };
-    }
-    if (resp && resp.probe) lastProbe = resp.probe;
-    const part = mergePageOpResults(resp);
-    if (part) {
-      Array.prototype.push.apply(results, part);
-      for (let i = 0; i < part.length; i++) {
-        const row = part[i] || {};
-        const outcome = WPA_CONTRACTS.classifyOpOutcome(row.op, row.value, null);
-        if (WPA_CONTRACTS.getOp(row.op) && WPA_CONTRACTS.getOp(row.op).kind === 'fire' && outcome === 'unobservable') {
-          void journalWrite(tabId, { phase: 'unknown-fire', op: row.op });
-        }
-        void recordTelemetry({
-          op: row.op, world: world, kind: (WPA_CONTRACTS.getOp(row.op) || {}).kind,
-          outcome: outcome, generation: (snapState.get(tabId) || {}).generation
-        });
+    const watchClick = world !== 'upload' && chunk.some(function (it) {
+      return it && (it.op === 'click' || it.op === 'dblclick');
+    });
+    if (watchClick) armPageDownloadWatch(tabId);
+    try {
+      let resp;
+      if (world === 'upload') {
+        resp = await sendToContent(tabId, { cmd: 'runOps', operations: chunk });
+      } else {
+        resp = await callBridge(tabId, world, 'runOps', { operations: chunk, armDownload: watchClick });
       }
+      if (resp && resp.__error) {
+        await new Promise((r) => setTimeout(r, 300));
+        const status = await getTabStatus(tabId);
+        if (status === 'loading') return { navigated: true, resp: resp };
+        try { await inject(tabId); } catch (e) {}
+        return { resp: resp, navigated: false, stop: true };
+      }
+      if (resp && resp.probe) lastProbe = resp.probe;
+      const part = mergePageOpResults(resp);
+      if (part) {
+        Array.prototype.push.apply(results, part);
+        for (let i = 0; i < part.length; i++) {
+          const row = part[i] || {};
+          const outcome = WPA_CONTRACTS.classifyOpOutcome(row.op, row.value, null);
+          if (WPA_CONTRACTS.getOp(row.op) && WPA_CONTRACTS.getOp(row.op).kind === 'fire' && outcome === 'unobservable') {
+            void journalWrite(tabId, { phase: 'unknown-fire', op: row.op });
+          }
+          void recordTelemetry({
+            op: row.op, world: world, kind: (WPA_CONTRACTS.getOp(row.op) || {}).kind,
+            outcome: outcome, generation: (snapState.get(tabId) || {}).generation
+          });
+        }
+        if (world !== 'upload') await enrichPdfResults(tabId, part, ctx, watchClick);
+      }
+      if (resp && resp.ok === false) return { resp: resp, navigated: false, stop: true };
+      return { ok: true, resp: resp };
+    } finally {
+      if (watchClick) disarmPageDownloadWatch();
     }
-    if (resp && resp.ok === false) return { resp: resp, navigated: false, stop: true };
-    return { ok: true, resp: resp };
   }
 
   async function flush() {
@@ -10298,11 +10941,16 @@ chrome.runtime.onConnect.addListener((port) => {
             return;
           }
           const json = JSON.stringify(payload, null, 2);
+          const exportName = includeKeys ? 'WebpageAgent.SECRETS.json' : 'WebpageAgent.json';
+          const saved = await downloadTextAsFile(json, exportName);
           postMsg({
             type: 'configExport',
             json: json,
-            filename: includeKeys ? 'WebpageAgent.SECRETS.json' : 'WebpageAgent.json',
-            masked: !includeKeys
+            filename: exportName,
+            masked: !includeKeys,
+            saved: !!saved.ok,
+            cancelled: !!saved.cancelled,
+            savedTo: saved.savedTo || { kind: 'none', path: '' }
           });
         } catch (e) {
           postMsg({ type: 'status', text: '导出配置失败：' + String(e && e.message || e), kind: 'error' });
@@ -10348,13 +10996,17 @@ chrome.runtime.onConnect.addListener((port) => {
         try {
           const pack = await exportDiagForHours(msg.hours);
           const hours = pack.hours;
+          const diagName = 'WebpageAgent-diag-' + hours + 'h.json';
+          const saved = await downloadTextAsFile(JSON.stringify(pack, null, 2), diagName);
           postMsg({
             type: 'diagExport',
-            json: JSON.stringify(pack, null, 2),
-            filename: 'WebpageAgent-diag-' + hours + 'h.json',
+            filename: diagName,
             count: (pack.rows || []).length,
             trailCount: (pack.trail || []).length,
-            hours: hours
+            hours: hours,
+            saved: !!saved.ok,
+            cancelled: !!saved.cancelled,
+            savedTo: saved.savedTo || { kind: 'none', path: '' }
           });
         } catch (e) {
           diagFail('config', e);
@@ -10417,7 +11069,8 @@ chrome.runtime.onConnect.addListener((port) => {
           ok: !!r.ok,
           error: r.error || '',
           cancelled: !!r.cancelled,
-          filename: msg.filename || ''
+          filename: msg.filename || '',
+          savedTo: r.savedTo || { kind: 'none', path: '' }
         });
       })();
     } else if (cmd === 'listWebSkills') {
@@ -10475,15 +11128,19 @@ chrome.runtime.onConnect.addListener((port) => {
           postMsg({ type: 'webSkillsExport', ok: false, error: '没有可导出的技能' });
           return;
         }
+        const skillName = picked.length === 1 ? 'WebpageAgent-web-skill.json' : 'WebpageAgent-web-skill-pack.json';
+        const skillSaved = await downloadTextAsFile(JSON.stringify(exportWebSkillPack(picked, {
+          includeValues: !!msg.includeValues,
+          appVersion: appVersion()
+        }), null, 2), skillName);
         postMsg({
           type: 'webSkillsExport',
           ok: true,
-          json: JSON.stringify(exportWebSkillPack(picked, {
-            includeValues: !!msg.includeValues,
-            appVersion: appVersion()
-          }), null, 2),
           count: picked.length,
-          filename: picked.length === 1 ? 'WebpageAgent-web-skill.json' : 'WebpageAgent-web-skill-pack.json'
+          filename: skillName,
+          saved: !!skillSaved.ok,
+          cancelled: !!skillSaved.cancelled,
+          savedTo: skillSaved.savedTo || { kind: 'none', path: '' }
         });
       })();
     } else if (cmd === 'importWebSkills') {
@@ -10694,7 +11351,7 @@ chrome.runtime.onConnect.addListener((port) => {
     } else if (cmd === 'downloadText') {
       (async () => {
         const r = await downloadTextAsFile(msg.text, msg.filename);
-        postMsg({ type: 'downloadTextResult', id: msg.id, ok: !!r.ok, error: r.error || '', cancelled: !!r.cancelled });
+        postMsg({ type: 'downloadTextResult', id: msg.id, ok: !!r.ok, error: r.error || '', cancelled: !!r.cancelled, savedTo: r.savedTo || { kind: 'none', path: '' } });
       })();
     } else if (cmd === 'panelState') {
       if (msg.visible) { visibleTabs.add(tabId); } else { visibleTabs.delete(tabId); }
@@ -10924,9 +11581,66 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (parentToNudge != null) void nudgeParentTaskAlarm(parentToNudge);
 });
 
+// 保存去向与 WebDAV 引擎的消息入口只接受 savepicker 窗口页：这些命令携带
+// WebDAV 明文密码或驱动带凭据的传输，不得暴露给注入网页的 content script
+function isSavePickerSender(sender) {
+  try {
+    const url = String((sender && sender.url) || '').split('?')[0];
+    return !!url && url === chrome.runtime.getURL('savepicker.html');
+  } catch (e) {
+    return false;
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (!msg || msg.cmd !== 'cancelFromPanel') return;
+  if (!msg || !msg.cmd) return;
   if (sender && sender.id && chrome.runtime && sender.id !== chrome.runtime.id) return;
+  if ((msg.cmd === 'saveGetCurrent' || msg.cmd === 'savePickLocal' || msg.cmd === 'savePickDav' ||
+    msg.cmd === 'saveCancel' || msg.cmd === 'davStart') && !isSavePickerSender(sender)) {
+    return;
+  }
+  if (msg.cmd === 'saveGetCurrent') {
+    (async function () {
+      const cfg = await getConfigMerged('');
+      const dav = cfg && cfg.webdav ? cfg.webdav : {};
+      try {
+        sendResponse({
+          ok: true,
+          req: publicSaveRequest(saveActiveId ? saveRequests.get(saveActiveId) : null),
+          webdav: {
+            url: String(dav.url || ''),
+            username: String(dav.username || ''),
+            password: String(dav.password || ''),
+            root: String(dav.root || '')
+          }
+        });
+      } catch (e) {}
+    })();
+    return true;
+  }
+  if (msg.cmd === 'savePickLocal') {
+    void doSaveLocal(String(msg.id || ''));
+    try { sendResponse({ ok: true }); } catch (e) {}
+    return false;
+  }
+  if (msg.cmd === 'savePickDav') {
+    void doSaveDav(String(msg.id || ''), String(msg.url || ''));
+    try { sendResponse({ ok: true }); } catch (e) {}
+    return false;
+  }
+  if (msg.cmd === 'saveCancel') {
+    const req = saveRequests.get(String(msg.id || ''));
+    if (req && saveActiveId === req.id) finishSaveRequest(req, { kind: 'none', cancelled: true });
+    try { sendResponse({ ok: true }); } catch (e) {}
+    return false;
+  }
+  if (msg.cmd === 'davStart') {
+    startDavTask(msg).then(function (out) { try { sendResponse(out); } catch (e) {} }).catch(function (e) {
+      try { sendResponse({ ok: false, error: String(e && e.message || e) }); } catch (e2) {}
+    });
+    return true;
+  }
+  if (msg.cmd !== 'cancelFromPanel') return;
   const tabId = sender.tab && sender.tab.id;
   if (tabId == null) {
     try { sendResponse({ ok: false }); } catch (e) {}
@@ -10935,6 +11649,160 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   stopActiveTask(tabId, { closeOffscreen: false });
   try { sendResponse({ ok: true }); } catch (e2) {}
 });
+
+function davTaskKey(id) { return 'davTask:' + id; }
+function davSecretKey(id) { return 'davSecret:' + id; }
+
+function davPublicRecord(task) {
+  const src = task || {};
+  return {
+    id: String(src.id || ''),
+    url: String(src.url || ''),
+    method: String(src.method || 'GET').toUpperCase(),
+    localPath: String(src.localPath || ''),
+    username: String(src.username || ''),
+    parts: Array.isArray(src.parts) ? src.parts : [],
+    etag: src.etag ? String(src.etag) : '',
+    mime: src.mime ? String(src.mime) : '',
+    status: String(src.status || 'running'),
+    knownBest: src.knownBest ? String(src.knownBest) : '',
+    error: src.error ? String(src.error).slice(0, 300) : '',
+    updatedAt: Date.now()
+  };
+}
+
+async function saveDavTask(record) {
+  const pub = davPublicRecord(record);
+  await storageSet({ [davTaskKey(pub.id)]: pub });
+  return pub;
+}
+
+function scheduleDavAlarm(id) {
+  if (!id || !chrome.alarms || !chrome.alarms.create) return;
+  chrome.alarms.create('wpa-dav:' + id, { delayInMinutes: 0.5 });
+}
+
+async function saveDavHa1(id, ha1) {
+  if (!id || !ha1) return;
+  await chrome.storage.session.set({ [davSecretKey(id)]: { ha1: String(ha1), savedAt: Date.now() } });
+}
+
+async function loadDavHa1(id) {
+  const saved = await chrome.storage.session.get(davSecretKey(id));
+  const rec = saved && saved[davSecretKey(id)];
+  return rec && rec.ha1 ? String(rec.ha1) : '';
+}
+
+async function noteDavMessage(msg) {
+  const raw = String(msg && msg.id || '');
+  const id = raw.indexOf('dav:') === 0 ? raw.slice(4) : raw;
+  if (msg && msg.type === 'davWait') {
+    diagWait(String(msg.waiter || ''), String(msg.external || ''), Number(msg.seconds) || 0);
+    return;
+  }
+  if (!id) return;
+  if (msg.ha1) await saveDavHa1(id, msg.ha1);
+  const saved = await storageGet(davTaskKey(id));
+  const prev = saved && saved[davTaskKey(id)];
+  if (!prev) return;
+  const next = davPublicRecord(Object.assign({}, prev, {
+    parts: Array.isArray(msg.parts) ? msg.parts : prev.parts,
+    knownBest: msg.knownBest || prev.knownBest,
+    status: msg.type === 'davDone' ? (msg.ok ? (msg.status || 'done') : 'error') : (msg.status || prev.status),
+    error: msg.ok === false ? msg.error : ''
+  }));
+  await saveDavTask(next);
+  if (msg.type === 'davDone') noteDavSaveDone(id, msg);
+  if (davResumable(next.status)) {
+    offscreenRetain('dav:' + id);
+    scheduleDavAlarm(id);
+    return;
+  }
+  offscreenRelease('dav:' + id);
+  try { if (chrome.alarms && chrome.alarms.clear) await chrome.alarms.clear('wpa-dav:' + id); } catch (e) {}
+}
+
+async function postDavRun(record, secret) {
+  await ensureOffscreen();
+  if (!offscreenPort) throw new Error('offscreen 不可用');
+  offscreenRetain('dav:' + record.id);
+  offscreenPort.postMessage({
+    cmd: 'davRun',
+    id: 'dav:' + record.id,
+    task: {
+      url: record.url,
+      method: record.method,
+      username: record.username,
+      password: secret && secret.password ? String(secret.password) : '',
+      ha1: secret && secret.ha1 ? String(secret.ha1) : '',
+      localPath: record.localPath,
+      parts: record.parts,
+      knownBest: record.knownBest,
+      mime: record.mime || '',
+      dataUrl: secret && secret.dataUrl ? String(secret.dataUrl) : '',
+      sensitiveMode: !!(secret && secret.sensitiveMode)
+    }
+  });
+}
+
+async function startDavTask(msg) {
+  const task = msg && msg.task || {};
+  const id = String(task.id || ('dav' + Date.now().toString(36)));
+  const method = String(task.method || 'GET').toUpperCase();
+  if (!task.url) throw new Error('缺少 WebDAV 地址');
+  if (method === 'GET' && !task.localPath) throw new Error('下载需要本地路径');
+  const initial = method === 'PUT' ? 'uploading' : 'running';
+  const record = await saveDavTask(Object.assign({}, task, { id: id, method: method, status: initial, error: '' }));
+  if (task.ha1) await saveDavHa1(id, task.ha1);
+  scheduleDavAlarm(id);
+  await postDavRun(record, {
+    password: task.password || '',
+    ha1: task.ha1 || '',
+    sensitiveMode: !!task.sensitiveMode,
+    dataUrl: task.dataUrl || ''
+  });
+  return { ok: true, id: id, status: initial };
+}
+
+function davResumable(status) {
+  return status === 'running' || status === 'uploading';
+}
+
+async function resumeDavFromAlarm(id) {
+  const saved = await storageGet(davTaskKey(id));
+  const rec = saved && saved[davTaskKey(id)];
+  if (!rec || !davResumable(rec.status)) {
+    try { if (chrome.alarms && chrome.alarms.clear) await chrome.alarms.clear('wpa-dav:' + id); } catch (e) {}
+    return;
+  }
+  const ha1 = await loadDavHa1(id);
+  if (ha1) {
+    scheduleDavAlarm(id);
+    await postDavRun(rec, { ha1: ha1 });
+    return;
+  }
+  // ha1 缺失：从设置里的 WebDAV 配置取密码重算；配置也没有密码才置 need-auth
+  const cfg = await getConfigMerged('');
+  const dav = cfg && cfg.webdav;
+  if (dav && dav.password) {
+    scheduleDavAlarm(id);
+    await postDavRun(rec, { password: String(dav.password) });
+    return;
+  }
+  await saveDavTask(Object.assign({}, rec, { status: 'need-auth' }));
+  offscreenRelease('dav:' + id);
+  try { if (chrome.alarms && chrome.alarms.clear) await chrome.alarms.clear('wpa-dav:' + id); } catch (e2) {}
+}
+
+async function ensureDavAlarms() {
+  const all = await storageGet(null);
+  const keys = all ? Object.keys(all) : [];
+  for (let i = 0; i < keys.length; i++) {
+    if (keys[i].indexOf('davTask:') !== 0) continue;
+    const rec = all[keys[i]];
+    if (rec && rec.id && davResumable(rec.status)) scheduleDavAlarm(rec.id);
+  }
+}
 
 async function bootKernel() {
   try { await ensureOriginEpochs(); } catch (e) {}
@@ -10946,6 +11814,7 @@ async function bootKernel() {
   } catch (e) {}
   try { await loadDiagStore(); } catch (e) {}
   try { await ensureTaskAlarms(); } catch (e) {}
+  try { await ensureDavAlarms(); } catch (e) {}
   try {
     if (chrome.alarms && chrome.alarms.create) chrome.alarms.create('wpa-gc', { periodInMinutes: 1 });
   } catch (e) {}
@@ -10977,7 +11846,9 @@ if (chrome.alarms && chrome.alarms.onAlarm) {
     if (a.name.indexOf('wpa-task:') === 0) {
       const tabId = Number(a.name.slice('wpa-task:'.length));
       void resumeTaskFromAlarm(tabId);
+      return;
     }
+    if (a.name.indexOf('wpa-dav:') === 0) void resumeDavFromAlarm(a.name.slice('wpa-dav:'.length));
   });
 }
 if (chrome.runtime && chrome.runtime.onStartup) chrome.runtime.onStartup.addListener(() => { void bootKernel(); });

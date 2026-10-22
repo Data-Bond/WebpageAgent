@@ -22,7 +22,7 @@ node_modules/
 # Agent tooling workspaces and the sibling pageagent project
 .cursor/
 .mimocode/
-pageagent/
+pageagent
 
 # Local planning notes, not tracked
 PLAN.md

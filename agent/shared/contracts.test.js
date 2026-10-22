@@ -124,6 +124,45 @@ describe('WPA contracts kernel', () => {
     assert.equal(infoRec.c, 'Info');
     assert.equal(infoRec.r, 'typed-not-committed');
     assert.equal(infoRec.on, 12);
+    const waitMsg = '当前函数[callLLM]正在等待外部函数[fetch]的完成，已等待[20]秒';
+    const waitRec = C.makeDiagRecord({
+      probe: 'wait', code: 'Info', message: waitMsg, ms: 20000, world: 'sw'
+    });
+    assert.equal(waitRec.m, waitMsg);
+    assert.equal(waitRec.p, 'wait');
+    const waitNow = Date.now();
+    const waitStore = C.appendDiagStore(
+      { schemaVersion: 1, rows: [waitRec] },
+      C.makeDiagRecord({
+        probe: 'wait', code: 'Info',
+        message: '当前函数[callLLM]正在等待外部函数[fetch]的完成，已等待[40]秒',
+        ms: 40000, world: 'sw', now: waitNow + 20000
+      }),
+      { capKb: 50, now: waitNow + 20000 }
+    );
+    assert.equal(waitStore.rows.length, 1);
+    assert.match(waitStore.rows[0].m, /已等待\[40\]秒/);
+    assert.equal(waitStore.rows[0].ms, 40000);
+    const waitOther = C.appendDiagStore(
+      waitStore,
+      C.makeDiagRecord({
+        probe: 'wait', code: 'Info',
+        message: '当前函数[callLLM]正在等待外部函数[chrome.offscreen.createDocument]的完成，已等待[20]秒',
+        ms: 20000, world: 'sw', now: waitNow + 40000
+      }),
+      { capKb: 50, now: waitNow + 40000 }
+    );
+    assert.equal(waitOther.rows.length, 2);
+    const waitInterleaved = C.appendDiagStore(
+      C.appendDiagStore(waitStore, { t: waitNow + 50000, p: 'inject', c: 'Error' }, { capKb: 50, now: waitNow + 50000 }),
+      C.makeDiagRecord({
+        probe: 'wait', code: 'Info',
+        message: '当前函数[callLLM]正在等待外部函数[fetch]的完成，已等待[60]秒',
+        ms: 60000, world: 'sw', now: waitNow + 60000
+      }),
+      { capKb: 50, now: waitNow + 60000 }
+    );
+    assert.equal(waitInterleaved.rows.length, 3);
 
     const now = Date.now();
     let store = { schemaVersion: 1, rows: [] };
@@ -340,6 +379,7 @@ describe('toolProtocol hybrid', () => {
     const tools = P.toOpenAiTools();
     const get = tools.find((t) => t.function.name === 'get');
     const print = tools.find((t) => t.function.name === 'print');
+    assert.match(get.function.description, /document/);
     assert.match(get.function.description, /正文字数/);
     assert.match(get.function.description, /省略约 10000/);
     assert.match(print.function.description, /目录条数/);
@@ -808,7 +848,7 @@ describe('toolProtocol hybrid', () => {
     assert.equal(oldSnap.blocks[0].text, undefined);
     assert.equal(oldSnap.blocks[0].truncated, true);
     assert.equal(oldSnap.blocks[0].chars, 30000);
-    assert.match(String(snaps[0].content), /【截断 via=block/);
+    assert.match(String(snaps[0].content), /【blocks 正文已收起，可用 get\(idx\) 取回 chars=30000】/);
     assert.equal(curSnap.blocks[0].text, currentText);
     assert.equal(curSnap.blocks[0].truncated, false);
   });

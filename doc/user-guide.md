@@ -85,7 +85,7 @@ Read visible text and field state (written value, filter box text, dropdown open
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `target` | idx / text / object / `"url"` / `"title"` | yes | Handle to read; `url` / `title` for address or title |
+| `target` | idx / text / object / `"url"` / `"title"` / `"document"` | yes | Handle to read; `url` / `title` for address or title; `document` for the current PDF body |
 | `limit` | integer | no | Max body chars, default ~10000, hard cap 500000 |
 | `offset` | integer | no | Start at char N (0-based); slice with `limit` |
 | `open` | boolean | no | If true, open dropdown/cascade before reading options |
@@ -93,6 +93,7 @@ Read visible text and field state (written value, filter box text, dropdown open
 **Branches**
 
 - `target` is `url` or `title`: returns URL or title text.
+- `target` is `document`: when the current page is a PDF, returns a body slice (`chars` / `limit` / `offset` / `truncated`). The snapshot shows `document: { kind, url, name }` even with an empty DOM. Not a PDF → `reason: not-pdf`.
 - **One** node: `text`, `chars`, `fieldState`, visible `options`, `label`, `sec` (section).
 - `fieldState.committed` is **shown display text** (selection chips / read-only innerText / box value)—**not** a “already selected” verdict. `filter` is the writable filter box value; read-only combobox has empty `filter`, `committed` still shows display text. `open` / `optionsTop` describe **this trigger’s visible popup**; option `sel` comes from DOM `aria-selected` / `--selected`, not string comparison by the engine.
 - **Zero** or **many** nodes: `ok: false`, `reason` `not-found` or `ambiguous`, `catalog` for this round. Short text may live-lookup after truncation.
@@ -164,6 +165,8 @@ Next round: `delegate` to that tab or `tabClose`.
 - **CSS**: only when it looks like a selector and matches a node; do not use long skill selectors as routine handles.
 
 Do not write “hover then immediately click Preview”. Write: if item not visible, hover first, then click from the list.
+
+If a click produces a file, the receipt carries `file` (name and body) and no system save dialog appears. The receipt’s `savedTo` records where the user saved it: the save picker window opens and the user chooses local disk or WebDAV; the model only reads the receipt. When the current page itself is a PDF, use `get` with `target` = `document`.
 
 ---
 
@@ -454,6 +457,9 @@ Compressed tool results appear under 【执行结果】. Common fields:
 | `refreshed` / `likelyCaptcha` | Image clicked before capture (false now); captcha cleanup |
 | `statusMessages` | On-page toasts/dialog text—not engine judgment |
 | `selection` | Current checked/highlighted rows (name + idx) |
+| `file` | File produced by a click: `name`, `mime`, `chars`, `text`. PDFs arrive as body slices; no system save dialog |
+| `saveDialog` | A system save dialog appeared and bytes were not captured |
+| `savedTo` | Where the file was saved: `kind` = `local` / `webdav` / `none`, plus `path`. The user picks the destination in the save picker window; the model only reads the receipt |
 
 You may write: “If ambiguous, stop and show catalog” or “Pick the row with sec=…”. Do not hard-code stale idx.
 

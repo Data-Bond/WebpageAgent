@@ -873,7 +873,7 @@
           delete block.text;
           block.chars = blockChars;
           block.truncated = true;
-          note = formatTruncNote('block', 0, 0, blockChars);
+          note = '【blocks 正文已收起，可用 get(idx) 取回 chars=' + blockChars + '】';
           folded = true;
         }
       }
@@ -1094,13 +1094,15 @@
   var DIAG_CAP_KB_DEFAULT = 50;
   var DIAG_CAP_KB_MIN = 10;
   var DIAG_CAP_KB_MAX = 200;
+  // WebDAV IndexedDB 拓扑：background 与 offscreen 都从这里取，禁止各自硬编码
+  var DAV_DB = { NAME: 'wpa-dav', VERSION: 2, TASKS: 'tasks', BLOBS: 'blobs' };
   var DIAG_TTL_MS = 24 * 3600 * 1000;
   var DIAG_FOLD_MS = 5 * 60 * 1000;
   var DIAG_TRAIL_MAX = 20;
   var DIAG_TRAIL_STORE_MAX = 80;
   var DIAG_PROBES = {
     config: 1, inject: 1, bridge: 1, llm: 1, ocr: 1,
-    storage: 1, idb: 1, offscreen: 1, unhandled: 1, settings: 1, panel: 1
+    storage: 1, idb: 1, offscreen: 1, unhandled: 1, settings: 1, panel: 1, wait: 1
   };
   var DIAG_CODES = {
     Error: 1, Timeout: 1, Quota: 1, Bridge: 1, Inject: 1, Offscreen: 1,
@@ -1208,6 +1210,8 @@
     if (trail.length) rec.trail = trail;
     var reason = String(input.reason || '').replace(/\s+/g, ' ').trim().slice(0, 40);
     if (reason) rec.r = reason;
+    var msg = String(input.message || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+    if (msg && !/https?:|sk-|Bearer|api[_-]?key/i.test(msg)) rec.m = msg;
     var on = Number(input.optionsCount);
     if (Number.isFinite(on) && on >= 0 && on <= 5000) rec.on = Math.round(on);
     return rec;
@@ -1231,6 +1235,8 @@
     if (trail.length) rec.trail = trail;
     var reason = String(row.r || row.reason || '').replace(/\s+/g, ' ').trim().slice(0, 40);
     if (reason) rec.r = reason;
+    var msg = String(row.m || row.message || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+    if (msg && !/https?:|sk-|Bearer|api[_-]?key/i.test(msg)) rec.m = msg;
     var on = Number(row.on != null ? row.on : row.optionsCount);
     if (Number.isFinite(on) && on >= 0 && on <= 5000) rec.on = Math.round(on);
     return rec;
@@ -1263,6 +1269,14 @@
     return out;
   }
 
+  // wait 探针的折叠键：「当前函数[X]正在等待外部函数[Y]的完成」前缀，
+  // 同一等待的相邻记录折叠为一行，原地更新秒数与 ms。
+  function waitDiagFoldKey(rec) {
+    if (!rec || rec.p !== 'wait' || !rec.m) return '';
+    var at = String(rec.m).indexOf('的完成，已等待[');
+    return at > 0 ? String(rec.m).slice(0, at) : '';
+  }
+
   function appendDiagStore(store, rec, opts) {
     opts = opts || {};
     var capKb = clampDiagCapKb(opts.capKb);
@@ -1273,7 +1287,10 @@
     var incoming = rec && typeof rec === 'object' ? sanitizeDiagRow(rec) : null;
     if (incoming) {
       var last = rows.length ? rows[rows.length - 1] : null;
-      if (last && last.p === incoming.p && last.c === incoming.c && (now - Number(last.t || 0)) <= DIAG_FOLD_MS) {
+      var waitKey = waitDiagFoldKey(incoming);
+      if (waitKey && last && waitDiagFoldKey(last) === waitKey) {
+        rows[rows.length - 1] = incoming;
+      } else if (!incoming.m && last && !last.m && last.p === incoming.p && last.c === incoming.c && (now - Number(last.t || 0)) <= DIAG_FOLD_MS) {
         var folded = sanitizeDiagRow({
           t: incoming.t,
           p: last.p,
@@ -1452,6 +1469,7 @@
     DIAG_CAP_KB_MIN: DIAG_CAP_KB_MIN,
     DIAG_CAP_KB_MAX: DIAG_CAP_KB_MAX,
     DIAG_TTL_MS: DIAG_TTL_MS,
+    DAV_DB: DAV_DB,
     DIAG_PROBES: DIAG_PROBES,
     DIAG_CODES: DIAG_CODES,
     clampDiagCapKb: clampDiagCapKb,

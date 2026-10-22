@@ -94,7 +94,7 @@
 
 | 名        | 类型                                  | 必填  | 说明                           |
 | -------- | ----------------------------------- | --- | ---------------------------- |
-| `target` | idx / 文本 / 对象 / `"url"` / `"title"` | 是   | 要读的句柄；`url`、`title` 读地址或标题   |
+| `target` | idx / 文本 / 对象 / `"url"` / `"title"` / `"document"` | 是   | 要读的句柄；`url`、`title` 读地址或标题；`document` 读当前 PDF 正文 |
 | `limit`  | 整数                                  | 否   | 正文字数上限，省略约 10000，硬顶 500000   |
 | `offset` | 整数                                  | 否   | 从第 N 个字起，0 起算。与 `limit` 组成切片 |
 | `open`   | 布尔                                  | 否   | 为真时先打开下拉/级联再读可见选项            |
@@ -103,6 +103,7 @@
 **分支**
 
 - `target` 为 `url` 或 `title`：返回地址或标题文本，不找控件。
+- `target` 为 `document`：当前页是 PDF 时返回正文切片（`chars` / `limit` / `offset` / `truncated`）。快照里会有 `document: { kind, url, name }`，DOM 为空也有。当前页不是 PDF 则 `reason: not-pdf`。
 - 定位到 **1** 个节点：返回 `text`、`chars`、`fieldState`、可见 `options`、`label`、`sec`（所在栏目）。
 - `fieldState.committed` 是控件上的 shown 展示字（selection items / 只读区 innerText / 框里的字），**不是**「已经选好」的判定。`filter` 是可写过滤框的 `value`；只读 combobox 没有可写框时 `filter` 为空，`committed` 仍是展示字。`open` / `optionsTop` 只描述**这个 trigger 所属的可见弹层**；选项上的 `sel` 来自 DOM 的 `aria-selected` / `--selected` 等，不是引擎拿字符串比对出来的。
 - 定位到 **0** 或 **多** 个：`ok: false`，`reason` 为 `not-found` 或 `ambiguous`，`catalog` 为本轮目录。短文走 live 反查（截断后仍可能读到未画出 outline 的控件）。
@@ -184,6 +185,8 @@
 - **CSS**：仅当它像选择器且能在页上找到节点；技能里的长选择器不要当常规句柄。
 
 不要在指令里写「悬停后立刻点预览」。应写：若项还没出现，先悬停，根据列出的项再点。
+
+点击若产生文件，回执带 `file`（文件名与正文），不弹系统保存框。当前页本身是 PDF 时用 `get`，`target` 为 `document`。
 
 ---
 
@@ -552,6 +555,9 @@
 | `refreshed` / `likelyCaptcha`  | 截图前是否点过图（现为 false）；引擎是否按验证码清洗了识别结果                       |
 | `statusMessages`               | 页上当时的提示/弹窗原文，不是引擎判定的对错                                     |
 | `selection`                    | 当前勾选或高亮的条目（名 + 本轮 idx）。右键菜单往往作用于这个集合，不是只作用于刚指向的那一个 |
+| `file`                         | 点击产生的文件：`name`、`mime`、`chars`、`text`。PDF 为正文切片，不经过系统保存框 |
+| `saveDialog`                   | 系统保存框已经出现，字节没取到 |
+| `savedTo`                      | 文件保存去向：`kind` 为 `local` / `webdav` / `none`，`path` 为路径。保存去向由用户在弹出的选择框决定，模型只读回执 |
 
 
 你在指令里可以写：「若回执说匹配到多处，停下来把目录念给我」或「按 catalog 里带某栏目名的那一条继续」。不要写死过期的 idx。

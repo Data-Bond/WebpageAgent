@@ -109,7 +109,7 @@ ok(/id="exportSkillsSelectedBtn"/.test(settingsHtml) && /id="exportSkillsAllBtn"
   && /id="skillSelectAllBtn"/.test(settingsHtml) && /id="skillInvertBtn"/.test(settingsHtml)
   && /panel\.exportWithPii/.test(settingsHtml) && /exportWebSkills/.test(settingsSrc)
   && /includeValues: !!\(\$\('exportSkillValues'\)/.test(settingsSrc)
-  && /WebpageAgent-web-skill\.json/.test(settingsSrc) && /WebpageAgent-web-skill-pack\.json/.test(bg)
+  && /WebpageAgent-web-skill\.json/.test(bg) && /WebpageAgent-web-skill-pack\.json/.test(bg)
   && !/web-skill\.md/.test(settingsSrc) && !/web-skill-pack\.md/.test(bg),
   '设置页可导出 WEB-SKILL JSON，含全选反选与个人数据开关');
 ok(/id="uploadSkillsInput"/.test(settingsHtml) && /importWebSkills/.test(settingsSrc),
@@ -342,6 +342,32 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
     '手册：click hover/right/dblclick 指针原语');
   ok(/panes 或 <PANE>/.test(pbSrc) && /用其 idx get\/scroll/.test(pbSrc),
     '手册：覆盖层正文在 panes/<PANE>，用 idx get/scroll');
+  ok(/get\(document\)/.test(pbSrc) && /回执带 file/.test(pbSrc) && /不弹系统保存框/.test(pbSrc),
+    '手册：PDF 用 get(document)，下载回执带 file');
+  ok(/function pdfUrlFromHref/.test(bridge) && /needsPdf: true/.test(bridge) &&
+    /function installDownloadCapture/.test(bridge) && /hasAttribute\('download'\)/.test(bridge) &&
+    /preventDefault\(\)/.test(bridge),
+    'PDF 地址识别、get(document) 与下载锚点拦截');
+  ok(/saveAs: true/.test(bg) && /extensionDownloadHold/.test(bg) && /onDeterminingFilename/.test(bg),
+    '设置页导出仍另存为；页面任务下载可取消');
+  {
+    const pdfBox = { URLSearchParams: URLSearchParams };
+    try {
+      vm.runInNewContext(
+        extractFn(bridge, 'pdfUrlFromHref') + '\nthis.pdfUrlFromHref = pdfUrlFromHref;',
+        pdfBox
+      );
+    } catch (ePdf) {
+      ok(false, '加载 pdfUrlFromHref 失败: ' + (ePdf && ePdf.message));
+    }
+    if (typeof pdfBox.pdfUrlFromHref === 'function') {
+      ok(pdfBox.pdfUrlFromHref('file:///C:/a/b.pdf') === 'file:///C:/a/b.pdf', 'file PDF 地址原样返回');
+      ok(pdfBox.pdfUrlFromHref('https://ex/a.pdf?x=1').indexOf('a.pdf?x=1') >= 0, 'http PDF 保留查询');
+      ok(pdfBox.pdfUrlFromHref('https://ex/page') === '', '普通地址不是 PDF');
+      const plugin = 'chrome-extension://abc/index.html?file=' + encodeURIComponent('https://ex/a.pdf');
+      ok(pdfBox.pdfUrlFromHref(plugin) === 'https://ex/a.pdf', 'PDF 插件页取出原文件地址');
+    }
+  }
   ok(/快照优先当前覆盖层/.test(pbSrc) && /truncated 则 get\/print\/scroll/.test(pbSrc),
     '手册一句：快照优先当前面，truncated 则继续探');
   ok(/回执 catalog 编号与上轮快照同批，跨轮作废/.test(pbSrc), '手册：回执 catalog idx 跨轮作废');
@@ -1052,12 +1078,108 @@ ok(/function taskLeaseKey\(/.test(bg) && /function taskAlarmName\(/.test(bg)
   && /waitingAsk/.test(bg)
   && /function finishResurrectedChild\(/.test(bg)
   && /function nudgeParentTaskAlarm\(/.test(bg)
+  && /wpa-dav:/.test(bg)
+  && /function startDavTask\(/.test(bg)
+  && /davSecret:/.test(bg)
   && /function ensureOriginEpochs\(/.test(bg)
   && /originEpoch:/.test(bg)
   && /function appendDelegateReceipt\(/.test(bg)
   && /function handoffResurrectedChild\(/.test(bg)
   && /将按保存的会话续跑/.test(bg),
   '活动任务用一次性闹钟续跑，进程仍在则再预约而不重复启动');
+ok(/const EXTERNAL_WAIT_LOG_MS = 20000/.test(bg)
+  && /function withExternalWait\(/.test(bg)
+  && /当前函数\[' \+ who \+ '\]正在等待外部函数\[' \+ what \+ '\]的完成，已等待\[' \+ sec \+ '\]秒/.test(bg)
+  && /probe: 'wait'/.test(bg),
+  '外部等待每 20 秒写入全局诊断记录');
+ok(!/withExternalWait\('callLLM'/.test(bg)
+  && !/withExternalWait\('runStreamingTask', 'callLLM'/.test(bg)
+  && !/withExternalWait\('preprocessFiles'/.test(bg)
+  && !/withExternalWait\('ensureAttachText'/.test(bg)
+  && /withExternalWait\('callChatCompletions', 'fetch'/.test(bg),
+  '同一外部资源只保留最贴近的一层等待日志');
+ok(/withExternalWait\('runOcrExclusive', 'OCR 队列'/.test(bg)
+  && /withExternalWait\('runPdfExclusive', 'offscreen 文档'/.test(bg),
+  '排他队列等待日志写出真实外部对象');
+ok(/function waitDiagFoldKey\(/.test(fs.readFileSync(path.join(ROOT, 'shared/contracts.js'), 'utf8'))
+  && /的完成，已等待\[/.test(fs.readFileSync(path.join(ROOT, 'shared/contracts.js'), 'utf8')),
+  '同一等待的相邻诊断记录折叠为一行');
+ok(/function requestSaveDestination\(/.test(bg)
+  && /function pumpSaveQueue\(/.test(bg)
+  && /savepicker\.html/.test(bg)
+  && /saveGetCurrent/.test(bg)
+  && /savePickDav/.test(bg)
+  && /SAVE_STAGE_PREFIX/.test(bg)
+  && /chrome\.windows\.create/.test(bg)
+  && /chrome\.windows\.onRemoved/.test(bg),
+  '保存去向编排：暂存字节、选择框窗口、FIFO 队列');
+ok(/savedTo/.test(extractFn(bg, 'compactOneHelperValue'))
+  && /offerSaveDestination/.test(extractFn(bg, 'enrichPdfResults'))
+  && /savedTo: r\.savedTo/.test(bg)
+  && /function downloadFromPicker\(/.test(bg),
+  'click 回执与导出回执带 savedTo 保存去向');
+ok(/function davResumable\(/.test(bg)
+  && /davResumable\(rec\.status\)/.test(extractFn(bg, 'resumeDavFromAlarm'))
+  && /dav\.password/.test(extractFn(bg, 'resumeDavFromAlarm')),
+  '闹钟续跑缺 ha1 时从设置配置回补密码');
+ok(/function normalizeWebdavConfig\(/.test(bg) && /webdav: normalizeWebdavConfig/.test(bg),
+  'WebDAV 配置进入合并配置与下发负载');
+{
+  const savepickerSrc = fs.readFileSync(path.join(ROOT, 'savepicker.js'), 'utf8');
+  const savepickerHtml = fs.readFileSync(path.join(ROOT, 'savepicker.html'), 'utf8');
+  ok(/from '\.\/webdav\.mjs'/.test(savepickerSrc)
+    && /davPropfind/.test(savepickerSrc)
+    && /davMkcol/.test(savepickerSrc)
+    && /savePickLocal/.test(savepickerSrc)
+    && /savePickDav/.test(savepickerSrc)
+    && /saveGetCurrent/.test(savepickerSrc)
+    && /saveAdvance/.test(savepickerSrc)
+    && /shared\/i18n\.js/.test(savepickerHtml),
+    'savepicker 逐层浏览远程目录并回报去向选择');
+  ok(/id="webdavUrl"/.test(settingsHtml) && /id="webdavPass"/.test(settingsHtml) && /id="webdavTestBtn"/.test(settingsHtml)
+    && /webdav:\s*\{/.test(settingsSrc)
+    && /davPropfind\(dav\.url/.test(settingsSrc)
+    && /AbortController/.test(extractFn(settingsSrc, 'detectModelsForRow')),
+    '设置页 WebDAV 卡片与模型列表 20 秒超时');
+  const offscreenDav = srcs['offscreen.js'] || fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
+  ok(/createDavClient/.test(offscreenDav)
+    && /davDbStoreBlob/.test(offscreenDav)
+    && /status: 'uploading'/.test(offscreenDav)
+    && /davWait/.test(offscreenDav)
+    && /saveBlobUrl/.test(offscreenDav)
+    && /mergeDoneParts/.test(offscreenDav)
+    && /missingRangesText/.test(offscreenDav)
+    && /status: 'error'/.test(offscreenDav)
+    && /DAV_RANGE_MAX_ATTEMPTS/.test(offscreenDav)
+    && /WPA_CONTRACTS\.DAV_DB/.test(offscreenDav),
+    'offscreen 执行 PUT/MKCOL、暂存字节、错误落状态、区间按次重试');
+  const doSaveLocalFn = extractFn(bg, 'doSaveLocal');
+  ok(/function dropSaveUrlWhenSettled\(/.test(bg)
+    && doSaveLocalFn.indexOf("finishSaveRequest(req, { kind: 'local'") >= 0
+    && doSaveLocalFn.indexOf('dropSaveUrlWhenSettled(dl.id') > doSaveLocalFn.indexOf("finishSaveRequest(req, { kind: 'local'")
+    && doSaveLocalFn.indexOf('saveDropUrl') < 0,
+    '本地保存确认成功后才回收暂存字节与 blob URL');
+  ok(/function isSavePickerSender\(/.test(bg)
+    && /msg\.cmd === 'saveGetCurrent' \|\| msg\.cmd === 'savePickLocal'/.test(bg)
+    && /!isSavePickerSender\(sender\)/.test(bg),
+    'save 与 davStart 消息入口只接受 savepicker 发送方');
+  ok(/watchHost !== itemHost/.test(bg)
+    && /function armPageDownloadWatch\(tabId\)/.test(bg)
+    && /watch\.host = new URL\(tab\.url\)\.host/.test(bg),
+    '下载布防只拦截与布防标签页同站的下载');
+  ok(/__wpaDownloadArmed/.test(bridge)
+    && /armDownload: watchClick/.test(bg)
+    && /runOperations\(payload\.operations \|\| \[\], !!payload\.armDownload\)/.test(bridge)
+    && /__wpaDownloadArmed = false/.test(bridge),
+    '下载锚点钩子只在批次布防期间拦截');
+  const noteDavSaveDoneFn = extractFn(bg, 'noteDavSaveDone');
+  ok(noteDavSaveDoneFn.indexOf('saveStageDrop(SAVE_STAGE_PREFIX + saveId)') >= 0,
+    'SW 回收后续跑完成的保存任务仍回收暂存字节');
+  ok(!/WPA_DAV/.test(fs.readFileSync(path.join(ROOT, 'webdav.mjs'), 'utf8'))
+    && /DAV_DB: DAV_DB/.test(fs.readFileSync(path.join(ROOT, 'shared/contracts.js'), 'utf8'))
+    && /WPA_CONTRACTS\.DAV_DB/.test(bg),
+    'IndexedDB 拓扑常量共享、WPA_DAV 死对象已移除');
+}
 {
   const leaseApi = new Function(
     extractFn(bg, 'taskLeaseKey') + '\n' +
@@ -2481,7 +2603,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.6.1', '锁步版本为 6.6.1');
+ok(manifestVer === '6.7.0', '锁步版本为 6.7.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -3673,8 +3795,7 @@ ok(/settings\.diag/.test(settingsHtml) && /settings\.diagData/.test(settingsSrc)
   '全局配置可下载诊断数据');
 ok(/WebpageAgent\.json/.test(bg) && /WebpageAgent\.SECRETS\.json/.test(bg)
   && /WebpageAgent-web-skill\.json/.test(bg) && /WebpageAgent-web-skill-pack\.json/.test(bg)
-  && /WebpageAgent-diag-/.test(bg) && /WebpageAgent-diag\.json/.test(settingsSrc)
-  && /WebpageAgent\.json/.test(settingsSrc) && /WebpageAgent\.SECRETS\.json/.test(settingsSrc)
+  && /WebpageAgent-diag-/.test(bg)
   && !/assistant-config/.test(bg) && !/assistant-config/.test(settingsSrc)
   && !/'wpa-diag-/.test(bg) && !/'wpa-diag\.json'/.test(settingsSrc),
   '全局配置下载文件默认前缀为 WebpageAgent');
@@ -4235,6 +4356,22 @@ if (runCompactBox.compactRunResult) {
   ok(selOut.indexOf('AMD_opt_vasp_result.txt') >= 0 && selOut.indexOf('超算应用') >= 0 &&
     selOut.indexOf('"selection"') >= 0,
     '右键回执压缩保留 selection 条目名');
+  const filePacked = JSON.stringify({
+    kind: 'batch',
+    results: [{
+      op: 'click',
+      value: {
+        ok: true,
+        file: { name: '任务书.pdf', mime: 'application/pdf', chars: 4, text: '指标正文' },
+        saveDialog: true,
+        dataUrl: 'data:application/pdf;base64,AAAA'
+      }
+    }]
+  });
+  const fileOut = runCompactBox.compactRunResult(filePacked);
+  ok(fileOut.indexOf('任务书.pdf') >= 0 && fileOut.indexOf('指标正文') >= 0 &&
+    fileOut.indexOf('"saveDialog":true') >= 0 && fileOut.indexOf('base64') < 0,
+    '点击文件回执保留 file 与 saveDialog，不带 dataUrl');
   const verifiedPacked = JSON.stringify({
     kind: 'batch',
     results: [{ op: 'setVal', value: { ok: true, verified: true, actual: '单位', expected: '单位' } }]
@@ -5001,7 +5138,7 @@ if (redactBox.extractRedactedDocument) {
 ok(/pageCompatMode/.test(panelSrc), '本页配置有兼容模式开关');
 ok(/panelStoreSet/.test(bg) && /panelStoreGet/.test(bg) && /panelStoreSet/.test(panelSrc), '面板存储经 SW 代理');
 ok(/publicConfigPayload/.test(bg) && /maskProviderList/.test(bg), '面板配置负载剥离明文密钥');
-ok(/exportPickerIncludeKeys/.test(settingsHtml) && /SECRETS/.test(settingsSrc), '导出完整密钥需确认');
+ok(/exportPickerIncludeKeys/.test(settingsHtml) && /SECRETS/.test(bg), '导出完整密钥需确认');
 ok(/function pickExportPayload\(/.test(bg) && /opts\.pick/.test(bg), '导出支持按数据卡/provider 勾选');
 const pickBox = {};
 try {
@@ -5114,6 +5251,8 @@ ok(/Full user guide:/.test(readmeSrc) && /doc\/user-guide\.md/.test(readmeSrc) &
     /把现在屏幕上的验证码/.test(guideSrc) && /填进『验证码』框/.test(guideSrc),
     '使用说明：ocr/ocrFill 只读像素，submit 仅传入才点，并给出 captcha 选图的用户指令');
   ok(!/一步完成/.test(guideSrc), '使用说明不再把 ocrFill 写成一步完成');
+  ok(/document/.test(guideSrc) && /回执带 `file`/.test(guideSrc) && /不弹系统保存框/.test(guideSrc),
+    '使用说明：当前 PDF 用 get(document)，下载回执带 file');
   ok(/不先左键/.test(guideSrc) && /selection/.test(guideSrc),
     '使用说明：右键不改选中，回执带 selection');
   ok(/附近列表出现或选项变了/.test(guideSrc) && /yieldBatch/.test(guideSrc),

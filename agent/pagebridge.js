@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '6.6.1';
+  var BRIDGE_VERSION = '6.7.0';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
   var WAIT_TIMEOUT_MAX_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
@@ -19,8 +19,9 @@
   var SNAPSHOT_FILE_NAME_MAX = 80;
   var GET_TEXT_DEFAULT = 10000;
   var GET_TEXT_HARD = 500000;
-  var STATUS_MSG_CHARS = 300;
-  var STATUS_MSG_MAX = 12;
+    var STATUS_MSG_CHARS = 300;
+    var STATUS_MSG_MAX = 12;
+    var DOWNLOAD_CAPTURE_WAIT_MS = 8000;
 
   function install() {
     var scriptAborted = false;
@@ -3351,9 +3352,205 @@
         return String(sel.page || '').trim().toLowerCase();
       }
       var s = String(sel == null ? '' : sel).trim().toLowerCase();
-      if (s === 'url' || s === 'title') return s;
+      if (s === 'url' || s === 'title' || s === 'document') return s;
       return '';
     }
+
+    function pdfUrlFromHref(href) {
+      var s = String(href || '').trim();
+      if (!s) return '';
+      if (/^chrome-extension:/i.test(s) && /pdf/i.test(s)) {
+        var q = s.indexOf('?');
+        if (q >= 0) {
+          var query = s.slice(q + 1);
+          var file = '';
+          try {
+            var params = new URLSearchParams(query);
+            file = params.get('file') || params.get('src') || '';
+          } catch (eQ) { file = ''; }
+          if (!file) {
+            var first = query.split('&')[0];
+            try { first = decodeURIComponent(first); } catch (eD) {}
+            if (/^(https?:|file:)/i.test(first)) file = first;
+          }
+          if (file) return file;
+        }
+      }
+      var path = s.split('?')[0].split('#')[0];
+      if (/\.pdf$/i.test(path)) return s;
+      return '';
+    }
+
+    function pdfDocumentInfo() {
+      var href = '';
+      try { href = String(location.href || ''); } catch (eH) { href = ''; }
+      var url = pdfUrlFromHref(href);
+      if (!url) {
+        var emb = null;
+        try {
+          emb = document.querySelector('embed[type="application/pdf"], object[type="application/pdf"]');
+        } catch (eE) { emb = null; }
+        if (emb) {
+          var src = '';
+          try { src = String(emb.src || emb.data || ''); } catch (eS) { src = ''; }
+          url = pdfUrlFromHref(src) || (/^https?:|^file:/i.test(src) ? src : '');
+        }
+      }
+      if (!url) return null;
+      var name = 'document.pdf';
+      try {
+        var path = url.split('?')[0].split('#')[0];
+        var base = path.slice(path.lastIndexOf('/') + 1);
+        if (base) name = decodeURIComponent(base);
+      } catch (eN) {}
+      return { kind: 'pdf', url: url, name: name };
+    }
+
+    var PDF_BYTE_CAP = 32 * 1024 * 1024;
+
+    function bytesToDataUrl(buf, mime) {
+      var bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+      var CHUNK = 0x2000;
+      var binary = '';
+      for (var i = 0; i < bytes.length; i += CHUNK) {
+        var sub = bytes.subarray(i, Math.min(i + CHUNK, bytes.length));
+        binary += String.fromCharCode.apply(null, sub);
+      }
+      return 'data:' + (mime || 'application/octet-stream') + ';base64,' + btoa(binary);
+    }
+
+    async function bytesFromUrl(url) {
+      var res = await fetch(url, { credentials: 'include' });
+      if (!res || !res.ok) {
+        return { ok: false, error: 'HTTP ' + (res && res.status), url: url };
+      }
+      var buf = await res.arrayBuffer();
+      if (buf.byteLength > PDF_BYTE_CAP) {
+        return { ok: false, reason: 'too-large', byteLength: buf.byteLength, url: url };
+      }
+      var mime = 'application/octet-stream';
+      var name = '';
+      try { mime = (res.headers.get('content-type') || mime).split(';')[0].trim() || mime; } catch (eM) {}
+      try {
+        var cd = res.headers.get('content-disposition') || '';
+        var m = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(cd);
+        if (m) name = decodeURIComponent((m[1] || m[2] || '').trim());
+      } catch (eC) {}
+      return {
+        ok: true,
+        url: url,
+        name: name,
+        mime: mime,
+        byteLength: buf.byteLength,
+        dataUrl: bytesToDataUrl(buf, mime)
+      };
+    }
+
+    async function readDocumentBytes() {
+      var info = null;
+      try { info = pdfDocumentInfo(); } catch (e) { info = null; }
+      if (!info) return { ok: false, reason: 'not-pdf', url: String(location.href || '') };
+      var got = await bytesFromUrl(info.url);
+      if (got && !got.name) got.name = info.name;
+      if (got && got.ok && !got.mime) got.mime = 'application/pdf';
+      return got;
+    }
+
+    function takeDownloadCapture() {
+      var got = globalThis.__wpaDownloadCapture || null;
+      globalThis.__wpaDownloadCapture = null;
+      globalThis.__wpaDownloadPending = 0;
+      globalThis.__wpaDownloadHref = '';
+      if (!got) return { ok: false };
+      return got;
+    }
+
+    function downloadAnchor(el) {
+      if (!el || String(el.tagName || '').toUpperCase() !== 'A') return false;
+      var hasDl = false;
+      try { hasDl = !!(el.hasAttribute && el.hasAttribute('download')); } catch (eA) { hasDl = false; }
+      if (!hasDl) return false;
+      var href = '';
+      try { href = String(el.href || ''); } catch (eH) { href = ''; }
+      if (!href || href === location.href) return false;
+      return /^blob:|^data:|^https?:|^file:/i.test(href);
+    }
+
+    function captureDownloadAnchor(a) {
+      var href = '';
+      try { href = String(a.href || ''); } catch (eH) { href = ''; }
+      if (!href) return;
+      if (globalThis.__wpaDownloadHref === href && globalThis.__wpaDownloadPending) return;
+      var at = Date.now();
+      globalThis.__wpaDownloadHref = href;
+      globalThis.__wpaDownloadPending = at;
+      var name = '';
+      try { name = String(a.getAttribute('download') || ''); } catch (eN) { name = ''; }
+      bytesFromUrl(href).then(function (rec) {
+        rec = rec || { ok: false };
+        rec.at = at;
+        if (!rec.name && name) rec.name = name;
+        if (!rec.ok) rec.error = rec.error || rec.reason || '读取下载失败';
+        globalThis.__wpaDownloadCapture = rec;
+        if (globalThis.__wpaDownloadPending === at) globalThis.__wpaDownloadPending = 0;
+      }, function (err) {
+        globalThis.__wpaDownloadCapture = {
+          ok: false, at: at, error: String(err && err.message || err), name: name, url: href
+        };
+        if (globalThis.__wpaDownloadPending === at) globalThis.__wpaDownloadPending = 0;
+      });
+    }
+
+    function installDownloadCapture() {
+      if (globalThis.__wpaDownloadHook) return;
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) return;
+      globalThis.__wpaDownloadHook = true;
+      // 只在任务批次布防（__wpaDownloadArmed）期间拦截下载锚点，
+      // 其余时间放行原始点击，页面自身下载不受影响
+      document.addEventListener('click', function (ev) {
+        if (!globalThis.__wpaDownloadArmed) return;
+        var t = ev.target;
+        var a = null;
+        try { a = t && t.closest ? t.closest('a') : null; } catch (eC) { a = null; }
+        if (!downloadAnchor(a)) return;
+        ev.preventDefault();
+        captureDownloadAnchor(a);
+      }, true);
+      var proto = typeof HTMLAnchorElement === 'function' ? HTMLAnchorElement.prototype : null;
+      if (proto && !proto.__wpaClick && typeof proto.click === 'function') {
+        var orig = proto.click;
+        proto.click = function () {
+          if (globalThis.__wpaDownloadArmed && downloadAnchor(this)) {
+            captureDownloadAnchor(this);
+            return;
+          }
+          return orig.apply(this, arguments);
+        };
+        proto.__wpaClick = true;
+      }
+    }
+
+    async function waitDownloadCaptureReady(maxMs, since) {
+      var cap = Math.max(0, Number(maxMs) || 0);
+      since = Number(since) || 0;
+      function fresh() {
+        var got = globalThis.__wpaDownloadCapture;
+        return !!(got && Number(got.at || 0) >= since);
+      }
+      function pendingFresh() {
+        return Number(globalThis.__wpaDownloadPending || 0) >= since;
+      }
+      if (!pendingFresh() && !fresh()) return false;
+      var start = Date.now();
+      while (Date.now() - start < cap) {
+        if (fresh()) return true;
+        if (!pendingFresh()) return fresh();
+        await waitMs(50);
+      }
+      return fresh();
+    }
+
+    installDownloadCapture();
 
     function notFoundError(sel) {
       var desc = describeTarget(sel);
@@ -4732,6 +4929,9 @@
         openOptions: serializeOptions(openPopupItems, 40),
         title: document.title || '',
         url: location.href || '',
+        document: (function () {
+          try { return pdfDocumentInfo(); } catch (eDoc) { return null; }
+        })() || undefined,
         heading: extractHeading(),
         activeMenu: extractActiveMenu(),
         interactiveCount: all.length,
@@ -9321,6 +9521,21 @@
             var self = this;
             var looked = lookupTarget(sel, function (needle, n) { return self.findControls(needle, n); }, 20);
             if (looked.kind === 'meta') {
+              if (looked.page === 'document') {
+                var docInfo = null;
+                try { docInfo = pdfDocumentInfo(); } catch (eDoc) { docInfo = null; }
+                if (!docInfo) {
+                  return withResolved({
+                    ok: false, kind: 'query', tool: 'get', reason: 'not-pdf',
+                    url: location.href || ''
+                  }, looked);
+                }
+                return withResolved({
+                  ok: true, kind: 'query', tool: 'get', via: 'document',
+                  needsPdf: true, url: docInfo.url, name: docInfo.name,
+                  limit: opts.limit, offset: opts.offset
+                }, looked);
+              }
               var metaText = looked.page === 'title' ? (document.title || '') : (location.href || '');
               var metaSlice = sliceGetTextResult(metaText, opts);
               return withResolved({
@@ -9525,10 +9740,11 @@
       return value.ok === false && !value.continueBatch;
     }
 
-    async function runOperations(operations) {
+    async function runOperations(operations, armDownload) {
       scriptAborted = false;
       beginPopupGen();
       hydrateSnapIndexFromDom();
+      if (armDownload) globalThis.__wpaDownloadArmed = true;
       var allowed = {
         setVal: 1, click: 1, select: 1, getText: 1, findControls: 1,
         clickByText: 1, inspect: 1,
@@ -9551,7 +9767,13 @@
             throw new Error('不支持的结构化操作: ' + op);
           }
           var args = Array.isArray(item.args) ? item.args : [];
+          var sinceCap = (op === 'click' || op === 'dblclick') ? Date.now() : 0;
           var value = await page[op].apply(page, args);
+          if (sinceCap && value && typeof value === 'object') {
+            var fileReady = false;
+            try { fileReady = await waitDownloadCaptureReady(DOWNLOAD_CAPTURE_WAIT_MS, sinceCap); } catch (eCap) { fileReady = false; }
+            if (fileReady) value.fileReady = true;
+          }
           if (value && typeof value === 'object' && !value.fieldState &&
               op !== 'print' && op !== 'wait' && op !== 'waitFor' && op !== 'sleep' &&
               !pageMetaTarget(args[0])) {
@@ -9595,6 +9817,8 @@
           probe: probeSignals(),
           logs: window.__assistantLogs || []
         };
+      } finally {
+        globalThis.__wpaDownloadArmed = false;
       }
     }
 
@@ -9611,7 +9835,7 @@
       payload = payload || {};
       if (cmd === 'snapshot') return snapshot(payload);
       if (cmd === 'probe') return probeSignals();
-      if (cmd === 'runOps') return runOperations(payload.operations || []);
+      if (cmd === 'runOps') return runOperations(payload.operations || [], !!payload.armDownload);
       if (cmd === 'setBusyMask') {
         setBusyMaskVisible(!!payload.on);
         return { ok: true };
@@ -9623,6 +9847,9 @@
       if (cmd === 'submitFailureContext') return collectSubmitFailureContext(payload.targets || []);
       if (cmd === 'viewPrint') return collectViewPrint(payload);
       if (cmd === 'captureImage') return captureImage(payload.selector || '');
+      if (cmd === 'readDocumentBytes') return readDocumentBytes();
+      if (cmd === 'fetchUrlBytes') return bytesFromUrl(String(payload.url || ''));
+      if (cmd === 'takeDownloadCapture') return takeDownloadCapture();
       if (cmd === 'officeDigest') {
         try {
           var api = officeApi();

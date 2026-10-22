@@ -549,16 +549,24 @@
       return;
     }
     showResultModal(t('settings.modelIdTitle'), t('settings.modelIdFetching') + '\nGET ' + url, '');
+    const controller = new AbortController();
+    const timer = setTimeout(() => { controller.abort(); }, 20000);
     let res;
     try {
       res = await fetch(url, {
         method: 'GET',
-        headers: { Authorization: 'Bearer ' + provider.apiKey }
+        headers: { Authorization: 'Bearer ' + provider.apiKey },
+        signal: controller.signal
       });
     } catch (e) {
-      showResultModal(t('settings.modelIdTitle'), t('settings.modelIdFail') + '\n' + String(e && e.message || e), 'err');
+      clearTimeout(timer);
+      const reason = e && e.name === 'AbortError'
+        ? t('settings.modelIdTimeout')
+        : String(e && e.message || e);
+      showResultModal(t('settings.modelIdTitle'), t('settings.modelIdFail') + '\n' + reason, 'err');
       return;
     }
+    clearTimeout(timer);
     const text = await res.text();
     let json = null;
     try { json = JSON.parse(text); } catch (e) { json = null; }
@@ -576,6 +584,31 @@
     closeModal('resultModal');
     const input = row.querySelector('[data-field="models"]');
     openModelIdPicker(input, ids, provider.models);
+  }
+
+  async function testWebdav() {
+    const dav = {
+      url: String($('webdavUrl').value || '').trim(),
+      username: String($('webdavUser').value || '').trim(),
+      password: String($('webdavPass').value || '')
+    };
+    if (!dav.url) {
+      showResultModal(t('settings.webdavTestTitle'), t('settings.webdavNeedUrl'), 'err');
+      return;
+    }
+    showResultModal(t('settings.webdavTestTitle'), t('settings.webdavTesting') + '\nPROPFIND ' + dav.url, '');
+    try {
+      const DAV = await import('./webdav.mjs');
+      const out = await DAV.davPropfind(dav.url, { username: dav.username, password: dav.password }, 0);
+      const self = (out.entries || [])[0] || {};
+      showResultModal(
+        t('settings.webdavTestTitle'),
+        t('settings.webdavTestOk') + '\n' + String(self.displayName || self.href || dav.url),
+        'ok'
+      );
+    } catch (e) {
+      showResultModal(t('settings.webdavTestTitle'), t('settings.webdavTestFail') + '\n' + String(e && e.message || e), 'err');
+    }
   }
 
   function testProviderRow(row, kind) {
@@ -628,6 +661,12 @@
     return {
       textProviders: collectProviders($('textProvidersList'), 'text'),
       ocrProviders: collectProviders($('ocrProvidersList'), 'ocr'),
+      webdav: {
+        url: String($('webdavUrl').value || '').trim(),
+        username: String($('webdavUser').value || '').trim(),
+        password: String($('webdavPass').value || ''),
+        root: String($('webdavRoot').value || '').trim()
+      },
       systemPromptText: $('systemPromptText').value,
       systemPromptOcr: $('systemPromptOcr').value,
       maxSteps: clampInt($('maxSteps').value, 1, 100, 100),
@@ -674,6 +713,11 @@
     ocrProviders.forEach((p) => addProviderRow(ocrList, p, 'ocr'));
 
     const defs = cfg.defaults || {};
+    const dav = cfg.webdav && typeof cfg.webdav === 'object' ? cfg.webdav : {};
+    $('webdavUrl').value = String(dav.url || '');
+    $('webdavUser').value = String(dav.username || '');
+    $('webdavPass').value = String(dav.password || '');
+    $('webdavRoot').value = String(dav.root || '');
     $('systemPromptText').value = cfg.systemPromptText != null ? cfg.systemPromptText : (defs.systemPromptText || '');
     $('systemPromptOcr').value = cfg.systemPromptOcr != null ? cfg.systemPromptOcr : (defs.systemPromptOcr || '');
     if (cfg.maxSteps != null) $('maxSteps').value = cfg.maxSteps;
@@ -718,19 +762,6 @@
       formDirty = false;
       forceFill = false;
     }
-  }
-
-  function downloadTextFile(text, filename, mime) {
-    const blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 1000);
   }
 
   function appendExportLeaf(parent, label, attrs) {
@@ -1004,6 +1035,13 @@
     setStatus(fallback || t('settings.status.downloaded'), 'ok');
   }
 
+  function savedToText(savedTo) {
+    const s = savedTo || {};
+    if (s.kind === 'webdav') return t('settings.status.savedWebdav', { path: s.path || '' });
+    if (s.kind === 'local') return t('settings.status.savedLocal');
+    return t('settings.status.saveAbandoned');
+  }
+
   function send(cmd, extra) {
     if (!port) {
       setStatus(t('settings.status.noBg'), 'err');
@@ -1049,19 +1087,15 @@
       if (msg.ok) forceFill = true;
       setStatus(msg.ok ? t('settings.status.saved') : (t('settings.status.saveFail') + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
     } else if (type === 'configExport') {
-      if (typeof msg.json === 'string') {
-        const name = msg.filename || (msg.masked === false ? 'WebpageAgent.SECRETS.json' : 'WebpageAgent.json');
-        downloadTextFile(msg.json, name, 'application/json');
-      }
+      const base = msg.masked === false
+        ? '已导出配置 JSON（含完整密钥）✓'
+        : '已导出配置 JSON ✓（密钥已掩码）';
+      const line = msg.saved ? base + '\n' + savedToText(msg.savedTo) : savedToText(msg.savedTo);
       if (pendingDownloads.config) {
         pendingDownloads.config = false;
-        finishDownloadStatus(msg.masked === false
-          ? '已导出配置 JSON（含完整密钥）✓'
-          : '已导出配置 JSON ✓（密钥已掩码）');
+        finishDownloadStatus(line);
       } else {
-        setStatus(msg.masked === false
-          ? '已导出配置 JSON（含完整密钥）✓'
-          : '已导出配置 JSON ✓（密钥已掩码）', 'ok');
+        setStatus(line, msg.saved ? 'ok' : '');
       }
     } else if (type === 'configImported') {
       if (msg.ok) forceFill = true;
@@ -1071,12 +1105,11 @@
       cachedSkills = Array.isArray(msg.skills) ? msg.skills : [];
       renderSettingsSkillList();
     } else if (type === 'webSkillsExport') {
-      if (msg.ok && typeof msg.json === 'string') {
+      if (msg.ok) {
         const n = msg.count != null ? msg.count : 1;
-        const name = msg.filename || (n === 1 ? 'WebpageAgent-web-skill.json' : 'WebpageAgent-web-skill-pack.json');
-        downloadTextFile(msg.json, name, 'application/json');
-        setSkillStatus(t('settings.status.exported', { n: n }), 'ok');
-        setStatus(t('settings.status.exported', { n: n }), 'ok');
+        const line = t('settings.status.exported', { n: n }) + '\n' + savedToText(msg.savedTo);
+        setSkillStatus(msg.saved ? line : savedToText(msg.savedTo), msg.saved ? 'ok' : '');
+        setStatus(msg.saved ? line : savedToText(msg.savedTo), msg.saved ? 'ok' : '');
       } else {
         setSkillStatus(t('settings.status.exportFail') + (msg.error || ''), 'err');
       }
@@ -1093,26 +1126,25 @@
       }
     } else if (type === 'diagExport') {
       if (diagExportTimer) { clearTimeout(diagExportTimer); diagExportTimer = null; }
-      if (typeof msg.json === 'string') {
-        downloadTextFile(msg.json, msg.filename || 'WebpageAgent-diag.json', 'application/json');
-      }
       const errN = Number(msg.count) || 0;
       const trailN = Number(msg.trailCount) || 0;
       const hours = Number(msg.hours) || 24;
       let detail;
-      if (errN === 0 && trailN === 0) {
-        detail = '近 ' + hours + ' 小时没有错误，也还没有活动轨迹。已下载空诊断文件。';
+      if (!msg.saved) {
+        detail = savedToText(msg.savedTo);
+      } else if (errN === 0 && trailN === 0) {
+        detail = '近 ' + hours + ' 小时没有错误，也还没有活动轨迹。' + savedToText(msg.savedTo);
       } else if (errN === 0) {
-        detail = '近 ' + hours + ' 小时没有错误；已导出 ' + trailN + ' 条活动轨迹。';
+        detail = '近 ' + hours + ' 小时没有错误；已导出 ' + trailN + ' 条活动轨迹。' + savedToText(msg.savedTo);
       } else {
-        detail = '已导出 ' + errN + ' 条错误、' + trailN + ' 条活动轨迹。';
+        detail = '已导出 ' + errN + ' 条错误、' + trailN + ' 条活动轨迹。' + savedToText(msg.savedTo);
       }
       if (pendingDownloads.diag) {
         pendingDownloads.diag = false;
         finishDownloadStatus(detail);
-        setOtherStatus(detail, 'ok');
+        setOtherStatus(detail, msg.saved ? 'ok' : '');
       } else {
-        setStatus(detail, 'ok');
+        setStatus(detail, msg.saved ? 'ok' : '');
       }
     } else if (type === 'diagCleared') {
       setStatus(msg.ok ? t('settings.status.clearedDiag') : (t('settings.status.clearDiagFail') + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
@@ -1213,6 +1245,7 @@
     $('addOcrProviderBtn').addEventListener('click', () => {
       addProviderRow($('ocrProvidersList'), { name: 'OCR', providerType: 'OpenAI-chat-completions-image_url' }, 'ocr');
     });
+    $('webdavTestBtn').addEventListener('click', () => { void testWebdav(); });
     $('saveBtn').addEventListener('click', () => {
       if (send('saveConfig', { config: collectConfig() })) setStatus(t('settings.status.saving'));
     });

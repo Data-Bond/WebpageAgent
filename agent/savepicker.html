@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>保存去向</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 13px/1.6 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    margin: 0; padding: 14px 16px;
+  }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .hint { opacity: .72; font-size: 12px; margin-bottom: 10px; }
+  .meta { border: 1px solid rgba(128,128,128,.35); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
+  .meta div { display: flex; gap: 8px; }
+  .meta .k { flex: 0 0 44px; opacity: .65; }
+  .meta .v { word-break: break-all; }
+  .warn { color: #b26a00; font-size: 12px; margin-bottom: 8px; }
+  .row { display: flex; gap: 8px; margin-bottom: 10px; }
+  .btn {
+    flex: 1; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(128,128,128,.45);
+    background: rgba(128,128,128,.12); cursor: pointer; font: inherit;
+  }
+  .btn:hover { background: rgba(128,128,128,.22); }
+  .btn.primary { background: #3a6fd8; border-color: #3a6fd8; color: #fff; }
+  .btn.primary:hover { background: #2f5fc0; }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .bar { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+  .bar .cur { flex: 1; word-break: break-all; opacity: .8; font-size: 12px; }
+  #browse { border-top: 1px solid rgba(128,128,128,.3); padding-top: 8px; }
+  #dirList { max-height: 260px; overflow: auto; border: 1px solid rgba(128,128,128,.3); border-radius: 8px; }
+  .dentry { padding: 6px 10px; cursor: pointer; display: flex; gap: 8px; }
+  .dentry:hover { background: rgba(128,128,128,.15); }
+  .dentry.file { cursor: default; opacity: .6; }
+  .dentry.file:hover { background: none; }
+  .dentry .nm { flex: 1; word-break: break-all; }
+  .dentry .sz { opacity: .6; font-size: 12px; }
+  #status { min-height: 20px; font-size: 12px; white-space: pre-wrap; }
+  #status.err { color: #c0392b; }
+  #status.ok { color: #1e8e3e; }
+  .conflict { display: flex; gap: 8px; align-items: center; margin: 8px 0; font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1 data-i18n="savepicker.title"></h1>
+  <div class="hint" data-i18n="savepicker.hint"></div>
+  <div class="meta" id="meta" hidden>
+    <div><span class="k" data-i18n="savepicker.file"></span><span class="v" id="metaName"></span></div>
+    <div><span class="k" data-i18n="savepicker.size"></span><span class="v" id="metaSize"></span></div>
+    <div><span class="k" data-i18n="savepicker.from"></span><span class="v" id="metaFrom"></span></div>
+  </div>
+  <div class="warn" id="bigFile" hidden data-i18n="savepicker.bigFile"></div>
+  <div class="row" id="pickRow" hidden>
+    <button type="button" class="btn primary" id="toLocal" data-i18n="savepicker.toLocal"></button>
+    <button type="button" class="btn" id="toDav" data-i18n="savepicker.toDav"></button>
+  </div>
+  <div id="browse" hidden>
+    <div class="bar">
+      <button type="button" class="btn" id="upBtn" style="flex:0 0 auto" data-i18n="savepicker.up"></button>
+      <span class="cur" id="curDir"></span>
+    </div>
+    <div id="dirList"></div>
+    <div class="conflict" id="conflictRow" hidden>
+      <span id="conflictText"></span>
+      <button type="button" class="btn" id="overwriteBtn" style="flex:0 0 auto" data-i18n="savepicker.overwrite"></button>
+      <button type="button" class="btn" id="renameBtn" style="flex 0 0 auto" data-i18n="savepicker.rename"></button>
+    </div>
+    <div class="row">
+      <button type="button" class="btn" id="newDirBtn" data-i18n="savepicker.newDir"></button>
+      <button type="button" class="btn primary" id="confirmDirBtn" data-i18n="savepicker.confirmDir"></button>
+    </div>
+  </div>
+  <div id="status"></div>
+  <div class="hint" id="emptyHint" hidden data-i18n="savepicker.empty"></div>
+  <script src="shared/i18n.js"></script>
+  <script type="module" src="savepicker.js"></script>
+</body>
+</html>
