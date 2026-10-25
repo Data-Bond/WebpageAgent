@@ -948,6 +948,60 @@
       opacity: 0.55;
       cursor: not-allowed;
     }
+    .attach-source-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .attach-source-head h3 { margin: 0; flex: 1; }
+    .attach-source-close {
+      width: 32px;
+      height: 32px;
+      border: none;
+      background: transparent;
+      color: #5a6072;
+      font-size: 26px;
+      line-height: 1;
+      cursor: pointer;
+      border-radius: 8px;
+      flex: 0 0 auto;
+    }
+    .attach-source-actions { display: flex; flex-direction: column; gap: 8px; }
+    .attach-dav-path { font-size: 13px; word-break: break-all; color: rgba(90, 96, 114, var(--wpa-alpha)); }
+    .attach-dav-scroll {
+      max-height: 240px;
+      overflow-y: auto;
+      border: 1px solid #e6e8f0;
+      border-radius: 8px;
+      background: rgba(246, 247, 251, var(--wpa-alpha));
+    }
+    .attach-dav-count {
+      font-size: 13px;
+      color: rgba(90, 96, 114, var(--wpa-alpha));
+    }
+    .attach-dav-row { padding: 6px 10px; cursor: pointer; word-break: break-all; }
+    .attach-dav-row.selected { background: rgba(79, 124, 255, 0.16); }
+    .attach-dav-status {
+      font-size: 13px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      user-select: text;
+    }
+    .attach-dav-log {
+      margin: 0;
+      max-height: 220px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      user-select: text;
+      font-size: 12px;
+      line-height: 1.45;
+      padding: 8px;
+      border: 1px solid #e6e8f0;
+      border-radius: 8px;
+      background: rgba(246, 247, 251, var(--wpa-alpha));
+    }
     .send-btn.standby {
       background: #eef0f6;
       color: #6a7080;
@@ -1549,6 +1603,11 @@
   let stopWatchId = null;
   let runningBeforeDisconnect = false;
   const attachedFiles = []; // {key,name,type,size,dataUrl}
+  let attachDavPath = '';
+  let attachDavBase = '';
+  let attachDavSelected = {};
+  let attachDavEntries = [];
+  let attachDavBusy = false;
   let fileSeq = 0;
   let transcript = []; // {role,text}
   let port = null;
@@ -2151,6 +2210,61 @@
     confirmDialog.appendChild(confirmActions);
     confirmModal.appendChild(confirmDialog);
 
+    const attachSourceModal = mk('div', 'modal-backdrop hidden');
+    const attachSourceDialog = mk('div', 'modal');
+    const attachSourceHead = mk('div', 'attach-source-head');
+    const attachSourceHeading = mk('h3');
+    attachSourceHeading.setAttribute('data-i18n', 'panel.attachPickTitle');
+    const attachSourceClose = mk('button', 'attach-source-close', { type: 'button', textContent: '×' });
+    attachSourceClose.setAttribute('data-i18n-title', 'common.close');
+    attachSourceHead.appendChild(attachSourceHeading);
+    attachSourceHead.appendChild(attachSourceClose);
+    attachSourceDialog.appendChild(attachSourceHead);
+    const attachSourcePick = mk('div', 'attach-source-actions');
+    const attachLocalBtn = mk('button', 'btn', { type: 'button' });
+    attachLocalBtn.setAttribute('data-i18n', 'panel.attachLocal');
+    const attachDavBtn = mk('button', 'btn', { type: 'button' });
+    attachDavBtn.setAttribute('data-i18n', 'panel.attachDav');
+    attachSourcePick.appendChild(attachLocalBtn);
+    attachSourcePick.appendChild(attachDavBtn);
+    attachSourceDialog.appendChild(attachSourcePick);
+    const attachDavBrowse = mk('div', 'attach-source-actions hidden');
+    const attachDavPath = mk('div', 'attach-dav-path');
+    const attachDavUpBtn = mk('button', 'btn', { type: 'button' });
+    attachDavUpBtn.setAttribute('data-i18n', 'panel.attachDavUp');
+    const attachDavSelectAllBtn = mk('button', 'btn', { type: 'button' });
+    attachDavSelectAllBtn.setAttribute('data-i18n', 'panel.attachDavSelectAll');
+    const attachDavList = mk('div', 'attach-dav-scroll');
+    const attachDavStatus = mk('div', 'attach-dav-status');
+    const attachDavLogBtn = mk('button', 'btn', { type: 'button' });
+    attachDavLogBtn.setAttribute('data-i18n', 'panel.attachDavLog');
+    attachDavLogBtn.hidden = true;
+    const attachDavLogBox = mk('pre', 'attach-dav-log');
+    attachDavLogBox.hidden = true;
+    const attachDavActions = mk('div', 'modal-actions');
+    const attachDavBackBtn = mk('button', 'btn', { type: 'button' });
+    attachDavBackBtn.setAttribute('data-i18n', 'panel.attachDavBack');
+    const attachDavCopyBtn = mk('button', 'btn', { type: 'button' });
+    attachDavCopyBtn.setAttribute('data-i18n', 'common.copy');
+    attachDavCopyBtn.hidden = true;
+    const attachDavConfirmBtn = mk('button', 'btn primary', { type: 'button' });
+    attachDavConfirmBtn.setAttribute('data-i18n', 'panel.attachDavConfirm');
+    attachDavActions.appendChild(attachDavBackBtn);
+    attachDavActions.appendChild(attachDavLogBtn);
+    attachDavActions.appendChild(attachDavCopyBtn);
+    attachDavActions.appendChild(attachDavConfirmBtn);
+    const attachDavCount = mk('div', 'attach-dav-count');
+    attachDavBrowse.appendChild(attachDavPath);
+    attachDavBrowse.appendChild(attachDavUpBtn);
+    attachDavBrowse.appendChild(attachDavSelectAllBtn);
+    attachDavBrowse.appendChild(attachDavList);
+    attachDavBrowse.appendChild(attachDavCount);
+    attachDavBrowse.appendChild(attachDavStatus);
+    attachDavBrowse.appendChild(attachDavLogBox);
+    attachDavBrowse.appendChild(attachDavActions);
+    attachSourceDialog.appendChild(attachDavBrowse);
+    attachSourceModal.appendChild(attachSourceDialog);
+
     const archiveModal = mk('div', 'modal-backdrop hidden');
     const archiveDialog = mk('div', 'modal');
     const archiveHeading = mk('h3');
@@ -2331,6 +2445,7 @@
     shadow.appendChild(composer);
     shadow.appendChild(saveSkillModal);
     shadow.appendChild(confirmModal);
+    shadow.appendChild(attachSourceModal);
     shadow.appendChild(archiveModal);
     shadow.appendChild(archiveSaveModal);
 
@@ -2354,6 +2469,11 @@
       skillAddStage, skillAddVar, skillStagesList, skillVarsList,
       skillPromptPreview, skillUndeclared,
       confirmModal, confirmWarn, confirmCancel, confirmOk,
+      attachSourceModal, attachSourcePick, attachLocalBtn, attachDavBtn, attachSourceClose,
+      attachDavBrowse, attachDavPath, attachDavUpBtn, attachDavSelectAllBtn, attachDavList, attachDavStatus,
+      attachDavCount,
+      attachDavLogBtn, attachDavLogBox,
+      attachDavBackBtn, attachDavCopyBtn, attachDavConfirmBtn,
       archiveModal, archiveCancel, archiveClearKeepFiles, archiveClearAll, archiveSaveFull, archiveSaveUser,
       archiveStatus,
       archiveSaveModal, archiveRedactInput, archiveDocInput, archiveModelSelect,
@@ -2448,6 +2568,39 @@
   }
   function storeGet(keys) {
     return storeRpc('panelStoreGet', { keys: keys }).then((r) => (r && r.obj) || {});
+  }
+
+  function davRpc(cmd, extra, onPartial) {
+    const id = 'd' + (storeSeq++);
+    return new Promise((resolve) => {
+      if (!port || portDead) {
+        resolve({ ok: false, error: '未连接后台' });
+        return;
+      }
+      let timer = setTimeout(finishIdle, 180000);
+      function finishIdle() {
+        storeWait.delete(id);
+        resolve({ ok: false, error: '下载超时' });
+      }
+      storeWait.set(id, function (msg) {
+        if (msg && msg.partial) {
+          clearTimeout(timer);
+          timer = setTimeout(finishIdle, 180000);
+          if (onPartial) onPartial(msg);
+          return;
+        }
+        clearTimeout(timer);
+        storeWait.delete(id);
+        resolve(msg);
+      });
+      try {
+        port.postMessage(Object.assign({ cmd: cmd, id: id }, extra || {}));
+      } catch (e) {
+        clearTimeout(timer);
+        storeWait.delete(id);
+        resolve({ ok: false, error: String(e && e.message || e) });
+      }
+    });
   }
 
   function trKey() { return 'tr:' + origin; }
@@ -5241,6 +5394,11 @@
       port.onMessage.addListener((msg) => {
         if (gen !== connectGen || port !== thisPort) return;
         if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'davResult') {
+          const wait = storeWait.get(msg.id);
+          if (wait) wait(msg);
+          return;
+        }
         if (msg.type === 'panelStoreResult' || msg.type === 'copyTextResult' || msg.type === 'downloadTextResult') {
           const wait = storeWait.get(msg.id);
           if (wait) {
@@ -5425,9 +5583,204 @@
       }
       exportSkills(ids);
     });
+    function webdavSaved() {
+      const dav = currentConfig && currentConfig.webdav;
+      return !!(dav && String(dav.url || '').trim());
+    }
+    function setAttachDavBusy(on) {
+      attachDavBusy = !!on;
+      els.attachDavUpBtn.disabled = attachDavBusy;
+      els.attachDavConfirmBtn.disabled = attachDavBusy;
+      els.attachDavBackBtn.disabled = attachDavBusy;
+    }
+    let attachDavLogText = '';
+    function setAttachDavStatus(text, log) {
+      els.attachDavStatus.textContent = text || '';
+      attachDavLogText = String(log || '');
+      els.attachDavLogBtn.hidden = !attachDavLogText;
+      els.attachDavCopyBtn.hidden = !attachDavLogText;
+      els.attachDavLogBox.hidden = true;
+      els.attachDavLogBox.textContent = attachDavLogText;
+    }
+    function toggleAttachDavLog() {
+      if (!attachDavLogText) return;
+      els.attachDavLogBox.hidden = !els.attachDavLogBox.hidden;
+    }
+    function copyAttachDavStatus() {
+      const area = document.createElement('textarea');
+      area.value = attachDavLogText || els.attachDavStatus.textContent || '';
+      area.setAttribute('readonly', '');
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+    }
+    function closeAttachSource() {
+      els.attachSourceModal.classList.add('hidden');
+    }
+    function showAttachPick() {
+      els.attachSourcePick.classList.remove('hidden');
+      els.attachDavBrowse.classList.add('hidden');
+      setAttachDavStatus('');
+    }
+    function openAttachSource() {
+      showAttachPick();
+      els.attachSourceModal.classList.remove('hidden');
+    }
+    function davPickKey(base, leaf) {
+      return String(base || '') + '\n' + String(leaf || '');
+    }
+    function refreshAttachDavCount() {
+      const n = Object.keys(attachDavSelected).length;
+      els.attachDavCount.textContent = t('panel.attachDavSelected', { n: n });
+    }
+    function renderAttachDavRows(entries) {
+      const list = els.attachDavList;
+      list.textContent = '';
+      els.attachDavPath.textContent = t('panel.attachDavHere');
+      refreshAttachDavCount();
+      if (!entries.length) {
+        const empty = mk('div', 'attach-dav-row');
+        empty.textContent = t('panel.attachDavEmpty');
+        list.appendChild(empty);
+        return;
+      }
+      entries.forEach(function (row) {
+        const leaf = row.segment || row.name;
+        const key = davPickKey(attachDavBase, leaf);
+        const picked = !row.collection && !!attachDavSelected[key];
+        const el = mk('div', 'attach-dav-row' + (picked ? ' selected' : ''));
+        el.textContent = (row.collection ? '文件夹 ' : (picked ? '☑ ' : '☐ ')) + row.name;
+        el.addEventListener('click', function () {
+          if (attachDavBusy) return;
+          if (row.collection) {
+            void loadAttachDav(leaf);
+            return;
+          }
+          if (attachDavSelected[key]) delete attachDavSelected[key];
+          else attachDavSelected[key] = { base: attachDavBase, leaf: leaf, name: row.name };
+          renderAttachDavRows(attachDavEntries);
+        });
+        list.appendChild(el);
+      });
+    }
+    async function loadAttachDav(path, up) {
+      const requested = String(path || '');
+      setAttachDavBusy(true);
+      setAttachDavStatus(t('panel.attachDavLoading'));
+      const resp = await davRpc('davList', { path: requested, base: attachDavBase, up: !!up });
+      setAttachDavBusy(false);
+      if (!resp || !resp.ok) {
+        const text = t('panel.attachDavFail') + '\n' + String(resp && resp.error || '');
+        setAttachDavStatus(text, resp && resp.log);
+        els.attachDavList.textContent = '';
+        return;
+      }
+      attachDavBase = resp.base || attachDavBase;
+      attachDavPath = '';
+      attachDavEntries = Array.isArray(resp.entries) ? resp.entries : [];
+      els.attachDavPath.textContent = t('panel.attachDavHere');
+      if (resp.notice === 'up') setAttachDavStatus(t('panel.attachDavFellBack'), resp.log);
+      else setAttachDavStatus('');
+      renderAttachDavRows(attachDavEntries);
+    }
+    async function openAttachDav() {
+      if (!webdavSaved()) {
+        els.attachSourcePick.classList.add('hidden');
+        els.attachDavBrowse.classList.remove('hidden');
+        els.attachDavList.textContent = '';
+        els.attachDavPath.textContent = '';
+        setAttachDavStatus(t('panel.attachDavNeedSave'));
+        return;
+      }
+      attachDavSelected = {};
+      attachDavEntries = [];
+      attachDavBase = '';
+      els.attachSourcePick.classList.add('hidden');
+      els.attachDavBrowse.classList.remove('hidden');
+      await loadAttachDav('');
+    }
+    function b64ToBytes(b64) {
+      const binary = atob(String(b64 || ''));
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    }
+    function chunkBytes(value) {
+      if (value instanceof Uint8Array) return value;
+      if (value instanceof ArrayBuffer) return new Uint8Array(value);
+      if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      return new Uint8Array(0);
+    }
+    async function confirmAttachDav() {
+      const items = Object.keys(attachDavSelected).map(function (key) { return attachDavSelected[key]; });
+      if (!items.length) {
+        setAttachDavStatus(t('panel.attachDavPickFile'));
+        return;
+      }
+      setAttachDavBusy(true);
+      const files = [];
+      try {
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          const parts = [];
+          const label = (i + 1) + '/' + items.length + ' ' + (item.name || item.leaf);
+          setAttachDavStatus(t('panel.attachDavFetching') + label);
+          const resp = await davRpc('davFetch', { path: item.leaf, base: item.base }, function (partial) {
+            const bytes = partial && partial.b64 ? b64ToBytes(partial.b64) : chunkBytes(partial && partial.bytes);
+            if (bytes.byteLength) parts.push(bytes);
+            const got = Number(partial && partial.received) || 0;
+            const total = Number(partial && partial.total) || 0;
+            const prog = total > 0 ? (got + ' / ' + total) : String(got);
+            setAttachDavStatus(t('panel.attachDavFetching') + label + '（' + prog + ' 字节）');
+          });
+          if (!resp || !resp.ok) {
+            setAttachDavBusy(false);
+            const text = t('panel.attachDavFail') + '\n' + String(resp && resp.error || item.leaf);
+            setAttachDavStatus(text, resp && resp.log);
+            return;
+          }
+          files.push(new File(parts, item.name || item.leaf, { type: resp.type || '' }));
+        }
+      } catch (e) {
+        setAttachDavBusy(false);
+        setAttachDavStatus(t('panel.attachDavFail') + '\n' + String(e && e.message || e));
+        return;
+      }
+      setAttachDavBusy(false);
+      closeAttachSource();
+      await handleFiles(files);
+    }
     els.attachBtn.addEventListener('click', () => {
       suppressFocusLock(120000);
+      openAttachSource();
+    });
+    els.attachLocalBtn.addEventListener('click', () => {
+      closeAttachSource();
+      suppressFocusLock(120000);
       els.fileInput.click();
+    });
+    els.attachDavBtn.addEventListener('click', () => { void openAttachDav(); });
+    els.attachDavSelectAllBtn.addEventListener('click', () => {
+      if (attachDavBusy) return;
+      attachDavEntries.forEach(function (row) {
+        if (!row || row.collection) return;
+        const leaf = row.segment || row.name;
+        const key = davPickKey(attachDavBase, leaf);
+        attachDavSelected[key] = { base: attachDavBase, leaf: leaf, name: row.name };
+      });
+      renderAttachDavRows(attachDavEntries);
+    });
+    els.attachDavUpBtn.addEventListener('click', () => {
+      void loadAttachDav('', true);
+    });
+    els.attachDavBackBtn.addEventListener('click', showAttachPick);
+    els.attachDavConfirmBtn.addEventListener('click', () => { void confirmAttachDav(); });
+    els.attachDavLogBtn.addEventListener('click', toggleAttachDavLog);
+    els.attachDavCopyBtn.addEventListener('click', copyAttachDavStatus);
+    els.attachSourceClose.addEventListener('click', closeAttachSource);
+    els.attachSourceModal.addEventListener('click', (e) => {
+      if (e.target === els.attachSourceModal) closeAttachSource();
     });
     els.fileInput.addEventListener('click', () => suppressFocusLock(120000));
     els.fileInput.addEventListener('change', () => handleFiles(els.fileInput.files));

@@ -1137,10 +1137,32 @@ ok(/function normalizeWebdavConfig\(/.test(bg) && /webdav: normalizeWebdavConfig
     && /shared\/i18n\.js/.test(savepickerHtml),
     'savepicker 逐层浏览远程目录并回报去向选择');
   ok(/id="webdavUrl"/.test(settingsHtml) && /id="webdavPass"/.test(settingsHtml) && /id="webdavTestBtn"/.test(settingsHtml)
+    && /id="webdavListOk"/.test(settingsHtml) && /id="webdavListWrong"/.test(settingsHtml)
+    && /dav-list-scroll/.test(settingsHtml)
     && /webdav:\s*\{/.test(settingsSrc)
-    && /davPropfind\(dav\.url/.test(settingsSrc)
+    && /davPropfind\(target/.test(settingsSrc)
+    && /davDirectoryUrl/.test(settingsSrc)
+    && /davLog/.test(settingsSrc)
+    && /id="resultCopyBtn"/.test(settingsHtml)
+    && /webdavListModal/.test(settingsSrc)
+    && /direction: rtl/.test(settingsHtml)
     && /AbortController/.test(extractFn(settingsSrc, 'detectModelsForRow')),
-    '设置页 WebDAV 卡片与模型列表 20 秒超时');
+    '设置页 WebDAV 卡片列出目录内容，模型列表 20 秒超时');
+  ok(/attachSourceModal/.test(panelSrc)
+    && /openAttachSource/.test(panelSrc)
+    && /davRpc\('davList'/.test(panelSrc)
+    && /davRpc\('davFetch'/.test(panelSrc)
+    && /function davListForPanel\(/.test(bg)
+    && /function davFetchForPanel\(/.test(bg)
+    && /cmd: 'panelDav'/.test(bg)
+    && /cmd === 'panelDav'/.test(fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8'))
+    && /attachDavLogBtn/.test(panelSrc)
+    && /panelDavChunk/.test(fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8'))
+    && /mime: mime \|\| 'application\/octet-stream'/.test(fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8'))
+    && /bytesToB64/.test(fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8'))
+    && /b64ToBytes/.test(panelSrc)
+    && !/import\(/.test(extractFn(bg, 'askOffscreenPanelDav')),
+    '上传附件先选择本地文件或已保存的 WebDAV');
   const offscreenDav = srcs['offscreen.js'] || fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
   ok(/createDavClient/.test(offscreenDav)
     && /davDbStoreBlob/.test(offscreenDav)
@@ -1179,6 +1201,23 @@ ok(/function normalizeWebdavConfig\(/.test(bg) && /webdav: normalizeWebdavConfig
     && /DAV_DB: DAV_DB/.test(fs.readFileSync(path.join(ROOT, 'shared/contracts.js'), 'utf8'))
     && /WPA_CONTRACTS\.DAV_DB/.test(bg),
     'IndexedDB 拓扑常量共享、WPA_DAV 死对象已移除');
+  const davSrc = fs.readFileSync(path.join(ROOT, 'webdav.mjs'), 'utf8');
+  ok(/credentials: 'omit'/.test(davSrc) && /cmd: 'davArmAuth'/.test(davSrc),
+    'WebDAV 请求登记已填写的密码，不使用浏览器保存的登录态');
+  ok(/webRequestAuthProvider/.test(manifestSrc) && /"webRequest"/.test(manifestSrc)
+    && /onAuthRequired/.test(bg) && /asyncBlocking/.test(bg)
+    && /function isDavPageSender\(/.test(bg),
+    '已填写的 WebDAV 密码由扩展应答 401，浏览器不再弹出输入框');
+  const davKeyApi = new Function(
+    extractFn(bg, 'davAuthGrantKey') + '\n' +
+    extractFn(bg, 'davChallengerKey') + '\n' +
+    'return { davAuthGrantKey: davAuthGrantKey, davChallengerKey: davChallengerKey };'
+  )();
+  ok(davKeyApi.davAuthGrantKey('https://dav.example.com/remote.php/dav/files/a/') === 'dav.example.com\n443'
+    && davKeyApi.davAuthGrantKey('https://dav.example.com/remote.php/dav/files/a/') === davKeyApi.davChallengerKey({ host: 'DAV.Example.Com', port: 443 })
+    && davKeyApi.davAuthGrantKey('http://127.0.0.1:8080/dav') === '127.0.0.1\n8080'
+    && davKeyApi.davAuthGrantKey('http://127.0.0.1:8080/dav') === davKeyApi.davChallengerKey({ host: '127.0.0.1', port: 8080 }),
+    '认证登记按主机和端口对准浏览器的 401 质询');
 }
 {
   const leaseApi = new Function(
@@ -2603,7 +2642,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.7.0', '锁步版本为 6.7.0');
+ok(manifestVer === '6.8.0', '锁步版本为 6.8.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');

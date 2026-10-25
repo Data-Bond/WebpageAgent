@@ -10646,6 +10646,114 @@ chrome.action.onClicked.addListener(async (tab) => {
   chrome.tabs.sendMessage(tab.id, { cmd: 'showPanel' }, () => void chrome.runtime.lastError);
 });
 
+function assertDavRel(raw) {
+  const text = String(raw || '').replace(/\\/g, '/').trim();
+  if (!text) return '';
+  if (text.indexOf('://') >= 0 || text.charAt(0) === '/') throw new Error('路径无效');
+  const parts = text.split('/');
+  for (let i = 0; i < parts.length; i++) {
+    if (!parts[i] || parts[i] === '.' || parts[i] === '..') throw new Error('路径无效');
+  }
+  return parts.join('/');
+}
+
+async function askOffscreenPanelDav(op, src, onChunk) {
+  const msg = src || {};
+  const rel = assertDavRel(msg.path);
+  if (op === 'fetch' && !rel) throw new Error('缺少文件名');
+  const cfg = await getConfigMerged('');
+  const dav = normalizeWebdavConfig(cfg && cfg.webdav);
+  if (!dav.url) throw new Error('请先在设置页保存 WebDAV');
+  await ensureOffscreen();
+  if (!offscreenPort) throw new Error('offscreen 不可用');
+  const id = 'pdav' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const port = offscreenPort;
+  offscreenRetain(id);
+  const waiter = op === 'fetch' ? 'davFetchForPanel' : 'davListForPanel';
+  return withExternalWait(waiter, 'offscreen', new Promise(function (resolve, reject) {
+    let timer = null;
+    function armTimer() {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(function () {
+        cleanup();
+        reject(new Error('读取 WebDAV 超时'));
+      }, 180000);
+    }
+    function cleanup() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      offscreenRelease(id);
+      try { port.onMessage.removeListener(onMsg); } catch (e) {}
+      try { port.onDisconnect.removeListener(onDisc); } catch (e2) {}
+    }
+    function onMsg(incoming) {
+      if (!incoming || incoming.id !== id) return;
+      if (incoming.type === 'panelDavChunk') {
+        armTimer();
+        try {
+          if (onChunk) onChunk(incoming);
+        } catch (e) {
+          cleanup();
+          reject(e);
+        }
+        return;
+      }
+      if (incoming.ok !== true && incoming.ok !== false && incoming.type !== 'panelDavResult') return;
+      cleanup();
+      if (incoming.ok) resolve(incoming);
+      else {
+        const err = new Error(incoming.error || '读取 WebDAV 失败');
+        err.davLog = incoming.log || '';
+        reject(err);
+      }
+    }
+    function onDisc() {
+      cleanup();
+      reject(new Error('offscreen 端口已断开'));
+    }
+    port.onMessage.addListener(onMsg);
+    port.onDisconnect.addListener(onDisc);
+    armTimer();
+    try {
+      port.postMessage({
+        cmd: 'panelDav',
+        id: id,
+        op: op,
+        path: rel,
+        base: String(msg.base || ''),
+        up: !!msg.up,
+        url: dav.url,
+        root: dav.root,
+        username: dav.username,
+        password: dav.password
+      });
+    } catch (e) {
+      cleanup();
+      reject(e);
+    }
+  }));
+}
+
+async function davListForPanel(msg) {
+  const listed = await askOffscreenPanelDav('list', msg || {});
+  return {
+    path: listed.path || '',
+    base: listed.base || '',
+    entries: Array.isArray(listed.entries) ? listed.entries : [],
+    notice: listed.notice || '',
+    log: listed.log || ''
+  };
+}
+
+async function davFetchForPanel(msg, onChunk) {
+  const fetched = await askOffscreenPanelDav('fetch', msg || {}, onChunk);
+  return {
+    name: fetched.name || '',
+    type: fetched.mime || (fetched.type && fetched.type !== 'panelDavResult' ? fetched.type : '') || 'application/octet-stream',
+    size: Number(fetched.size) || 0
+  };
+}
+
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'offscreen') {
     attachOffscreenPort(port);
@@ -11355,6 +11463,32 @@ chrome.runtime.onConnect.addListener((port) => {
       })();
     } else if (cmd === 'panelState') {
       if (msg.visible) { visibleTabs.add(tabId); } else { visibleTabs.delete(tabId); }
+    } else if (cmd === 'davList' || cmd === 'davFetch') {
+      if (isSettings) return;
+      const id = msg.id;
+      const run = cmd === 'davList'
+        ? davListForPanel(msg)
+        : davFetchForPanel(msg, function (chunk) {
+          postMsg({
+            type: 'davResult',
+            id: id,
+            partial: true,
+            received: chunk.received || 0,
+            total: chunk.total || 0,
+            b64: chunk.b64 || ''
+          });
+        });
+      run.then(function (data) {
+        postMsg(Object.assign({ type: 'davResult', id: id, ok: true }, data));
+      }, function (e) {
+        postMsg({
+          type: 'davResult',
+          id: id,
+          ok: false,
+          error: String(e && e.message || e),
+          log: e && e.davLog ? String(e.davLog) : ''
+        });
+      });
     } else if (cmd === 'prepareAttach') {
       (async () => {
         const files = msg.files || [];
@@ -11592,9 +11726,152 @@ function isSavePickerSender(sender) {
   }
 }
 
+// 设置页、保存去向窗口、offscreen 都会发带密码的 WebDAV 请求。网页里的 content script 不能登记密码。
+function isDavPageSender(sender) {
+  try {
+    const url = String((sender && sender.url) || '').split('#')[0].split('?')[0];
+    const origin = extensionOrigin();
+    if (!url || !origin || chromeExtensionOrigin(url) !== origin) return false;
+    return /\/(settings|savepicker|offscreen)\.html$/.test(url);
+  } catch (e) {
+    return false;
+  }
+}
+
+const DAV_AUTH_GRANT_KEY = 'davAuthGrant';
+const DAV_AUTH_GRANT_MS = 120000;
+const davAuthMemory = new Map();
+const davAuthSupplied = new Set();
+
+function davAuthGrantKey(rawUrl) {
+  const u = new URL(String(rawUrl || ''));
+  const port = u.port || (u.protocol === 'http:' ? '80' : '443');
+  return u.hostname.toLowerCase() + '\n' + port;
+}
+
+function davChallengerKey(ch) {
+  return String(ch && ch.host || '').toLowerCase() + '\n' + String(ch && ch.port || '');
+}
+
+function freshDavAuthGrants(all, now) {
+  const out = {};
+  const src = all && typeof all === 'object' ? all : {};
+  Object.keys(src).forEach(function (k) {
+    const row = src[k];
+    if (!row || !(row.until > now) || !(row.count > 0)) return;
+    out[k] = row;
+  });
+  return out;
+}
+
+async function readDavAuthGrants() {
+  const bag = await chrome.storage.session.get(DAV_AUTH_GRANT_KEY);
+  return freshDavAuthGrants(bag && bag[DAV_AUTH_GRANT_KEY], Date.now());
+}
+
+async function writeDavAuthGrants(all) {
+  await chrome.storage.session.set({ [DAV_AUTH_GRANT_KEY]: all });
+}
+
+async function davArmAuth(rawUrl, username, password) {
+  const key = davAuthGrantKey(rawUrl);
+  const all = await readDavAuthGrants();
+  const prev = all[key];
+  all[key] = {
+    username: String(username || ''),
+    password: String(password == null ? '' : password),
+    count: ((prev && prev.count) || 0) + 1,
+    until: Date.now() + DAV_AUTH_GRANT_MS
+  };
+  await writeDavAuthGrants(all);
+  davAuthMemory.set(key, all[key]);
+}
+
+async function davDisarmAuth(rawUrl) {
+  const key = davAuthGrantKey(rawUrl);
+  const all = await readDavAuthGrants();
+  const prev = all[key];
+  if (prev) {
+    if (prev.count <= 1) delete all[key];
+    else {
+      all[key] = {
+        username: prev.username,
+        password: prev.password,
+        count: prev.count - 1,
+        until: Date.now() + DAV_AUTH_GRANT_MS
+      };
+    }
+  }
+  await writeDavAuthGrants(all);
+  if (all[key]) davAuthMemory.set(key, all[key]);
+  else davAuthMemory.delete(key);
+}
+
+function extensionDavRequest(details) {
+  const origin = extensionOrigin();
+  if (!origin) return false;
+  const init = String(details && details.initiator || '').toLowerCase();
+  if (init === origin) return true;
+  const doc = String(details && details.documentUrl || '').toLowerCase();
+  return doc.indexOf(origin + '/') === 0;
+}
+
+function davAuthCredentials(grant) {
+  return {
+    authCredentials: {
+      username: grant.username,
+      password: grant.password
+    }
+  };
+}
+
+// 浏览器收到 401 且带 WWW-Authenticate 时会弹出自己的用户名密码框。
+// 扩展页面已经填写了密码时，用那份密码应答，输入框不再出现。
+chrome.webRequest.onAuthRequired.addListener(function (details, callback) {
+  if (!extensionDavRequest(details) || !details || !details.challenger) {
+    callback({});
+    return;
+  }
+  const requestId = String(details.requestId || '');
+  if (requestId && davAuthSupplied.has(requestId)) {
+    callback({ cancel: true });
+    return;
+  }
+  const key = davChallengerKey(details.challenger);
+  const mem = davAuthMemory.get(key);
+  if (mem && mem.until > Date.now() && mem.count > 0) {
+    if (requestId) davAuthSupplied.add(requestId);
+    callback(davAuthCredentials(mem));
+    return;
+  }
+  readDavAuthGrants().then(function (all) {
+    const grant = all[key];
+    if (!grant) {
+      callback({});
+      return;
+    }
+    if (requestId) davAuthSupplied.add(requestId);
+    callback(davAuthCredentials(grant));
+  }, function () {
+    callback({ cancel: true });
+  });
+}, { urls: ['http://*/*', 'https://*/*'] }, ['asyncBlocking']);
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.cmd) return;
   if (sender && sender.id && chrome.runtime && sender.id !== chrome.runtime.id) return;
+  if (msg.cmd === 'davArmAuth' || msg.cmd === 'davDisarmAuth') {
+    if (!isDavPageSender(sender)) return;
+    const run = msg.cmd === 'davArmAuth'
+      ? davArmAuth(msg.url, msg.username, msg.password)
+      : davDisarmAuth(msg.url);
+    run.then(function () {
+      try { sendResponse({ ok: true }); } catch (e) {}
+    }, function (e) {
+      try { sendResponse({ ok: false, error: String(e && e.message || e) }); } catch (e2) {}
+    });
+    return true;
+  }
   if ((msg.cmd === 'saveGetCurrent' || msg.cmd === 'savePickLocal' || msg.cmd === 'savePickDav' ||
     msg.cmd === 'saveCancel' || msg.cmd === 'davStart') && !isSavePickerSender(sender)) {
     return;

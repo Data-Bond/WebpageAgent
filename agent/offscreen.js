@@ -11,10 +11,17 @@ import {
   markRangeDone,
   missingRangesText,
   mergeDoneParts,
+  davPropfind,
+  davDirectoryUrl,
+  davChildDir,
+  davChildFile,
+  davChildRows,
+  davParentDir,
+  davSameHostDir,
   pipeBody
 } from './webdav.mjs';
 
-const OFFSCREEN_VERSION = '6.7.0';
+const OFFSCREEN_VERSION = '6.8.0';
 
 const MIN_USEFUL_CHARS = 40;
 const OCR_DPI = 120;
@@ -634,9 +641,129 @@ async function handleSaveDropUrl(msg) {
   try { await davDbDropBlob(key); } catch (e) {}
 }
 
+const PANEL_DAV_MAX_BYTES = 8 * 1024 * 1024;
+
+function bytesToB64(bytes) {
+  let bin = '';
+  const step = 0x1000;
+  for (let i = 0; i < bytes.length; i += step) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(bytes.length, i + step)));
+  }
+  return btoa(bin);
+}
+
+async function listPanelDav(msg, cred) {
+  const configured = msg.base
+    ? davSameHostDir(String(msg.base), String(msg.url || ''))
+    : davDirectoryUrl(String(msg.url || ''), String(msg.root || ''));
+  let dir = msg.up ? davParentDir(configured) : davChildDir(configured, String(msg.path || ''));
+  if (!dir) throw new Error('已经是最上级');
+  let lastErr = null;
+  for (let hop = 0; hop < 8; hop++) {
+    try {
+      const out = await davPropfind(dir, cred, 1);
+      return {
+        base: out.url || dir,
+        path: hop === 0 && !msg.up ? String(msg.path || '') : '',
+        entries: davChildRows(out.entries, out.url || dir),
+        notice: lastErr ? 'up' : '',
+        log: lastErr && lastErr.davLog ? String(lastErr.davLog) : ''
+      };
+    } catch (e) {
+      if (String(msg.path || '') || !/404/.test(String(e && e.message || e))) throw e;
+      if (lastErr && lastErr.davLog) e.davLog = String(lastErr.davLog) + '\n\n' + String(e.davLog || '');
+      lastErr = e;
+      const parent = davParentDir(dir);
+      if (!parent) throw e;
+      dir = parent;
+    }
+  }
+  throw lastErr || new Error('PROPFIND 失败 404');
+}
+
+async function handlePanelDav(msg, port) {
+  const id = String(msg.id || '');
+  const cred = { username: String(msg.username || ''), password: String(msg.password == null ? '' : msg.password) };
+  const rel = String(msg.path || '');
+  try {
+    if (msg.op === 'fetch') {
+      const root = msg.base
+        ? davSameHostDir(String(msg.base), String(msg.url || ''))
+        : davDirectoryUrl(String(msg.url || ''), String(msg.root || ''));
+      const fileUrl = davChildFile(root, rel);
+      const client = createDavClient(cred);
+      const res = await client.request('GET', fileUrl, {});
+      if (!res.ok) {
+        const err = new Error('下载失败 ' + res.status + '\n' + fileUrl);
+        err.davLog = client.getTrace();
+        throw err;
+      }
+      const mime = String(res.headers.get('content-type') || '').split(';')[0].trim();
+      const name = rel.slice(rel.lastIndexOf('/') + 1);
+      const totalRaw = Number(res.headers.get('content-length'));
+      const total = Number.isFinite(totalRaw) ? totalRaw : 0;
+      if (total > PANEL_DAV_MAX_BYTES) throw new Error('附件过大，单个文件最多 8MB');
+      const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+      if (!reader) throw new Error('响应没有可读的文件内容');
+      let received = 0;
+      while (true) {
+        const step = await reader.read();
+        if (step.done) break;
+        const value = new Uint8Array(step.value);
+        received += value.byteLength;
+        if (received > PANEL_DAV_MAX_BYTES) {
+          await reader.cancel();
+          throw new Error('附件过大，单个文件最多 8MB');
+        }
+        port.postMessage({
+          id: id,
+          type: 'panelDavChunk',
+          b64: bytesToB64(value),
+          received: received,
+          total: total
+        });
+      }
+      port.postMessage({
+        id: id,
+        type: 'panelDavResult',
+        ok: true,
+        name: name,
+        mime: mime || 'application/octet-stream',
+        size: received
+      });
+      return;
+    }
+    const listed = await listPanelDav(msg, cred);
+    port.postMessage({
+      id: id,
+      type: 'panelDavResult',
+      ok: true,
+      path: listed.path,
+      base: listed.base,
+      entries: listed.entries,
+      notice: listed.notice,
+      log: listed.log
+    });
+  } catch (e) {
+    try {
+      port.postMessage({
+        id: id,
+        type: 'panelDavResult',
+        ok: false,
+        error: String(e && e.message || e),
+        log: e && e.davLog ? String(e.davLog) : ''
+      });
+    } catch (e2) {}
+  }
+}
+
 function bindPort(port) {
   port.onMessage.addListener((msg) => {
     if (!msg) return;
+    if (msg.cmd === 'panelDav' && msg.id) {
+      void handlePanelDav(msg, port);
+      return;
+    }
     if (msg.cmd === 'davRun' && msg.id) {
       void handleDav(msg, port);
       return;

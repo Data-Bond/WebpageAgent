@@ -1,6 +1,6 @@
 // savepicker.js — 保存去向选择框。只读元数据；目录浏览与 MKCOL 在本页完成，
 // PUT 与本地下载由 background 编排执行。
-import { davPropfind, davMkcol, joinDavUrl, uploadNameAt } from './webdav.mjs';
+import { davPropfind, davMkcol, joinDavUrl, davDirectoryUrl, uploadNameAt } from './webdav.mjs';
 
 const I18N = globalThis.WPA_I18N;
 function t(key, params) {
@@ -70,15 +70,13 @@ async function refresh() {
 
 // 当前浏览目录的绝对地址：服务器地址 + 远程根目录 + curPath
 function rootUrl() {
-  const root = String(webdav && webdav.root || '').replace(/^\/+|\/+$/g, '');
-  if (!root) return String(webdav && webdav.url || '');
-  return joinDavUrl(webdav.url, root + '/');
+  return davDirectoryUrl(webdav.url, webdav && webdav.root);
 }
 
 function dirUrl(path) {
   const p = String(path || '').replace(/^\/+|\/+$/g, '');
   if (!p) return rootUrl();
-  return joinDavUrl(rootUrl(), p + '/');
+  return davDirectoryUrl(rootUrl(), p);
 }
 
 function decodeHrefPath(href) {

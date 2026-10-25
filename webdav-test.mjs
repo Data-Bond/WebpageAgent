@@ -70,6 +70,13 @@ ok(DAV.uploadNameAt('archive.tar.gz', 2) === 'archive.tar-2.gz', '改名保留�
 const up = DAV.planUpload('https://dav.example.com/root/dir', 'a b.txt', 1);
 ok(up.name === 'a b-1.txt' && up.url === 'https://dav.example.com/root/dir/a%20b-1.txt', '上传地址按段编码拼接');
 ok(DAV.joinDavUrl('https://dav.example.com/root/', 'sub/') === 'https://dav.example.com/root/sub/', '目录地址保留尾部斜杠');
+ok(DAV.davDirectoryUrl('https://dav.example.com/dav', '') === 'https://dav.example.com/dav/', '目录地址补上结尾斜杠');
+ok(DAV.davDirectoryUrl('https://dav.example.com/dav/', '备份') === 'https://dav.example.com/dav/%E5%A4%87%E4%BB%BD/', '远程根目录拼在服务器地址后面');
+ok(DAV.davDirectoryUrl('https://dav.example.com/dav/备份', '备份') === 'https://dav.example.com/dav/%E5%A4%87%E4%BB%BD/', '远程根目录已在地址末尾时不再拼接');
+ok(DAV.davChildDir('https://dav.example.com/dav/', '备份') === 'https://dav.example.com/dav/%E5%A4%87%E4%BB%BD/', '子目录拼在当前目录后面');
+ok(DAV.davChildFile('https://dav.example.com/dav/', '备份/a b.txt') === 'https://dav.example.com/dav/%E5%A4%87%E4%BB%BD/a%20b.txt', '子文件地址按段编码');
+ok(DAV.davParentDir('https://dav.example.com/seafdav/a/b/') === 'https://dav.example.com/seafdav/a/', '上一级目录去掉最后一段');
+ok(DAV.davParentDir('https://dav.example.com/') === '', '主机根目录没有上一级');
 
 const xml = [
   '<?xml version="1.0" encoding="utf-8"?>',
@@ -148,14 +155,9 @@ const server = createServer(function (req, res) {
   if (ncMatch) ncSeen.push(ncMatch[1]);
   if (req.method === 'PROPFIND') {
     const auth = req.headers.authorization || '';
-    if (!auth) {
+    if (auth.indexOf('response="') < 0) {
       res.writeHead(401, { 'WWW-Authenticate': DIGEST_CHALLENGE });
       res.end('auth');
-      return;
-    }
-    if (auth.indexOf('response="' + liveResponse + '"') < 0 && auth.indexOf('response="') < 0) {
-      res.writeHead(403);
-      res.end('bad');
       return;
     }
     res.writeHead(207, { 'Content-Type': 'application/xml' });
@@ -245,6 +247,71 @@ ok(ncSeen.length >= 2 && ncSeen[ncSeen.length - 2] === '00000001' && ncSeen[ncSe
 const resumeClient = DAV.createDavClient({ username: 'u', password: 'p' });
 const resumeList = await resumeClient.request('PROPFIND', base, { headers: { Depth: '1' } });
 ok(resumeList.status === 207 && Boolean(resumeClient.getHa1()), '握手后取得 ha1 供断点续传');
+
+let credMode = '';
+const omitClient = DAV.createDavClient({
+  username: 'u',
+  password: 'p',
+  fetchImpl: function (_href, init) {
+    credMode = init && init.credentials;
+    return Promise.resolve({ status: 207, headers: { get: function () { return ''; } } });
+  }
+});
+const omitted = await omitClient.request('PROPFIND', 'https://dav.example.com/files/', { headers: { Depth: '1' } });
+ok(omitted.status === 207 && credMode === 'omit', '已填写密码的请求不使用浏览器保存的登录态');
+
+function fake404(href) {
+  const headers = new Map([
+    ['content-type', 'text/html; charset=utf-8'],
+    ['www-authenticate', 'Basic realm="box"']
+  ]);
+  return {
+    status: 404,
+    statusText: 'Not Found',
+    url: href,
+    redirected: false,
+    type: 'basic',
+    headers: {
+      forEach: function (fn) {
+        headers.forEach(function (value, key) { fn(value, key); });
+      }
+    },
+    clone: function () {
+      return { text: function () { return Promise.resolve('<h1>Not Found</h1> secret-password'); } };
+    },
+    arrayBuffer: function () { return Promise.resolve(new ArrayBuffer(0)); }
+  };
+}
+let basicToken = '';
+let logErr = null;
+try {
+  await DAV.davPropfind('https://dav.example.com/missing', {
+    username: 'u',
+    password: 'secret-password',
+    fetchImpl: function (_href, init) {
+      basicToken = String(init.headers.Authorization || '');
+      return Promise.resolve(fake404(_href));
+    }
+  }, 1);
+} catch (e) {
+  logErr = e;
+}
+const logText = String(logErr && logErr.davLog || '');
+ok(!!logErr && /PROPFIND 失败 404/.test(logErr.message)
+  && /响应 404/.test(logText)
+  && /认证 Basic 已发送/.test(logText)
+  && /密码 已填写/.test(logText)
+  && /Depth 1/.test(logText)
+  && /content-type: text\/html; charset=utf-8/.test(logText)
+  && /www-authenticate: Basic realm="box"/.test(logText)
+  && /<h1>Not Found<\/h1> \*\*\*/.test(logText)
+  && /Authorization: Basic \*\*\*/.test(logText)
+  && logText.indexOf('secret-password') < 0
+  && basicToken.length > 'Basic '.length
+  && logText.indexOf(basicToken.slice('Basic '.length)) < 0
+  && /https:\/\/\[服务器地址\]/.test(logText)
+  && logText.indexOf('dav.example.com') < 0,
+  '连接失败日志含请求与响应，且不含密码');
 
 server.close();
 if (failures) {

@@ -461,12 +461,46 @@
   function showResultModal(title, text, kind) {
     const titleEl = $('resultModalTitle');
     const body = $('resultModalBody');
+    const copyRow = $('resultCopyRow');
+    const copyStatus = $('resultCopyStatus');
     if (titleEl) titleEl.textContent = title || t('settings.testResult');
     if (body) {
       body.textContent = text || '';
       body.className = 'modal-pre' + (kind === 'ok' ? ' ok' : kind === 'err' ? ' err' : '');
     }
+    if (copyStatus) copyStatus.textContent = '';
+    if (copyRow) copyRow.hidden = kind !== 'err';
     openModal('resultModal');
+  }
+
+  function copyResultBody() {
+    const body = $('resultModalBody');
+    const text = body ? body.textContent : '';
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    document.body.appendChild(area);
+    area.select();
+    const copied = document.execCommand('copy');
+    area.remove();
+    const status = $('resultCopyStatus');
+    if (status) status.textContent = copied ? t('common.copied') : t('common.copyFail');
+  }
+
+  function davAccountPreface(dav) {
+    return [
+      '服务器地址 ' + dav.url,
+      '远程根目录 ' + (dav.root || '(空)'),
+      '用户名 ' + (dav.username || '(空)'),
+      '密码 ' + (dav.password ? '已填写' : '未填写')
+    ].join('\n');
+  }
+
+  function davFailText(e, dav) {
+    const parts = [davAccountPreface(dav), String(e && e.message || e)];
+    if (!dav.username && /404/.test(parts[1])) parts.push(t('settings.webdavNeedUser'));
+    if (e && e.davLog) parts.push(e.davLog);
+    return parts.join('\n\n');
   }
 
   function setModelIdStatus(text, kind) {
@@ -586,28 +620,95 @@
     openModelIdPicker(input, ids, provider.models);
   }
 
+  function decodeDavHref(href) {
+    let s = String(href || '');
+    try { s = decodeURIComponent(s); } catch (e) {}
+    const abs = s.match(/^https?:\/\/[^/]+(\/.*)?$/i);
+    if (abs) s = abs[1] || '/';
+    return s;
+  }
+
+  function davEntryName(entry) {
+    const dn = String(entry.displayName || '').trim();
+    if (dn) return dn;
+    const path = decodeDavHref(entry.href).replace(/\/+$/, '');
+    return path.slice(path.lastIndexOf('/') + 1);
+  }
+
+  function webdavChildRows(entries, targetUrl) {
+    const selfPath = decodeDavHref(String(targetUrl || '').replace(/^https?:\/\/[^/]+/i, '')).replace(/\/+$/, '') + '/';
+    const rows = [];
+    const seen = {};
+    (entries || []).forEach(function (entry) {
+      const hrefPath = decodeDavHref(entry.href).replace(/\/+$/, '') + (entry.collection ? '/' : '');
+      if (hrefPath === selfPath) return;
+      const name = davEntryName(entry);
+      if (!name || seen[name]) return;
+      seen[name] = true;
+      rows.push({ name: name, collection: !!entry.collection });
+    });
+    rows.sort(function (a, b) {
+      if (a.collection !== b.collection) return a.collection ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    return rows;
+  }
+
+  function renderWebdavList(rows) {
+    const list = $('webdavList');
+    list.textContent = '';
+    const items = rows.length ? rows : [{ name: t('settings.webdavListEmpty'), empty: true }];
+    items.forEach(function (row) {
+      const el = document.createElement('div');
+      el.className = 'dav-entry';
+      el.textContent = row.empty ? row.name : ((row.collection ? '文件夹 ' : '文件 ') + row.name);
+      list.appendChild(el);
+    });
+    const scroll = $('webdavListScroll');
+    if (scroll) scroll.scrollTop = 0;
+  }
+
   async function testWebdav() {
     const dav = {
       url: String($('webdavUrl').value || '').trim(),
       username: String($('webdavUser').value || '').trim(),
-      password: String($('webdavPass').value || '')
+      password: String($('webdavPass').value || ''),
+      root: String($('webdavRoot').value || '').trim()
     };
     if (!dav.url) {
       showResultModal(t('settings.webdavTestTitle'), t('settings.webdavNeedUrl'), 'err');
       return;
     }
-    showResultModal(t('settings.webdavTestTitle'), t('settings.webdavTesting') + '\nPROPFIND ' + dav.url, '');
+    const DAV = await import('./webdav.mjs');
+    const cred = { username: dav.username, password: dav.password };
     try {
-      const DAV = await import('./webdav.mjs');
-      const out = await DAV.davPropfind(dav.url, { username: dav.username, password: dav.password }, 0);
-      const self = (out.entries || [])[0] || {};
-      showResultModal(
-        t('settings.webdavTestTitle'),
-        t('settings.webdavTestOk') + '\n' + String(self.displayName || self.href || dav.url),
-        'ok'
-      );
+      const target = DAV.davDirectoryUrl(dav.url, dav.root);
+      showResultModal(t('settings.webdavTestTitle'), t('settings.webdavTesting') + '\nPROPFIND ' + target, '');
+      let listed = target;
+      let hint = t('settings.webdavListHint') + '\n' + target;
+      let out;
+      try {
+        out = await DAV.davPropfind(target, cred, 1);
+        if (out.url) listed = out.url;
+      } catch (e) {
+        const base = DAV.davDirectoryUrl(dav.url, '');
+        if (!String(dav.root || '').trim() || base === target || !/404/.test(String(e && e.message || e))) throw e;
+        try {
+          out = await DAV.davPropfind(base, cred, 1);
+        } catch (e2) {
+          const err = new Error(String(e2 && e2.message || e2));
+          err.davLog = [e.davLog, e2.davLog].filter(Boolean).join('\n\n');
+          throw err;
+        }
+        listed = out.url || base;
+        hint = t('settings.webdavRootMissing', { url: target }) + '\n' + listed;
+      }
+      closeModal('resultModal');
+      $('webdavListHint').textContent = hint;
+      renderWebdavList(webdavChildRows(out.entries, listed));
+      openModal('webdavListModal');
     } catch (e) {
-      showResultModal(t('settings.webdavTestTitle'), t('settings.webdavTestFail') + '\n' + String(e && e.message || e), 'err');
+      showResultModal(t('settings.webdavTestTitle'), t('settings.webdavTestFail') + '\n' + davFailText(e, dav), 'err');
     }
   }
 
@@ -1246,6 +1347,15 @@
       addProviderRow($('ocrProvidersList'), { name: 'OCR', providerType: 'OpenAI-chat-completions-image_url' }, 'ocr');
     });
     $('webdavTestBtn').addEventListener('click', () => { void testWebdav(); });
+    $('resultCopyBtn').addEventListener('click', copyResultBody);
+    $('webdavListOk').addEventListener('click', () => {
+      closeModal('webdavListModal');
+      setStatus(t('settings.webdavListConfirmed'), 'ok');
+    });
+    $('webdavListWrong').addEventListener('click', () => {
+      closeModal('webdavListModal');
+      setStatus(t('settings.webdavListMarkedWrong'), 'err');
+    });
     $('saveBtn').addEventListener('click', () => {
       if (send('saveConfig', { config: collectConfig() })) setStatus(t('settings.status.saving'));
     });
@@ -1360,6 +1470,7 @@
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
       closeModal('resultModal');
+      closeModal('webdavListModal');
       closeModal('exportPickerModal');
       closeModal('exportSkillsModal');
       closeModal('exportOtherModal');

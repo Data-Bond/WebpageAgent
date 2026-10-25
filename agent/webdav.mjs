@@ -1,6 +1,154 @@
 // WebDAV 传输：路径、Basic 与 Digest SHA-256 认证、PROPFIND、区间计划、字节管道。
 // 口令不进入任务记录。调用方只在这一次请求里提供 password 或 ha1。
 
+const DAV_LOG_BODY_CAP = 12000;
+
+function safeDavUrl(raw) {
+  const text = String(raw || '');
+  if (!text) return '';
+  const u = new URL(text);
+  u.username = '';
+  u.password = '';
+  return u.href;
+}
+
+function redactHeaderValue(name, value) {
+  const key = String(name || '').toLowerCase();
+  if (key === 'authorization' || key === 'proxy-authorization') {
+    const scheme = String(value || '').split(/\s+/)[0] || '***';
+    return scheme + ' ***';
+  }
+  return String(value == null ? '' : value);
+}
+
+function headerSnapshot(headers) {
+  const out = {};
+  if (!headers) return out;
+  if (typeof headers.forEach === 'function') {
+    headers.forEach(function (value, key) {
+      out[String(key)] = String(value);
+    });
+  }
+  if (!Object.keys(out).length) {
+    Object.keys(headers).forEach(function (key) {
+      const value = headers[key];
+      if (value == null || typeof value === 'function') return;
+      out[key] = String(value);
+    });
+  }
+  return out;
+}
+
+function headerValue(headers, name) {
+  const want = String(name || '').toLowerCase();
+  const keys = Object.keys(headers || {});
+  for (let i = 0; i < keys.length; i++) {
+    if (String(keys[i]).toLowerCase() === want) return headers[keys[i]];
+  }
+  return '';
+}
+
+function headerBlock(headers) {
+  const snap = headerSnapshot(headers);
+  const lines = Object.keys(snap).sort(function (a, b) { return a.localeCompare(b); }).map(function (key) {
+    return key + ': ' + redactHeaderValue(key, snap[key]);
+  });
+  return lines.length ? lines.join('\n') : '(无)';
+}
+
+function clipDavLog(text) {
+  const s = String(text == null ? '' : text);
+  if (s.length <= DAV_LOG_BODY_CAP) return s;
+  return s.slice(0, DAV_LOG_BODY_CAP) + '\n… 已截断，共 ' + s.length + ' 字符';
+}
+
+function redactDavLocation(text, rawUrl) {
+  let s = String(text || '');
+  let origin = '';
+  let path = '';
+  const raw = String(rawUrl || '');
+  if (!raw) return s;
+  const u = new URL(raw);
+  origin = u.origin;
+  path = decodeURIComponent(u.pathname || '');
+  if (origin) {
+    const hostRe = new RegExp(origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:/[^\\s\'"<>]*)?', 'g');
+    s = s.replace(hostRe, 'https://[服务器地址]');
+  }
+  const parts = path.split('/').filter(Boolean);
+  const paths = [];
+  for (let i = 0; i < parts.length; i++) {
+    const sub = '/' + parts.slice(i).join('/');
+    if (parts.length - i >= 2 || i === 0) {
+      paths.push(sub);
+      paths.push(sub + '/');
+    }
+  }
+  paths.sort(function (a, b) { return b.length - a.length; });
+  const seen = {};
+  paths.forEach(function (item) {
+    if (!item || item.length < 2 || seen[item]) return;
+    seen[item] = true;
+    if (s.indexOf(item) >= 0) s = s.split(item).join('/[路径]');
+  });
+  return s;
+}
+
+function redactDavText(text, secrets) {
+  let s = String(text || '');
+  const list = (secrets || []).map(function (item) { return String(item || ''); })
+    .filter(function (item) { return item.length >= 3; })
+    .sort(function (a, b) { return b.length - a.length; });
+  list.forEach(function (item) {
+    if (s.indexOf(item) >= 0) s = s.split(item).join('***');
+  });
+  s = s.replace(/((?:authorization|proxy-authorization):\s*)(\S+)(?:\s+\S+)?/gi, '$1$2 ***');
+  s = s.replace(/((?:set-cookie|cookie):\s*)[^\n]*/gi, '$1***');
+  s = s.replace(/([?&](?:access_token|token|password|passwd|pwd|secret|api_key|key)=)[^&#\s]+/gi, '$1***');
+  return s;
+}
+
+function formatDavExchange(info) {
+  const src = info || {};
+  const headers = headerSnapshot(src.reqHeaders);
+  const lines = [];
+  const res = src.res || {};
+  lines.push('--- ' + String(src.method || '') + ' ' + safeDavUrl(src.url) + ' ---');
+  if (src.error) {
+    lines.push('失败 ' + String(src.error.name || 'Error') + ': ' + String(src.error.message || src.error));
+  } else {
+    lines.push('响应 ' + String(res.status) + (res.statusText ? ' ' + res.statusText : ''));
+    if (res.redirected) lines.push('浏览器跟随了重定向');
+    if (res.url && safeDavUrl(res.url) !== safeDavUrl(src.url)) lines.push('最终地址 ' + safeDavUrl(res.url));
+    if (res.type) lines.push('响应类型 ' + res.type);
+  }
+  lines.push('耗时 ' + String(src.ms == null ? '' : src.ms) + ' ms');
+  const authRaw = headerValue(headers, 'authorization');
+  lines.push('认证 ' + (authRaw ? String(authRaw).split(/\s+/)[0] + ' 已发送' : '(未发送)'));
+  lines.push('用户名 ' + (src.userSet ? '已填写' : '未填写'));
+  lines.push('密码 ' + (src.passSet ? '已填写' : '未填写'));
+  lines.push('Depth ' + (headerValue(headers, 'depth') || '(未发送)'));
+  lines.push('Content-Type ' + (headerValue(headers, 'content-type') || '(未发送)'));
+  lines.push('请求体字节 ' + String(src.reqBody == null ? 0 : String(src.reqBody).length));
+  if (!src.error) {
+    lines.push('响应头');
+    lines.push(headerBlock(res.headers));
+    if (src.resBody != null) {
+      lines.push('响应体');
+      lines.push(clipDavLog(src.resBody));
+    }
+  }
+  lines.push('请求头');
+  lines.push(headerBlock(headers));
+  return redactDavText(redactDavLocation(lines.join('\n'), src.url), src.secrets);
+}
+
+function davFail(message, log) {
+  const err = new Error(message);
+  if (log) err.davLog = String(log);
+  return err;
+}
+
 const PROPFIND_MAX_BYTES = 2 * 1024 * 1024;
 
 function bytesOf(text) {
@@ -124,6 +272,51 @@ function parsePropfindXml(xmlText) {
   return entries;
 }
 
+function decodeDavHref(href) {
+  let s = String(href || '');
+  try { s = decodeURIComponent(s); } catch (e) {}
+  const abs = s.match(/^https?:\/\/[^/]+(\/.*)?$/i);
+  if (abs) s = abs[1] || '/';
+  return s;
+}
+
+function davEntryName(entry) {
+  const dn = String(entry && entry.displayName || '').trim();
+  if (dn) return dn;
+  const path = decodeDavHref(entry && entry.href).replace(/\/+$/, '');
+  return path.slice(path.lastIndexOf('/') + 1);
+}
+
+function davHrefSegment(entry) {
+  const path = decodeDavHref(entry && entry.href).replace(/\/+$/, '');
+  return path.slice(path.lastIndexOf('/') + 1);
+}
+
+function davChildRows(entries, targetUrl) {
+  const selfPath = decodeDavHref(String(targetUrl || '').replace(/^https?:\/\/[^/]+/i, '')).replace(/\/+$/, '') + '/';
+  const rows = [];
+  const seen = {};
+  (entries || []).forEach(function (entry) {
+    const hrefPath = decodeDavHref(entry.href).replace(/\/+$/, '') + (entry.collection ? '/' : '');
+    if (hrefPath === selfPath) return;
+    const name = davEntryName(entry);
+    const segment = davHrefSegment(entry) || name;
+    if (!name || seen[segment]) return;
+    seen[segment] = true;
+    rows.push({
+      name: name,
+      segment: segment,
+      collection: !!entry.collection,
+      size: entry.contentLength == null ? null : entry.contentLength
+    });
+  });
+  rows.sort(function (a, b) {
+    if (a.collection !== b.collection) return a.collection ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  return rows;
+}
+
 function challengeParams(raw, scheme) {
   const at = raw.toLowerCase().indexOf(scheme);
   if (at < 0) return null;
@@ -225,6 +418,69 @@ function basicAuthorization(fields) {
   return { ha1: ha1, header: 'Basic ' + ha1 };
 }
 
+// 目录地址补上结尾斜杠。远程根目录已经出现在服务器地址末尾时不再拼接第二次。
+function davDirectoryUrl(base, root) {
+  const u = davUrl(base);
+  const extra = String(root || '').replace(/^\/+|\/+$/g, '');
+  let path = decodeURIComponent(u.pathname || '/');
+  if (path.charAt(0) !== '/') path = '/' + path;
+  if (extra) {
+    const suffix = '/' + extra;
+    const bare = path.replace(/\/+$/, '');
+    if (bare !== suffix && bare.slice(-suffix.length) !== suffix) path = bare + suffix;
+    else path = bare;
+  }
+  if (path.charAt(path.length - 1) !== '/') path += '/';
+  u.pathname = path;
+  u.hash = '';
+  return u.href;
+}
+
+function davChildDir(dirUrl, rel) {
+  const u = davUrl(davDirectoryUrl(dirUrl, ''));
+  const extra = String(rel || '').replace(/^\/+|\/+$/g, '');
+  if (!extra) return u.href;
+  let path = decodeURIComponent(u.pathname || '/');
+  if (path.charAt(path.length - 1) !== '/') path += '/';
+  path += extra.split('/').filter(Boolean).join('/');
+  if (path.charAt(path.length - 1) !== '/') path += '/';
+  u.pathname = path;
+  u.hash = '';
+  return u.href;
+}
+
+function davParentDir(dirUrl) {
+  const u = davUrl(dirUrl);
+  const path = decodeURIComponent(u.pathname || '/').replace(/\/+$/, '');
+  const cut = path.lastIndexOf('/');
+  if (cut <= 0) return '';
+  u.pathname = path.slice(0, cut) + '/';
+  u.username = '';
+  u.password = '';
+  u.hash = '';
+  return u.href;
+}
+
+function davSameHostDir(baseUrl, cfgUrl) {
+  const base = davUrl(baseUrl);
+  const cfg = davUrl(cfgUrl);
+  if (base.protocol !== cfg.protocol || base.host !== cfg.host) throw new Error('路径无效');
+  base.username = '';
+  base.password = '';
+  base.hash = '';
+  if (base.pathname.charAt(base.pathname.length - 1) !== '/') base.pathname += '/';
+  return base.href;
+}
+
+function davChildFile(dirUrl, rel) {
+  const text = String(rel || '').replace(/^\/+|\/+$/g, '');
+  const cut = text.lastIndexOf('/');
+  const dirRel = cut >= 0 ? text.slice(0, cut) : '';
+  const name = cut >= 0 ? text.slice(cut + 1) : text;
+  if (!name || name === '.' || name === '..') throw new Error('缺少文件名');
+  return joinDavUrl(davChildDir(dirUrl, dirRel), name);
+}
+
 // 上传地址规划：目录地址补尾部斜杠后拼接按段编码的文件名；
 // 冲突时改名序列 name.ext → name-1.ext → name-2.ext。
 function joinDavUrl(dirUrl, fileName) {
@@ -259,6 +515,8 @@ function planUpload(dirUrl, fileName, conflictIndex) {
 
 // 认证客户端：一次使用期内缓存质询，nc 按请求递增，后续请求直接按缓存质询
 // 计算 Authorization（Basic 在首次 401 之后预发）；401 且 stale=true 刷新质询重试一次。
+// 页面里已经填写了密码时，先把密码登记给 background。浏览器收到 401 会弹出自己的
+// 用户名密码框；background 用这份密码应答后，输入框不再出现。
 // fetchImpl 可包一层活跃性日志；ha1 随 getHa1 取走供断点续传。
 function createDavClient(opts) {
   const o = opts || {};
@@ -300,39 +558,176 @@ function createDavClient(opts) {
     auth.ha1Realm = String(challenge.realm || '');
     return built.header;
   }
+  async function armBrowserAuth(rawUrl) {
+    if (o.password == null) return false;
+    const rt = typeof chrome !== 'undefined' && chrome.runtime;
+    if (!rt || typeof rt.sendMessage !== 'function') return false;
+    const resp = await rt.sendMessage({
+      cmd: 'davArmAuth',
+      url: String(rawUrl || ''),
+      username: String(o.username || ''),
+      password: String(o.password)
+    });
+    if (!resp || resp.ok !== true) throw new Error((resp && resp.error) || '登记 WebDAV 认证失败');
+    return true;
+  }
+
+  async function disarmBrowserAuth(rawUrl) {
+    const rt = typeof chrome !== 'undefined' && chrome.runtime;
+    if (!rt || typeof rt.sendMessage !== 'function') return;
+    const resp = await rt.sendMessage({ cmd: 'davDisarmAuth', url: String(rawUrl || '') });
+    if (!resp || resp.ok !== true) throw new Error((resp && resp.error) || '解除 WebDAV 认证登记失败');
+  }
+
+  const trace = [];
+  function traceText() {
+    return trace.join('\n\n');
+  }
+  async function responseBodyText(res) {
+    if (!res || typeof res.clone !== 'function') return '';
+    const copy = res.clone();
+    if (!copy || typeof copy.text !== 'function') return '';
+    return copy.text();
+  }
+  async function recordExchange(method, url, reqHeaders, reqBody, started, res, error) {
+    let resBody = null;
+    if (res && !res.ok) {
+      try {
+        resBody = await responseBodyText(res);
+      } catch (e) {
+        resBody = '(读取响应体失败: ' + String(e && e.message || e) + ')';
+      }
+    }
+    trace.push(formatDavExchange({
+      method: method,
+      url: url,
+      ms: Date.now() - started,
+      reqHeaders: headerSnapshot(reqHeaders),
+      reqBody: reqBody,
+      res: res,
+      resBody: resBody,
+      error: error,
+      userSet: !!String(o.username || ''),
+      passSet: o.password != null && String(o.password) !== '',
+      secrets: [o.password, o.username, auth.basicHa1]
+    }));
+  }
+  function maskText(text) {
+    return redactDavText(text, [o.password, o.username, auth.basicHa1]);
+  }
   async function request(method, rawUrl, options) {
     const req = options || {};
     const u = davUrl(rawUrl);
     const uri = requestUri(rawUrl);
     const headers = Object.assign({}, req.headers || {});
-    const init = { method: method, headers: headers };
+    const init = { method: method, headers: headers, credentials: 'omit' };
     if (req.body !== undefined) init.body = req.body;
-    if (auth.challenge) headers.Authorization = await buildHeader(auth.challenge, method, uri);
-    let res = await doFetch(u.href, init);
-    if (res.status !== 401) return res;
-    const challenge = parseAuthChallenge(res.headers.get('www-authenticate'));
-    if (auth.challenge && !challenge.stale) return res;
-    if (!auth.challenge || String(challenge.nonce || '') !== String(auth.challenge.nonce || '')) auth.nc = 0;
-    auth.challenge = challenge;
-    headers.Authorization = await buildHeader(challenge, method, uri);
-    res = await doFetch(u.href, init);
-    return res;
+    const armed = await armBrowserAuth(u.href);
+    try {
+      if (auth.challenge) headers.Authorization = await buildHeader(auth.challenge, method, uri);
+      else if (o.password != null) {
+        const built = basicAuthorization({ username: o.username, password: o.password });
+        headers.Authorization = built.header;
+        auth.basicHa1 = built.ha1;
+      }
+      const sentHeaders = headerSnapshot(headers);
+      const started = Date.now();
+      let res;
+      try {
+        res = await doFetch(u.href, init);
+      } catch (e) {
+        await recordExchange(method, u.href, sentHeaders, req.body, started, null, e);
+        e.davLog = maskText(traceText());
+        throw e;
+      }
+      await recordExchange(method, u.href, sentHeaders, req.body, started, res, null);
+      if (res.status !== 401) {
+        if (!auth.challenge && auth.basicHa1) auth.ha1 = auth.basicHa1;
+        return res;
+      }
+      auth.basicHa1 = '';
+      let challenge;
+      try {
+        challenge = parseAuthChallenge(res.headers.get('www-authenticate'));
+      } catch (e) {
+        e.davLog = maskText(traceText());
+        throw e;
+      }
+      if (auth.challenge && !challenge.stale) return res;
+      if (!auth.challenge || String(challenge.nonce || '') !== String(auth.challenge.nonce || '')) auth.nc = 0;
+      auth.challenge = challenge;
+      headers.Authorization = await buildHeader(challenge, method, uri);
+      const retryHeaders = headerSnapshot(headers);
+      const retryStarted = Date.now();
+      try {
+        res = await doFetch(u.href, init);
+      } catch (e) {
+        await recordExchange(method, u.href, retryHeaders, req.body, retryStarted, null, e);
+        e.davLog = maskText(traceText());
+        throw e;
+      }
+      await recordExchange(method, u.href, retryHeaders, req.body, retryStarted, res, null);
+      return res;
+    } finally {
+      if (armed) await disarmBrowserAuth(u.href);
+    }
   }
   return {
     request: request,
-    getHa1: function () { return auth.ha1; }
+    getHa1: function () { return auth.ha1; },
+    getTrace: function () { return maskText(traceText()); },
+    mask: maskText
   };
 }
 
+const PROPFIND_XML = '<?xml version="1.0" encoding="utf-8"?>'
+  + '<d:propfind xmlns:d="DAV:"><d:prop>'
+  + '<d:displayname/><d:resourcetype/><d:getcontentlength/>'
+  + '</d:prop></d:propfind>';
+
 async function davPropfind(rawUrl, cred, depth) {
   const client = createDavClient(cred || {});
-  const res = await client.request('PROPFIND', rawUrl, {
-    headers: { Depth: String(depth == null ? 1 : depth) }
-  });
-  if (!res.ok && res.status !== 207) throw new Error('PROPFIND 失败 ' + res.status);
+  const depthHeader = String(depth == null ? 1 : depth);
+  async function once(target) {
+    return client.request('PROPFIND', target, {
+      headers: {
+        Depth: depthHeader,
+        'Content-Type': 'application/xml; charset=utf-8'
+      },
+      body: PROPFIND_XML
+    });
+  }
+  let target = davDirectoryUrl(rawUrl, '');
+  let res = await once(target);
+  if (res.status === 404) {
+    await res.arrayBuffer();
+    const u = davUrl(target);
+    if (u.pathname.length > 1 && u.pathname.charAt(u.pathname.length - 1) === '/') {
+      u.pathname = u.pathname.replace(/\/+$/, '');
+      const bare = u.href;
+      if (bare !== target) {
+        const second = await once(bare);
+        if (second.status !== 404) {
+          target = bare;
+          res = second;
+        }
+      }
+    }
+  }
+  if (!res.ok && res.status !== 207) {
+    throw davFail(redactDavLocation(client.mask('PROPFIND 失败 ' + res.status + '\n' + target), target), client.getTrace());
+  }
   const buf = await res.arrayBuffer();
-  if (buf.byteLength > PROPFIND_MAX_BYTES) throw new Error('PROPFIND 响应超过上限');
-  return { entries: parsePropfindXml(new TextDecoder().decode(buf)), ha1: client.getHa1() };
+  if (buf.byteLength > PROPFIND_MAX_BYTES) throw davFail('PROPFIND 响应超过上限', client.getTrace());
+  const text = new TextDecoder().decode(buf);
+  let entries;
+  try {
+    entries = parsePropfindXml(text);
+  } catch (e) {
+    e.davLog = client.getTrace();
+    throw e;
+  }
+  return { entries: entries, ha1: client.getHa1(), url: target };
 }
 
 async function davMkcol(rawUrl, cred) {
@@ -460,6 +855,12 @@ export {
   digestAuthorization,
   basicAuthorization,
   joinDavUrl,
+  davDirectoryUrl,
+  davChildDir,
+  davParentDir,
+  davSameHostDir,
+  davChildFile,
+  davChildRows,
   uploadNameAt,
   planUpload,
   createDavClient,

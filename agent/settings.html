@@ -402,10 +402,35 @@
       word-break: break-word;
       max-height: 56vh;
       overflow: auto;
+      user-select: text;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
     .modal-pre.ok { color: #1f7a4d; }
     .modal-pre.err { color: #b42318; }
+    #webdavListHint { white-space: pre-wrap; word-break: break-all; }
+    .dav-list-scroll {
+      direction: rtl;
+      height: 280px;
+      overflow-y: scroll;
+      margin: 8px 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #f6f7fb;
+      scrollbar-color: #6d758c #e4e7f0;
+      scrollbar-width: auto;
+    }
+    .dav-list-scroll::-webkit-scrollbar { width: 12px; }
+    .dav-list-scroll::-webkit-scrollbar-track { background: #e4e7f0; }
+    .dav-list-scroll::-webkit-scrollbar-thumb { background: #6d758c; border-radius: 6px; }
+    .dav-list-scroll > div { direction: ltr; text-align: left; }
+    .dav-entry {
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--line);
+      font-size: 15px;
+      word-break: break-all;
+    }
+    .dav-entry:last-child { border-bottom: none; }
+    .dav-list-actions { margin-top: 4px; }
     .export-group {
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -619,7 +644,27 @@
     <div class="modal-dialog" role="dialog" aria-labelledby="resultModalTitle" aria-modal="true">
       <button type="button" class="modal-x" data-close-modal="resultModal">×</button>
       <div class="modal-title" id="resultModalTitle" data-i18n="settings.testResult"></div>
+      <div class="io-bar" id="resultCopyRow" hidden>
+        <button type="button" class="btn" id="resultCopyBtn" data-i18n="common.copy"></button>
+        <div class="status" id="resultCopyStatus"></div>
+      </div>
       <pre class="modal-pre" id="resultModalBody"></pre>
+    </div>
+  </div>
+
+  <div class="modal" id="webdavListModal" hidden>
+    <div class="modal-backdrop" data-close-modal="webdavListModal"></div>
+    <div class="modal-dialog" role="dialog" aria-labelledby="webdavListTitle" aria-modal="true">
+      <button type="button" class="modal-x" data-close-modal="webdavListModal">×</button>
+      <div class="modal-title" id="webdavListTitle" data-i18n="settings.webdavTestTitle"></div>
+      <div class="hint" id="webdavListHint"></div>
+      <div class="dav-list-scroll" id="webdavListScroll">
+        <div id="webdavList"></div>
+      </div>
+      <div class="provider-actions dav-list-actions">
+        <button type="button" class="btn primary" id="webdavListOk" data-i18n="settings.webdavListOk"></button>
+        <button type="button" class="btn" id="webdavListWrong" data-i18n="settings.webdavListWrong"></button>
+      </div>
     </div>
   </div>
 
