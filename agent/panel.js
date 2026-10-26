@@ -968,9 +968,18 @@
       flex: 0 0 auto;
     }
     .attach-source-actions { display: flex; flex-direction: column; gap: 8px; }
+    .modal.attach-source-tall {
+      height: 92%;
+      max-height: 100%;
+    }
+    .attach-dav-browse {
+      flex: 1 1 auto;
+      min-height: 0;
+    }
     .attach-dav-path { font-size: 13px; word-break: break-all; color: rgba(90, 96, 114, var(--wpa-alpha)); }
     .attach-dav-scroll {
-      max-height: 240px;
+      flex: 1 1 auto;
+      min-height: 480px;
       overflow-y: auto;
       border: 1px solid #e6e8f0;
       border-radius: 8px;
@@ -980,8 +989,16 @@
       font-size: 13px;
       color: rgba(90, 96, 114, var(--wpa-alpha));
     }
-    .attach-dav-row { padding: 6px 10px; cursor: pointer; word-break: break-all; }
+    .attach-dav-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      word-break: break-all;
+    }
     .attach-dav-row.selected { background: rgba(79, 124, 255, 0.16); }
+    .attach-dav-name { flex: 1 1 auto; min-width: 0; }
     .attach-dav-status {
       font-size: 13px;
       white-space: pre-wrap;
@@ -1574,6 +1591,15 @@
     .modal textarea { min-height: calc(80px * var(--wpa-ui-scale, 1)); padding: calc(7px * var(--wpa-ui-scale, 1)) calc(9px * var(--wpa-ui-scale, 1)); }
     .modal textarea.archive-redact-input { min-height: calc(72px * var(--wpa-ui-scale, 1)); }
     .modal textarea.archive-doc-input { min-height: calc(120px * var(--wpa-ui-scale, 1)); }
+    .modal .attach-dav-check {
+      width: 18px;
+      height: 18px;
+      margin: 3px 0 0;
+      padding: 0;
+      flex: 0 0 auto;
+      accent-color: #4f7cff;
+      cursor: pointer;
+    }
     #userInput {
       font-size: calc(16px * var(--wpa-font-scale, 1));
       padding: calc(9px * var(--wpa-ui-scale, 1)) calc(12px * var(--wpa-ui-scale, 1));
@@ -2211,7 +2237,7 @@
     confirmModal.appendChild(confirmDialog);
 
     const attachSourceModal = mk('div', 'modal-backdrop hidden');
-    const attachSourceDialog = mk('div', 'modal');
+    const attachSourceDialog = mk('div', 'modal attach-source-dialog');
     const attachSourceHead = mk('div', 'attach-source-head');
     const attachSourceHeading = mk('h3');
     attachSourceHeading.setAttribute('data-i18n', 'panel.attachPickTitle');
@@ -2228,7 +2254,7 @@
     attachSourcePick.appendChild(attachLocalBtn);
     attachSourcePick.appendChild(attachDavBtn);
     attachSourceDialog.appendChild(attachSourcePick);
-    const attachDavBrowse = mk('div', 'attach-source-actions hidden');
+    const attachDavBrowse = mk('div', 'attach-source-actions attach-dav-browse hidden');
     const attachDavPath = mk('div', 'attach-dav-path');
     const attachDavUpBtn = mk('button', 'btn', { type: 'button' });
     attachDavUpBtn.setAttribute('data-i18n', 'panel.attachDavUp');
@@ -2469,7 +2495,7 @@
       skillAddStage, skillAddVar, skillStagesList, skillVarsList,
       skillPromptPreview, skillUndeclared,
       confirmModal, confirmWarn, confirmCancel, confirmOk,
-      attachSourceModal, attachSourcePick, attachLocalBtn, attachDavBtn, attachSourceClose,
+      attachSourceModal, attachSourceDialog, attachSourcePick, attachLocalBtn, attachDavBtn, attachSourceClose,
       attachDavBrowse, attachDavPath, attachDavUpBtn, attachDavSelectAllBtn, attachDavList, attachDavStatus,
       attachDavCount,
       attachDavLogBtn, attachDavLogBox,
@@ -5619,6 +5645,7 @@
       els.attachSourceModal.classList.add('hidden');
     }
     function showAttachPick() {
+      els.attachSourceDialog.classList.remove('attach-source-tall');
       els.attachSourcePick.classList.remove('hidden');
       els.attachDavBrowse.classList.add('hidden');
       setAttachDavStatus('');
@@ -5650,7 +5677,25 @@
         const key = davPickKey(attachDavBase, leaf);
         const picked = !row.collection && !!attachDavSelected[key];
         const el = mk('div', 'attach-dav-row' + (picked ? ' selected' : ''));
-        el.textContent = (row.collection ? '文件夹 ' : (picked ? '☑ ' : '☐ ')) + row.name;
+        if (!row.collection) {
+          const box = mk('input', 'attach-dav-check', { type: 'checkbox' });
+          box.checked = picked;
+          box.addEventListener('click', function (ev) { ev.stopPropagation(); });
+          box.addEventListener('change', function () {
+            if (attachDavBusy) {
+              box.checked = !!attachDavSelected[key];
+              return;
+            }
+            if (box.checked) attachDavSelected[key] = { base: attachDavBase, leaf: leaf, name: row.name };
+            else delete attachDavSelected[key];
+            renderAttachDavRows(attachDavEntries);
+          });
+          el.appendChild(box);
+        }
+        const name = mk('span', 'attach-dav-name', {
+          textContent: (row.collection ? '文件夹 ' : '') + row.name
+        });
+        el.appendChild(name);
         el.addEventListener('click', function () {
           if (attachDavBusy) return;
           if (row.collection) {
@@ -5685,6 +5730,7 @@
       renderAttachDavRows(attachDavEntries);
     }
     async function openAttachDav() {
+      els.attachSourceDialog.classList.add('attach-source-tall');
       if (!webdavSaved()) {
         els.attachSourcePick.classList.add('hidden');
         els.attachDavBrowse.classList.remove('hidden');

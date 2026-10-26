@@ -1157,6 +1157,9 @@ ok(/function normalizeWebdavConfig\(/.test(bg) && /webdav: normalizeWebdavConfig
     && /cmd: 'panelDav'/.test(bg)
     && /cmd === 'panelDav'/.test(fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8'))
     && /attachDavLogBtn/.test(panelSrc)
+    && /attach-dav-check/.test(panelSrc)
+    && /attach-source-tall/.test(panelSrc)
+    && /min-height: 480px/.test(panelSrc)
     && /panelDavChunk/.test(fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8'))
     && /mime: mime \|\| 'application\/octet-stream'/.test(fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8'))
     && /bytesToB64/.test(fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8'))
@@ -2642,7 +2645,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.8.0', '锁步版本为 6.8.0');
+ok(manifestVer === '6.8.1', '锁步版本为 6.8.1');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
