@@ -1,0 +1,70 @@
+[
+  {
+    "id": "ops-native-form",
+    "page": "/fixtures/native-form.html",
+    "ops": [
+      { "tool": "type", "args": { "target": "input[name=name]", "value": "张三" } },
+      { "tool": "select", "args": { "target": "select[name=city]", "value": "上海" } },
+      { "tool": "check", "args": { "target": "input[name=agree]", "value": true } },
+      { "tool": "click", "args": { "target": "button[type=submit]" } }
+    ],
+    "check": { "submit": "native-form", "expect": { "name": "张三", "city": "sh", "agree": "yes" } }
+  },
+  {
+    "id": "ops-contenteditable",
+    "page": "/fixtures/contenteditable.html",
+    "ops": [
+      { "tool": "type", "args": { "target": "#editor", "value": "本周完成接口联调" } },
+      { "tool": "click", "args": { "target": "#save" } }
+    ],
+    "check": { "submit": "contenteditable", "expect": { "text": "本周完成接口联调" } }
+  },
+  {
+    "id": "ops-iframe-cross",
+    "page": "/fixtures/iframe-cross.html",
+    "ops": [
+      { "tool": "type", "args": { "target": { "frame": 1, "selector": "input[name=attendee]" }, "value": "李雷" } },
+      { "tool": "select", "args": { "target": { "frame": 1, "selector": "select[name=session]" }, "value": "下午场" } },
+      { "tool": "click", "args": { "target": { "frame": 1, "selector": "button[type=submit]" } } }
+    ],
+    "check": { "submit": "iframe-cross", "expect": { "attendee": "李雷", "session": "pm" } }
+  },
+  {
+    "id": "ops-keyboard-only",
+    "page": "/fixtures/keyboard-only.html",
+    "drivers": ["cdp", "bidi"],
+    "ops": [
+      { "tool": "key", "args": { "target": "#box", "keys": ["ArrowDown", "ArrowDown", "Enter"] } }
+    ],
+    "check": { "submit": "keyboard-only", "expect": { "level": "三级" } }
+  },
+  {
+    "id": "ops-drag-sort",
+    "page": "/fixtures/drag-sort.html",
+    "drivers": ["cdp", "bidi"],
+    "ops": [
+      [{ "tool": "drag", "args": { "from": "li[data-id=c]", "to": "li[data-id=b]" } }],
+      [{ "tool": "click", "args": { "target": "#save" } }]
+    ],
+    "check": { "submit": "drag-sort", "expect": { "order": ["部门经理", "总监", "财务"] } }
+  },
+  {
+    "id": "ops-dialog-confirm",
+    "page": "/fixtures/dialogs.html",
+    "drivers": ["cdp", "bidi"],
+    "ops": [
+      [{ "tool": "click", "args": { "target": "#del" } }],
+      [{ "tool": "dialog", "args": { "accept": true } }]
+    ],
+    "check": { "submit": "dialogs", "expect": { "action": "delete", "confirmed": "yes" } }
+  },
+  {
+    "id": "ops-get-attachment",
+    "page": "/fixtures/native-form.html",
+    "attachments": [{ "name": "invoice.txt", "type": "text/plain", "url": "/fixtures/files/invoice.txt" }],
+    "ops": [
+      { "tool": "get", "args": { "target": { "file": "invoice.txt" }, "limit": 40, "offset": 0 } }
+    ],
+    "check": { "receiptIncludes": "INV-2026-0917", "receiptsOk": true }
+  }
+]

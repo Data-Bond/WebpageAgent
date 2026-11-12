@@ -55,8 +55,10 @@ The model locates a control with three kinds of input (tool parameter `target`):
 | Short text, e.g. `"Next"` | Match accessible name / visible text | When name appears in the snapshot |
 | `{ "text": "Enter", "within": "…" }` | Search by name inside a subtree | Many same-named buttons; container visible in snapshot |
 | `"url"` / `"title"` | `get` only: read address or title | When you need the current URL |
+| `{ "file": "<key>" }` | `get` only: read a panel attachment's text | When fields come from an attachment |
+| `{ "frame": 1, "selector": "…" }` | Search inside a cross-origin iframe | The control sits in the `[frame=1]` part of the snapshot |
 
-Objects may also use `idx`, `selector`, `text`, `within`. CSS in skills or chat is **for comparing to this round’s snapshot only**—not a stable handle for `click` / `get` / `type`; use idx or name instead.
+Objects may also use `idx`, `selector`, `text`, `within`, `frame`, `file`. Controls inside cross-origin iframes appear as their own snapshot part (`[frame=k]`); their idx values work directly, and selector or text lookups add `frame: k`. CSS in skills or chat is **for comparing to this round’s snapshot only**—not a stable handle for `click` / `get` / `type`; use idx or name instead.
 
 **click** short-text lookup and **get** short-text lookup use **different** tables: click searches this round’s indexed names (including `hidden` in the snapshot); get can live-lookup after truncation. On miss or ambiguity, the receipt includes a catalog for the next round.
 
@@ -85,7 +87,7 @@ Read visible text and field state (written value, filter box text, dropdown open
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `target` | idx / text / object / `"url"` / `"title"` / `"document"` | yes | Handle to read; `url` / `title` for address or title; `document` for the current PDF body |
+| `target` | idx / text / object / `"url"` / `"title"` / `"document"` / `{file}` | yes | Handle to read; `url` / `title` for address or title; `document` for the current PDF body; `{ "file": key }` for attachment text |
 | `limit` | integer | no | Max body chars, default ~10000, hard cap 500000 |
 | `offset` | integer | no | Start at char N (0-based); slice with `limit` |
 | `open` | boolean | no | If true, open dropdown/cascade before reading options |
@@ -94,6 +96,7 @@ Read visible text and field state (written value, filter box text, dropdown open
 
 - `target` is `url` or `title`: returns URL or title text.
 - `target` is `document`: when the current page is a PDF, returns a body slice (`chars` / `limit` / `offset` / `truncated`). The snapshot shows `document: { kind, url, name }` even with an empty DOM. Not a PDF → `reason: not-pdf`.
+- `target` is `{ "file": key }`: returns a slice of a panel attachment's text (`textKind: attachment`). `key` comes from the attachment catalog in the user prompt; a file name works too. Text files are decoded directly; PDFs and images use the recognition finished before the task started. Attachment text is never placed into the conversation automatically; the model reads it when needed. Unknown key → `reason: no-attachment` plus the catalog; files without readable text (an archive, say) → `reason: binary-attachment`, upload only.
 - **One** node: `text`, `chars`, `fieldState`, visible `options`, `label`, `sec` (section).
 - `fieldState.committed` is **shown display text** (selection chips / read-only innerText / box value)—**not** a “already selected” verdict. `filter` is the writable filter box value; read-only combobox has empty `filter`, `committed` still shows display text. `open` / `optionsTop` describe **this trigger’s visible popup**; option `sel` comes from DOM `aria-selected` / `--selected`, not string comparison by the engine.
 - **Zero** or **many** nodes: `ok: false`, `reason` `not-found` or `ambiguous`, `catalog` for this round. Short text may live-lookup after truncation.
@@ -246,6 +249,8 @@ Existing idx returns immediately with `found` / `disabled` / `busy` / `elapsedMs
 | --- | --- | --- | --- |
 | `target` | idx / text / object | yes | `<input type="file">` or site file control |
 | `key` | string or string[] | yes | Panel attachment key(s) |
+
+Attach from disk, or choose WebDAV under **Add attachment** in the panel (save WebDAV in global settings first); several files can be ticked at once. After pasting an image you can keep typing and adding attachments. On send, attachments are processed one by one, and the instruction starts only after all of them finish; if one fails, the task does not start and the reason is shown.
 
 ---
 
@@ -437,6 +442,54 @@ When model sees `openedTab` and chooses not to follow. Engine does not auto-clos
 
 ---
 
+### `key` — press a key or chord
+
+With `target`, focus moves there first.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `target` | idx / text / object | no | Control to focus first |
+| `keys` | string or string[] | yes | `"Enter"`, `"Control+A"`, or a sequence `["ArrowDown","ArrowDown","Enter"]` |
+
+**Branches**
+
+- With Chrome DevTools Protocol or WebDriver BiDi, keys come from the browser: receipt `trusted: true`, and default actions (moving focus, typing characters) happen.
+- With the built-in DOM event protocol, receipt `trusted: false`: the page sees keydown/keyup, but browser default actions do not happen. Widgets that only accept trusted keys will not respond.
+
+---
+
+### `drag` — drag and drop
+
+Drags `from` to the center of `to` and releases.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `from` | idx / text / object | yes | Element to drag |
+| `to` | idx / text / object | yes | Drop position |
+
+The receipt only says the drag was sent; whether the order actually changed shows in the next snapshot. Firefox WebDriver BiDi pointer actions do not start HTML5 drag and drop (`draggable` elements) yet; on such pages in Firefox, use the built-in DOM event protocol.
+
+---
+
+### `dialog` — handle a native dialog
+
+When the page opens `alert` / `confirm` / `prompt`, the snapshot is replaced by the dialog itself (type, message, default value); the page is blocked until it closes.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `accept` | boolean | no | true = OK, false = Cancel; default OK |
+| `text` | string | no | Text for `prompt` |
+
+Available with Chrome DevTools Protocol and WebDriver BiDi only; the built-in DOM event protocol returns `reason: driver-unsupported`.
+
+---
+
 ## 3. Common receipt fields
 
 Compressed tool results appear under 【执行结果】. Common fields:
@@ -460,6 +513,10 @@ Compressed tool results appear under 【执行结果】. Common fields:
 | `file` | File produced by a click: `name`, `mime`, `chars`, `text`. PDFs arrive as body slices; no system save dialog |
 | `saveDialog` | A system save dialog appeared and bytes were not captured |
 | `savedTo` | Where the file was saved: `kind` = `local` / `webdav` / `none`, plus `path`. The user picks the destination in the save picker window; the model only reads the receipt |
+| `driver` / `trusted` | Which page operation mode ran the step (`cdp` / `bidi` / `dom`) and whether the input was trusted browser input |
+| `occludedBy` | The element actually on top at the click point when it is not the target |
+| `dialog` | A native dialog opened after this step: `type`, `message`, `defaultPrompt` |
+| `classHint` | Class name on the option `select` clicked (e.g. `is-selected`), passed through as is; `verified` counts only `aria-selected` or the trigger text |
 
 You may write: “If ambiguous, stop and show catalog” or “Pick the row with sec=…”. Do not hard-code stale idx.
 
@@ -481,4 +538,6 @@ Keep personal data in skill variable tables, not shareable step descriptions.
 
 ## 6. Install and configuration
 
-Install, model APIs, OCR, and skill import/export: repo root [README.md](../README.md). Chinese: [README-cn.md](../README-cn.md). Log in on the target site before opening the panel; text attachments enter context directly; PDFs and images are recognized first.
+Install (including Firefox), model APIs, OCR, page operation modes and launch flags, skill import/export, task traces and the evaluation harness: repo root [README.md](../README.md). Chinese: [README-cn.md](../README-cn.md). Log in on the target site before opening the panel. Attachments are processed when you send; the user prompt only lists the attachment catalog (key, name, type, text length), and the model reads text with `get`.
+
+After a task, **Download trace** in the panel exports every step's full request, raw model reply, receipts and timings as JSONL—the most direct way to see why the model did what it did.

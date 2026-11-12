@@ -512,6 +512,21 @@
         <input id="diagCapKb" type="number" min="10" max="200" step="1" value="50">
       </label>
       <div class="hint" data-i18n="settings.diagCapHint"></div>
+      <label class="check-row"><input id="traceEnabled" type="checkbox" checked><span data-i18n="settings.traceEnabled"></span></label>
+      <label class="field">
+        <span data-i18n="settings.traceKeepDays"></span>
+        <input id="traceKeepDays" type="number" min="1" max="90" step="1" value="7">
+      </label>
+      <label class="field">
+        <span data-i18n="settings.traceMaxMb"></span>
+        <input id="traceMaxMb" type="number" min="10" max="2000" step="10" value="200">
+      </label>
+      <div class="hint" data-i18n="settings.traceHint"></div>
+      <label class="field">
+        <span data-i18n="settings.evalServerUrl"></span>
+        <input id="evalServerUrl" type="text" spellcheck="false" placeholder="http://127.0.0.1:8787">
+      </label>
+      <div class="hint" data-i18n="settings.evalServerHint"></div>
       <div class="io-bar">
         <button type="button" class="btn danger" id="clearDiagBtn" data-i18n="settings.clearDiag"></button>
       </div>
@@ -570,8 +585,6 @@
       <div class="pdf-parse-label" data-i18n="settings.attachBudget"></div>
       <label class="field"><span data-i18n="settings.ocrCacheMax"></span><input id="ocrCacheMaxChars" type="number" min="50000" max="2000000" step="10000" value="500000" data-i18n-title="settings.ocrCacheMaxTitle"></label>
       <div class="hint" data-i18n="settings.ocrCacheHint"></div>
-      <label class="field"><span data-i18n="settings.attachContextMax"></span><input id="attachContextMaxChars" type="number" min="10000" max="800000" step="1000" value="300000" data-i18n-title="settings.attachContextMax"></label>
-      <div class="hint" data-i18n="settings.attachContextHint"></div>
       <div class="pdf-parse-label" data-i18n="settings.contextBudget"></div>
       <label class="field"><span data-i18n="settings.contextSoft"></span><input id="contextTokenSoft" type="number" min="64000" max="750000" step="10000" value="500000" data-i18n-title="settings.contextSoftTitle"></label>
       <div class="hint" data-i18n="settings.contextSoftHint"></div>
@@ -618,6 +631,29 @@
       <div class="heading" data-i18n="settings.ocrProviders"></div>
       <div class="provider-list" id="ocrProvidersList"></div>
       <button type="button" class="btn" id="addOcrProviderBtn" data-i18n="settings.addOcrProvider"></button>
+    </div>
+
+    <div class="card">
+      <div class="heading" data-i18n="settings.pageDriver"></div>
+      <div class="hint" data-i18n="settings.pageDriverHint"></div>
+      <label class="field">
+        <span data-i18n="settings.pageDriverSelect"></span>
+        <select id="pageDriver">
+          <option value="auto" data-i18n="settings.pageDriver.auto"></option>
+          <option value="cdp" data-i18n="settings.pageDriver.cdp"></option>
+          <option value="bidi" data-i18n="settings.pageDriver.bidi"></option>
+          <option value="dom" data-i18n="settings.pageDriver.dom"></option>
+        </select>
+      </label>
+      <div class="hint" id="pageDriverAuto"></div>
+      <div class="hint" id="pageDriverUnavailable"></div>
+      <div id="bidiFields">
+        <label class="field"><span data-i18n="settings.bidiPort"></span><input id="bidiPort" type="number" min="1" max="65535" step="1" value="9222"></label>
+        <div class="hint" id="bidiLaunchHint"></div>
+        <div class="provider-actions">
+          <button type="button" class="btn" id="bidiTestBtn" data-i18n="settings.bidiTest"></button>
+        </div>
+      </div>
     </div>
 
     <div class="card">
@@ -739,6 +775,7 @@
     </div>
   </div>
   <script src="shared/i18n.js"></script>
+  <script src="shared/contracts.js"></script>
   <script src="settings.js"></script>
 </body>
 </html>

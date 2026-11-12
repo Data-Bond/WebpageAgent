@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Ant Design 表单</title>
+  <script src="/vendor/react/umd/react.production.min.js"></script>
+  <script src="/vendor/react-dom/umd/react-dom.production.min.js"></script>
+  <script src="/vendor/dayjs/dayjs.min.js"></script>
+  <script src="/vendor/antd/dist/antd.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    const h = React.createElement;
+    function App() {
+      const [level, setLevel] = React.useState();
+      const [owner, setOwner] = React.useState();
+      const [done, setDone] = React.useState(false);
+      function submit() {
+        fetch('/submit/antd', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ level: level || '', owner: owner || '' })
+        }).then(() => setDone(true));
+      }
+      return h('div', { style: { padding: 24, maxWidth: 480 } },
+        h('h1', null, '工单分派'),
+        h('p', null, '优先级'),
+        h(antd.Select, {
+          style: { width: 240 }, placeholder: '选择优先级', value: level, onChange: setLevel,
+          options: [{ value: 'p0', label: '紧急' }, { value: 'p1', label: '高' }, { value: 'p2', label: '普通' }]
+        }),
+        h('p', null, '负责人'),
+        h(antd.Select, {
+          style: { width: 240 }, placeholder: '搜索负责人', showSearch: true, value: owner, onChange: setOwner,
+          optionFilterProp: 'label',
+          options: [{ value: 'u1', label: '王芳' }, { value: 'u2', label: '李强' }, { value: 'u3', label: '赵敏' }]
+        }),
+        h('p', null, h(antd.Button, { type: 'primary', onClick: submit }, '分派')),
+        done ? h('p', { id: 'submitted' }, '已提交') : null
+      );
+    }
+    ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+  </script>
+</body>
+</html>

@@ -60,9 +60,11 @@
 | 短文本，如 `"下一步"`                     | 按无障碍名 / 自身可见字匹配 | 快照里能对上 name 时           |
 | `{ "text": "进入", "within": "…" }` | 只在某容器子树里按名找     | 同名按钮很多，且容器能在本轮快照里对上     |
 | `"url"` / `"title"`               | 仅 `get`：读地址或标题  | 要记当前页链接时                |
+| `{ "file": "<key>" }`             | 仅 `get`：读面板附件正文 | 要从附件里抽字段时               |
+| `{ "frame": 1, "selector": "…" }` | 在跨源 iframe 里找     | 快照里该控件在 `[frame=1]` 段     |
 
 
-对象还可以写 `idx`、`selector`、`text`、`within`。技能或聊天里出现的 CSS **只用来对照本轮快照**，不要当作 `click` / `get` / `type` 的稳定句柄；应改交 idx 或 name。
+对象还可以写 `idx`、`selector`、`text`、`within`、`frame`、`file`。跨源 iframe 里的控件在快照里单独成段（`[frame=k]`），其中的 idx 可以直接用；按 selector 或文字找时加上 `frame: k`。技能或聊天里出现的 CSS **只用来对照本轮快照**，不要当作 `click` / `get` / `type` 的稳定句柄；应改交 idx 或 name。
 
 **click 短文**与 **get 短文**不是同一张表：click 先查本轮已编号的 name（含快照里标了 `hidden` 的项）；get 在快照截断后仍可 live 反查控件。点不到或不止一个时，回执带本轮 catalog，由模型下一轮选 idx。
 
@@ -94,7 +96,7 @@
 
 | 名        | 类型                                  | 必填  | 说明                           |
 | -------- | ----------------------------------- | --- | ---------------------------- |
-| `target` | idx / 文本 / 对象 / `"url"` / `"title"` / `"document"` | 是   | 要读的句柄；`url`、`title` 读地址或标题；`document` 读当前 PDF 正文 |
+| `target` | idx / 文本 / 对象 / `"url"` / `"title"` / `"document"` / `{file}` | 是   | 要读的句柄；`url`、`title` 读地址或标题；`document` 读当前 PDF 正文；`{ "file": key }` 读附件正文 |
 | `limit`  | 整数                                  | 否   | 正文字数上限，省略约 10000，硬顶 500000   |
 | `offset` | 整数                                  | 否   | 从第 N 个字起，0 起算。与 `limit` 组成切片 |
 | `open`   | 布尔                                  | 否   | 为真时先打开下拉/级联再读可见选项            |
@@ -104,6 +106,7 @@
 
 - `target` 为 `url` 或 `title`：返回地址或标题文本，不找控件。
 - `target` 为 `document`：当前页是 PDF 时返回正文切片（`chars` / `limit` / `offset` / `truncated`）。快照里会有 `document: { kind, url, name }`，DOM 为空也有。当前页不是 PDF 则 `reason: not-pdf`。
+- `target` 为 `{ "file": key }`：读面板附件的正文切片（`textKind: attachment`）。`key` 取自用户提示里的附件目录，也可以写文件名。文本附件直接解码；PDF / 图片用发送前已完成的识别结果。附件正文不会自动放进对话，需要时由模型读取。key 不存在时 `reason: no-attachment` 并附目录；没有可读正文的文件（如压缩包）为 `reason: binary-attachment`，只能 `upload`。
 - 定位到 **1** 个节点：返回 `text`、`chars`、`fieldState`、可见 `options`、`label`、`sec`（所在栏目）。
 - `fieldState.committed` 是控件上的 shown 展示字（selection items / 只读区 innerText / 框里的字），**不是**「已经选好」的判定。`filter` 是可写过滤框的 `value`；只读 combobox 没有可写框时 `filter` 为空，`committed` 仍是展示字。`open` / `optionsTop` 只描述**这个 trigger 所属的可见弹层**；选项上的 `sel` 来自 DOM 的 `aria-selected` / `--selected` 等，不是引擎拿字符串比对出来的。
 - 定位到 **0** 或 **多** 个：`ok: false`，`reason` 为 `not-found` 或 `ambiguous`，`catalog` 为本轮目录。短文走 live 反查（截断后仍可能读到未画出 outline 的控件）。
@@ -292,6 +295,8 @@
 
 
 指令示例：「把刚附加的说明书传到『选择数据文件』那个框。」
+
+附件可以从本机选，也可以在面板「添加附件」里选 WebDAV（先在全局配置里填写并保存 WebDAV），一次可勾选多个文件。粘贴图片后输入框仍可继续输入、继续添加附件；点发送后先逐个完成附件识别，全部完成后才开始执行指令，某个附件失败时任务不开始并报出原因。
 
 ---
 
@@ -534,6 +539,66 @@
 
 
 
+### `key` — 按键或组合键
+
+有 `target` 时先把焦点交给它，再按键。
+
+**参数**
+
+
+| 名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `target` | idx / 文本 / 对象 | 否 | 先聚焦的控件 |
+| `keys` | 字符串或字符串数组 | 是 | `"Enter"`、`"Control+A"`，或一串 `["ArrowDown","ArrowDown","Enter"]` |
+
+
+**分支**
+
+- 页面操作方式为 Chrome DevTools Protocol 或 WebDriver BiDi 时，按键由浏览器发出，回执 `trusted: true`，换焦点、输入字符等默认动作照常发生。
+- 自研 DOM 事件驱动协议下回执 `trusted: false`：页面能收到 keydown/keyup，但浏览器默认动作不会发生。只认可信按键的控件在这种方式下不会响应。
+
+---
+
+
+
+### `drag` — 拖动
+
+把 `from` 拖到 `to` 的中心并松开。
+
+**参数**
+
+
+| 名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `from` | idx / 文本 / 对象 | 是 | 被拖的元素 |
+| `to` | idx / 文本 / 对象 | 是 | 放下的位置 |
+
+
+回执只说明拖动动作已经发出；顺序是否真的变了，看下一轮快照。Firefox 的 WebDriver BiDi 指针动作目前不会触发 HTML5 拖放（`draggable` 元素），这类页面在 Firefox 上可改用自研 DOM 事件驱动协议。
+
+---
+
+
+
+### `dialog` — 处理原生弹窗
+
+页面弹出 `alert` / `confirm` / `prompt` 时，快照会换成弹窗本身（类型、原文、默认值），页面在弹窗关闭前不可操作。
+
+**参数**
+
+
+| 名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `accept` | 布尔 | 否 | 真为确定，假为取消；省略为确定 |
+| `text` | 字符串 | 否 | `prompt` 要填的文字 |
+
+
+只在 Chrome DevTools Protocol 与 WebDriver BiDi 方式下可用；自研 DOM 事件驱动协议回执 `reason: driver-unsupported`。
+
+---
+
+
+
 ## 3. 回执里常见字段（方便你读面板、也方便写「看回执再继续」）
 
 工具结果会压缩后出现在对话的【执行结果】里，常见字段：
@@ -558,6 +623,10 @@
 | `file`                         | 点击产生的文件：`name`、`mime`、`chars`、`text`。PDF 为正文切片，不经过系统保存框 |
 | `saveDialog`                   | 系统保存框已经出现，字节没取到 |
 | `savedTo`                      | 文件保存去向：`kind` 为 `local` / `webdav` / `none`，`path` 为路径。保存去向由用户在弹出的选择框决定，模型只读回执 |
+| `driver` / `trusted`           | 这步由哪种页面操作方式执行（`cdp` / `bidi` / `dom`），以及输入是否为浏览器发出的可信输入 |
+| `occludedBy`                   | 点击坐标上实际最上层的元素不是目标时，给出遮挡它的元素 |
+| `dialog`                       | 这步之后弹出了原生弹窗：`type`、`message`、`defaultPrompt` |
+| `classHint`                    | `select` 点中的选项上带的 class 名（如 `is-selected`），原样给出；`verified` 只认 `aria-selected` 或触发框文字 |
 
 
 你在指令里可以写：「若回执说匹配到多处，停下来把目录念给我」或「按 catalog 里带某栏目名的那一条继续」。不要写死过期的 idx。
@@ -582,4 +651,6 @@
 
 ## 6. 与安装、配置的关系
 
-安装、模型接口、OCR、技能导入导出见仓库根目录 [README-cn.md](../README-cn.md)。先在目标网站登录，再点扩展图标打开面板；文本附件直接进上下文，PDF / 图片会先识别再交给文本模型。
+安装（含 Firefox）、模型接口、OCR、页面操作方式与启动参数、技能导入导出、任务轨迹与评测台见仓库根目录 [README-cn.md](../README-cn.md)。先在目标网站登录，再点扩展图标打开面板。附件在发送时先完成识别；用户提示里只有附件目录（key、名称、类型、正文字数），正文由模型用 `get` 读取。
+
+任务结束后，面板上的「下载轨迹」导出本次任务每一步的完整请求、模型原始回复、回执与耗时（JSONL），排查「模型为什么这么做」时比看面板更直接。

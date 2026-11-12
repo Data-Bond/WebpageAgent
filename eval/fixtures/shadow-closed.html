@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>closed shadow root</title></head>
+<body>
+  <h1>订阅设置</h1>
+  <subscribe-box></subscribe-box>
+  <script>
+    customElements.define('subscribe-box', class extends HTMLElement {
+      constructor() {
+        super();
+        const root = this.attachShadow({ mode: 'closed' });
+        root.innerHTML =
+          '<label>邮箱 <input id="mail" type="email"></label> ' +
+          '<button id="go" type="button">订阅</button><p id="msg"></p>';
+        root.getElementById('go').addEventListener('click', function () {
+          fetch('/submit/shadow-closed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: root.getElementById('mail').value })
+          }).then(function () { root.getElementById('msg').textContent = '已提交'; });
+        });
+      }
+    });
+  </script>
+</body>
+</html>

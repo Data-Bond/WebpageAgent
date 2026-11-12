@@ -1,6 +1,6 @@
 // panel.js — 持久化聊天面板（隔离 world content script）
 // 页面挂 about:blank iframe 壳，UI 在 iframe 内 closed Shadow，避免编辑器页面抢走按键。
-// 由 background 通过 chrome.scripting.executeScript({ files:['shared/i18n.js','shared/webSkill.js','panel.js'], world:'ISOLATED' }) 注入。
+// 由 background 通过 chrome.scripting.executeScript({ files:['shared/i18n.js','shared/contracts.js','shared/webSkill.js','panel.js'], world:'ISOLATED' }) 注入。
 // 与 content.js 共存于同一隔离 world；不使用/不覆盖它声明的全局（__dsContentLoaded 等）。
 
 'use strict';
@@ -971,20 +971,26 @@
     .modal.attach-source-tall {
       height: 92%;
       max-height: 100%;
+      overflow: hidden;
     }
     .attach-dav-browse {
       flex: 1 1 auto;
       min-height: 0;
+      overflow: hidden;
     }
     .attach-dav-path { font-size: 13px; word-break: break-all; color: rgba(90, 96, 114, var(--wpa-alpha)); }
     .attach-dav-scroll {
       flex: 1 1 auto;
-      min-height: 480px;
+      min-height: 0;
       overflow-y: auto;
       border: 1px solid #e6e8f0;
       border-radius: 8px;
       background: rgba(246, 247, 251, var(--wpa-alpha));
     }
+    .attach-dav-browse .attach-dav-count,
+    .attach-dav-browse .attach-dav-status,
+    .attach-dav-browse .attach-dav-log,
+    .attach-dav-browse .modal-actions { flex: 0 0 auto; }
     .attach-dav-count {
       font-size: 13px;
       color: rgba(90, 96, 114, var(--wpa-alpha));
@@ -1001,6 +1007,8 @@
     .attach-dav-name { flex: 1 1 auto; min-width: 0; }
     .attach-dav-status {
       font-size: 13px;
+      max-height: 96px;
+      overflow-y: auto;
       white-space: pre-wrap;
       word-break: break-word;
       user-select: text;
@@ -1788,59 +1796,10 @@
     }
     return 'content:v4:' + (h1 >>> 0).toString(16) + (h2 >>> 0).toString(16) + ':' + data.length;
   }
-  function mergeFileAliases(file, newName) {
-    if (!file) return file;
-    const next = String(newName || '').trim();
-    const prev = String(file.name || '').trim();
-    const aliases = [];
-    const seen = Object.create(null);
-    function add(n) {
-      const s = String(n || '').trim();
-      if (!s || seen[s] || (next && s === next)) return;
-      seen[s] = true;
-      aliases.push(s);
-    }
-    if (Array.isArray(file.aliases)) file.aliases.forEach(add);
-    if (prev && prev !== next) add(prev);
-    if (next) file.name = next;
-    file.aliases = aliases;
-    return file;
-  }
-  function imageExtFromMime(type, fallbackName) {
-    const t = String(type || '').toLowerCase();
-    if (t.indexOf('png') >= 0) return 'png';
-    if (t.indexOf('jpeg') >= 0 || t.indexOf('jpg') >= 0) return 'jpg';
-    if (t.indexOf('webp') >= 0) return 'webp';
-    if (t.indexOf('gif') >= 0) return 'gif';
-    if (t.indexOf('bmp') >= 0) return 'bmp';
-    if (t.indexOf('tif') >= 0) return 'tiff';
-    const n = String(fallbackName || '').toLowerCase();
-    const dot = n.lastIndexOf('.');
-    if (dot >= 0) {
-      const ext = n.slice(dot + 1);
-      if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tif', 'tiff'].indexOf(ext) >= 0) {
-        return ext === 'jpeg' ? 'jpg' : ext;
-      }
-    }
-    return 'png';
-  }
-  function uniqueAttachFileName(base, ext, existingNames) {
-    const seen = Object.create(null);
-    (existingNames || []).forEach(function (n) {
-      const s = String(n || '').trim().toLowerCase();
-      if (s) seen[s] = true;
-    });
-    const e = String(ext || '').replace(/^\./, '');
-    const suffix = e ? ('.' + e) : '';
-    const stem = String(base || '').trim() || '粘贴图片';
-    let candidate = stem + suffix;
-    if (!seen[candidate.toLowerCase()]) return { ok: true, name: candidate };
-    for (let i = 1; i <= 5; i++) {
-      candidate = stem + new Array(i + 1).join('new') + suffix;
-      if (!seen[candidate.toLowerCase()]) return { ok: true, name: candidate };
-    }
-    return { ok: false, name: candidate };
-  }
+  const CONTRACTS = globalThis.WPA_CONTRACTS;
+  const mergeFileAliases = CONTRACTS.mergeFileAliases;
+  const imageExtFromMime = CONTRACTS.imageExtFromMime;
+  const uniqueAttachFileName = CONTRACTS.uniqueAttachFileName;
   function attachDisplayNames(exceptKey) {
     const out = [];
     attachedFiles.forEach(function (f) {
@@ -2648,7 +2607,23 @@
     return text === connHintReconnect() || text === connHintConnected();
   }
 
+  // 会话记录按 800ms 防抖写入；任务结束（done/ask/error/cancel）与页面隐藏时立即写入
+  const TRANSCRIPT_FLUSH_MS = 800;
+  let transcriptTimer = null;
   function persistTranscript() {
+    if (transcriptTimer) return;
+    transcriptTimer = setTimeout(function () {
+      transcriptTimer = null;
+      writeTranscriptNow();
+    }, TRANSCRIPT_FLUSH_MS);
+  }
+  function flushTranscript() {
+    if (!transcriptTimer) return;
+    clearTimeout(transcriptTimer);
+    transcriptTimer = null;
+    writeTranscriptNow();
+  }
+  function writeTranscriptNow() {
     if (!canPersist()) return;
     const compact = transcript.filter((m) => !isConnHintMessage(m)).slice(-200).map((m) => {
       const row = { role: m.role, text: String(m.text || '').slice(0, 4000) };
@@ -2660,10 +2635,15 @@
     });
     storeSet({ [trKey()]: compact });
   }
+  // 已存库的附件只留 key 与 storedChars（入库时的 dataUrl 长度），字节需要时由后台按 key 读回
+  function hasAttachBytes(f) {
+    return !!(f && (f.dataUrl || f.stored));
+  }
   function filesTotalBytes() {
     let total = 0;
     for (const f of attachedFiles) {
       if (f.dataUrl) total += f.dataUrl.length;
+      else if (f.stored) total += f.storedChars || 0;
     }
     return total;
   }
@@ -2671,16 +2651,28 @@
     if (!canPersist()) return;
     // 在预算内逐个保存；一个大 PDF 不应连带清空其它小附件。
     let used = 0;
+    attachedFiles.forEach((f) => { if (f.stored && !f.dataUrl) used += f.storedChars || 0; });
+    const sent = [];
     const toStore = attachedFiles.map((f) => {
       const meta = { key: f.key, name: f.name, type: f.type, size: f.size, kind: f.kind, contentHash: f.contentHash || '', aliases: Array.isArray(f.aliases) ? f.aliases.slice() : [], needsName: !!f.needsName };
       const len = f.dataUrl ? f.dataUrl.length : 0;
       if (len && used + len <= MAX_FILES_BYTES) {
         used += len;
         meta.dataUrl = f.dataUrl;
+        sent.push(f);
       }
       return meta;
     });
-    storeSet({ [fileKey()]: toStore });
+    storeRpc('panelStoreSet', { obj: { [fileKey()]: toStore } }).then((r) => {
+      if (r && r.pressure) setConnBanner(t('panel.msg.storagePressure'), 'error');
+      if (!r || !r.ok || r.pressure) return;
+      sent.forEach((f) => {
+        if (attachedFiles.indexOf(f) < 0 || !f.dataUrl || !f.contentHash) return;
+        f.storedChars = f.dataUrl.length;
+        f.stored = true;
+        delete f.dataUrl;
+      });
+    });
   }
 
   // ============ 气泡渲染 ============
@@ -2929,6 +2921,26 @@
     scrollDown();
     transcript.push({ role: 'assistant', text: summary, output: rawOut || undefined, at: nowIso() });
     persistTranscript();
+  }
+
+  // 任务结束卡片上的「下载轨迹」：只在当前页面显示，不写入会话记录
+  function addTraceButton() {
+    const row = mk('div', 'bubble llm-call trace-row');
+    const actions = mk('div', 'llm-call-actions');
+    const btn = mk('button', null, { type: 'button', textContent: t('panel.downloadTrace') });
+    btn.addEventListener('click', () => {
+      if (!port || portDead) {
+        addBubble('error', t('panel.msg.noBackend'));
+        return;
+      }
+      try { port.postMessage({ cmd: 'downloadTrace' }); } catch (e) {
+        addBubble('error', '下载请求失败：' + String(e && e.message || e));
+      }
+    });
+    actions.appendChild(btn);
+    row.appendChild(actions);
+    els.messages.appendChild(row);
+    scrollDown();
   }
 
   function findLlmCard(id) {
@@ -3241,6 +3253,10 @@
           const kind = f.kind || classifyFile(f.name, f.type);
           const row = { key: f.key, name: f.name || '', type: f.type || '', size: f.size || 0, dataUrl: f.dataUrl || '', kind: kind, aliases: Array.isArray(f.aliases) ? f.aliases.filter(Boolean) : [], needsName: !!f.needsName };
           row.contentHash = f.contentHash || (row.dataUrl ? fileContentHash(row) : '');
+          if (f.stored && !row.dataUrl) {
+            row.stored = true;
+            row.storedChars = Math.ceil((row.size || 0) * 4 / 3);
+          }
           attachedFiles.push(row);
           const m = /^f(\d+)$/.exec(String(f.key));
           if (m) { const n = parseInt(m[1], 10); if (n > maxSeq) maxSeq = n; }
@@ -3269,9 +3285,11 @@
       const name = mk('span', 'chip-name', { textContent: f.name || '' });
       const aliasTitle = (Array.isArray(f.aliases) && f.aliases.length) ? ('；别名 ' + f.aliases.join('、')) : '';
       name.title = (f.name || '') + aliasTitle + (f.needsName ? '（正在根据 OCR 命名）' : '');
+      const prepText = f.prepState === 'working' ? t('panel.chip.prepWorking')
+        : (f.prepState === 'failed' ? t('panel.chip.prepFailed') : '');
       const size = mk('span', 'chip-size', {
-        textContent: fileSizeLabel(f.size || 0) + (!f.dataUrl ? t('panel.chip.readd') : ''),
-        title: !f.dataUrl ? t('panel.chip.readdTitle') : ''
+        textContent: fileSizeLabel(f.size || 0) + (!hasAttachBytes(f) ? t('panel.chip.readd') : '') + prepText,
+        title: !hasAttachBytes(f) ? t('panel.chip.readdTitle') : (f.prepState === 'failed' ? (f.prepError || '') : '')
       });
       const remove = mk('button', 'chip-remove', { textContent: '✕', title: t('panel.chip.remove') });
       remove.addEventListener('click', () => {
@@ -3371,7 +3389,7 @@
 
   function filesForPrepare(list) {
     return (list || attachedFiles).filter(function (f) {
-      if (!f || !f.dataUrl) return false;
+      if (!hasAttachBytes(f)) return false;
       const kind = f.kind || classifyFile(f.name, f.type);
       return kind === 'pdf' || kind === 'image';
     }).map(function (f) {
@@ -3381,7 +3399,7 @@
         type: f.type,
         size: f.size,
         kind: f.kind,
-        dataUrl: f.dataUrl,
+        dataUrl: f.dataUrl || undefined,
         contentHash: f.contentHash || '',
         aliases: Array.isArray(f.aliases) ? f.aliases.slice() : [],
         needsName: !!f.needsName
@@ -3398,7 +3416,8 @@
     } catch (e) {}
   }
 
-  function applyPastedAttachName(key, title) {
+  // finalName 来自发送路径：后台已按本次任务的附件列表定名，面板照搬
+  function applyPastedAttachName(key, title, finalName) {
     const row = attachedFiles.find(function (f) { return f && f.key === key; });
     if (!row) return;
     const stem = String(title || '').trim();
@@ -3406,16 +3425,28 @@
       pastedAttachNameFailed({ reason: 'empty-title' });
       return;
     }
-    const ext = imageExtFromMime(row.type, row.name);
-    const u = uniqueAttachFileName(stem, ext, attachDisplayNames(row.key));
-    if (!u.ok) {
-      addBubble('error', '粘贴图片无法生成不重复的附件名（已加 5 次 new 后缀），请移除后重试。');
-      return;
+    let name = String(finalName || '').trim();
+    if (!name) {
+      const ext = imageExtFromMime(row.type, row.name);
+      const u = uniqueAttachFileName(stem, ext, attachDisplayNames(row.key));
+      if (!u.ok) {
+        addBubble('error', '粘贴图片无法生成不重复的附件名（已加 5 次 new 后缀），请移除后重试。');
+        return;
+      }
+      name = u.name;
     }
-    mergeFileAliases(row, u.name);
+    mergeFileAliases(row, name);
     row.needsName = false;
     renderChips();
     persistFiles();
+  }
+
+  function applyAttachPrepState(msg) {
+    const row = attachedFiles.find(function (f) { return f && f.key === msg.key; });
+    if (!row) return;
+    row.prepState = String(msg.state || '');
+    row.prepError = msg.state === 'failed' ? String(msg.error || '') : '';
+    renderChips();
   }
 
   function pastedAttachNameFailed(msg) {
@@ -3635,7 +3666,7 @@
     const text = els.userInput.value.trim();
     const hasFiles = attachedFiles.length > 0;
     if (!text && !hasFiles) return;
-    const missing = attachedFiles.filter((f) => !f.dataUrl);
+    const missing = attachedFiles.filter((f) => !hasAttachBytes(f));
     if (missing.length) {
       addBubble('error', '以下附件内容已在刷新后丢失，请移除并重新添加：' + missing.map((f) => f.name).join('、'));
       return;
@@ -5146,6 +5177,8 @@
     const q = msg.question != null ? String(msg.question) : '';
     addAssistantBubble(q || t('panel.msg.needMoreInfo'), msg.output);
     addBubble('system', t('panel.msg.replyToContinue'));
+    addTraceButton();
+    flushTranscript();
     setRunning(false);
     els.userInput.focus();
   }
@@ -5158,6 +5191,8 @@
       return;
     }
     addBubble('system', t('panel.msg.taskDone'));
+    addTraceButton();
+    flushTranscript();
     setRunning(false);
     els.userInput.focus();
   }
@@ -5165,6 +5200,8 @@
   function handleError(msg) {
     addBubble('error', msg.message != null ? String(msg.message) : t('panel.msg.taskError'));
     addBubble('system', t('panel.msg.taskEnded'));
+    addTraceButton();
+    flushTranscript();
     setRunning(false);
     els.userInput.focus();
   }
@@ -5179,7 +5216,11 @@
       }
     }
     const text = msg && msg.summary != null ? String(msg.summary) : t('panel.msg.taskStopped');
-    if (running || stopping) addBubble('system', text);
+    if (running || stopping) {
+      addBubble('system', text);
+      addTraceButton();
+    }
+    flushTranscript();
     setRunning(false);
     els.userInput.focus();
   }
@@ -5264,13 +5305,16 @@
           addBubble(msg.kind === 'error' ? 'error' : 'status', msg.text != null ? String(msg.text) : '');
           break;
         case 'attachNameReady':
-          applyPastedAttachName(msg.key, msg.title);
+          applyPastedAttachName(msg.key, msg.title, msg.name);
+          break;
+        case 'attachPrep':
+          applyAttachPrepState(msg);
           break;
         case 'attachNameFailed':
           pastedAttachNameFailed(msg);
           break;
         case 'llmCall':
-          if (!running) setRunning(true);
+          if (!running && msg.scope !== 'prepare') setRunning(true);
           upsertLlmCallCard(msg);
           break;
         case 'llmCallDownload':
@@ -5786,7 +5830,7 @@
             setAttachDavStatus(text, resp && resp.log);
             return;
           }
-          files.push(new File(parts, item.name || item.leaf, { type: resp.type || '' }));
+          files.push(new File(parts, item.name || item.leaf, { type: resp.mime || '' }));
         }
       } catch (e) {
         setAttachDavBusy(false);
@@ -5891,6 +5935,7 @@
   }
 
   function onPageHide(e) {
+    flushTranscript();
     if (panelDisposed || !e.persisted) return;
     stopHeartbeat();
     stopReconnectTimer();

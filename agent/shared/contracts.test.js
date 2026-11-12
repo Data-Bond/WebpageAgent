@@ -221,12 +221,12 @@ describe('WPA contracts kernel', () => {
     assert.equal(emptyPack.trail[0].p, 'settings');
   });
 
-  it('公开工具 20 个，旧 helper 可映射', () => {
-    assert.equal(C.PUBLIC_TOOLS.length, 20);
+  it('公开工具 23 个，旧 helper 可映射', () => {
+    assert.equal(C.PUBLIC_TOOLS.length, 23);
     assert.deepEqual(C.PUBLIC_TOOLS, [
       'get', 'type', 'click', 'check', 'select', 'scroll', 'wait', 'upload',
       'ocr', 'ocrFill', 'officeRead', 'officeFill', 'print', 'memorize', 'recall', 'forget', 'goto',
-      'delegate', 'returnToParent', 'tabClose'
+      'delegate', 'returnToParent', 'tabClose', 'key', 'drag', 'dialog'
     ]);
     assert.equal(C.resolvePublicTool('setVal'), 'type');
     assert.equal(C.resolvePublicTool('selectOption'), 'select');
@@ -280,10 +280,26 @@ describe('WPA contracts kernel', () => {
 });
 
 describe('toolProtocol hybrid', () => {
-  it('OpenAI tools 为 20 个 function', () => {
+  it('OpenAI tools 为 23 个 function', () => {
     const tools = P.toOpenAiTools();
-    assert.equal(tools.length, 20);
+    assert.equal(tools.length, 23);
     assert.deepEqual(tools.map((t) => t.function.name), C.PUBLIC_TOOLS);
+  });
+
+  it('页面操作方式：auto 按浏览器类型解析，其余原样', () => {
+    assert.equal(C.resolvePageDriver('auto', 'chromium'), 'cdp');
+    assert.equal(C.resolvePageDriver('auto', 'firefox'), 'bidi');
+    assert.equal(C.resolvePageDriver('auto', 'other'), 'dom');
+    assert.equal(C.resolvePageDriver(undefined, 'chromium'), 'cdp');
+    assert.equal(C.resolvePageDriver('cdp', 'firefox'), 'cdp');
+    assert.equal(C.resolvePageDriver('bidi', 'chromium'), 'bidi');
+    assert.equal(C.resolvePageDriver('dom', 'chromium'), 'dom');
+  });
+
+  it('key / drag / dialog 的参数从对象形式转换', () => {
+    assert.deepEqual(P.normalizeOperationsArgs([{ op: 'key', args: { target: 5, keys: ['Tab', 'Enter'] } }])[0], { op: 'key', args: [5, ['Tab', 'Enter']] });
+    assert.deepEqual(P.normalizeOperationsArgs([{ op: 'drag', args: { from: 3, to: 7 } }])[0], { op: 'drag', args: [3, 7] });
+    assert.deepEqual(P.normalizeOperationsArgs([{ op: 'dialog', args: { accept: false } }])[0], { op: 'dialog', args: [{ accept: false, text: undefined }] });
   });
 
   it('click.button 含 hover/dblclick，{text} 不丢 button；JSON hover 仍执行内部名', () => {
@@ -505,7 +521,7 @@ describe('toolProtocol hybrid', () => {
     assert.match(pb, /STATUS_MSG_CHARS = 300/);
     assert.match(pb, /STATUS_MSG_MAX = 12/);
     assert.match(pb, /n = GET_TEXT_DEFAULT/);
-    assert.match(extractFnLike(pb, 'snapshot'), /idxMax: idx/);
+    assert.match(extractFnLike(pb, 'snapshotPass'), /idxMax: idx/);
     assert.match(pb, /full \? SNAPSHOT_L0_CAP_FULL : SNAPSHOT_L0_CAP/);
     assert.doesNotMatch(extractFnLike(pb, 'collectScrollableCandidates'), /queryAllDeep\(['"]\*['"]\)/);
   });

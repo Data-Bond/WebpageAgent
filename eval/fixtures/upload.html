@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>附件上传</title></head>
+<body>
+  <h1>报销材料</h1>
+  <form method="post" action="/submit/upload" enctype="multipart/form-data">
+    <p><label>报销事由 <input name="reason"></label></p>
+    <p><label>发票文件 <input type="file" name="invoice"></label></p>
+    <button type="submit">提交报销</button>
+  </form>
+</body>
+</html>

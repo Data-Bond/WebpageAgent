@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>导出报表</title></head>
+<body>
+  <h1>月度报表</h1>
+  <button id="export" type="button">导出 CSV</button>
+  <script>
+    document.getElementById('export').addEventListener('click', function () {
+      var blob = new Blob(['月份,金额\n9月,1200\n'], { type: 'text/csv' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'report-2026-09.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    });
+  </script>
+</body>
+</html>

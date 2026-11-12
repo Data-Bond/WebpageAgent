@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>浏览器原生弹窗</title></head>
+<body>
+  <h1>删除记录</h1>
+  <p>记录：2026 年第三季度报表</p>
+  <button id="del" type="button">删除</button>
+  <button id="rename" type="button">重命名</button>
+  <p id="state">未操作</p>
+  <script>
+    function send(body) {
+      fetch('/submit/dialogs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(function () { document.getElementById('state').textContent = '已提交'; });
+    }
+    document.getElementById('del').addEventListener('click', function () {
+      var ok = confirm('确定删除「2026 年第三季度报表」吗？');
+      send({ action: 'delete', confirmed: ok ? 'yes' : 'no' });
+    });
+    document.getElementById('rename').addEventListener('click', function () {
+      var name = prompt('输入新名称', '');
+      send({ action: 'rename', name: name == null ? '' : name });
+    });
+  </script>
+</body>
+</html>

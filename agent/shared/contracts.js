@@ -28,13 +28,25 @@
   var GET_TEXT_DEDUP_MIN = 800;
   var GET_TEXT_DEDUP_HEAD = 80;
   var ATTACHMENT_CONTEXT_MAX_CHARS = 300000;
-  var ATTACHMENT_CONTEXT_MAX_CHARS_CAP = 800000;
   var CONTEXT_TOKEN_SOFT = 500000;
   var CONTEXT_TOKEN_HARD = 700000;
   var CONTEXT_PACK_STAGES = [
     'dup-result', 'history-result', 'dup-history', 'pane', 'attach',
     'outline-rest', 'memory', 'outline-field', 'last'
   ];
+
+  // 页面操作方式：auto 按浏览器类型选择（Chromium 内核 cdp，Firefox bidi，其他 dom），其余三个原样使用
+  var PAGE_DRIVERS = ['auto', 'cdp', 'bidi', 'dom'];
+  function normalizePageDriver(v) {
+    return PAGE_DRIVERS.indexOf(v) >= 0 ? v : 'auto';
+  }
+  function resolvePageDriver(pageDriver, browserKind) {
+    var v = normalizePageDriver(pageDriver);
+    if (v !== 'auto') return v;
+    if (browserKind === 'chromium') return 'cdp';
+    if (browserKind === 'firefox') return 'bidi';
+    return 'dom';
+  }
 
   var DEFAULT_FLAGS = {
     convergeBackup: false,
@@ -69,7 +81,6 @@
     scroll: { kind: 'converge', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
     ocr: { kind: 'read', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 60000 },
     ocrFill: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 90000 },
-    needAttach: { kind: 'read', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 5000 },
     urlHints: { kind: 'read', runtime: 'page', worldDefault: 'isolated', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
     // vueMethods 读节点上的 __vue__/__vueParentComponent（页面 world 挂的 expando），隔离 world 看不到
     scriptHints: { kind: 'read', runtime: 'page', worldDefault: 'main', worldEligible: ['isolated', 'main'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
@@ -91,13 +102,17 @@
     goto: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 20000 },
     delegate: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 600000 },
     returnToParent: { kind: 'read', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 5000 },
-    tabClose: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 5000 }
+    tabClose: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 5000 },
+    // 由页面驱动执行（dom / cdp / bidi），在 service worker 里分派
+    key: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
+    drag: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: true, postcondition: 'none', risk: 'none', timeoutMs: 12000 },
+    dialog: { kind: 'fire', runtime: 'sw', worldDefault: 'sw', worldEligible: ['sw'], needsGeneration: false, postcondition: 'none', risk: 'none', timeoutMs: 8000 }
   };
 
   var PUBLIC_TOOLS = [
     'get', 'type', 'click', 'check', 'select', 'scroll', 'wait', 'upload',
     'ocr', 'ocrFill', 'officeRead', 'officeFill', 'print', 'memorize', 'recall', 'forget', 'goto',
-    'delegate', 'returnToParent', 'tabClose'
+    'delegate', 'returnToParent', 'tabClose', 'key', 'drag', 'dialog'
   ];
   var TOOL_ALIASES = {
     remember: 'memorize',
@@ -571,13 +586,24 @@
     return Math.ceil(cjk * 1.2 + ascii / 3 + other);
   }
 
+  // 每条消息的估算结果按对象缓存；role 或 content 变了（打包阶段改写内容）就重算这一条
+  var tokenMemo = typeof WeakMap === 'function' ? new WeakMap() : null;
   function estimateMessagesTokens(messages) {
     var n = 0;
     var list = Array.isArray(messages) ? messages : [];
     for (var i = 0; i < list.length; i++) {
       var m = list[i];
       if (!m || typeof m !== 'object') continue;
-      n += estimateTokens(String(m.role || '') + '\n' + String(m.content || ''));
+      var role = String(m.role || '');
+      var content = m.content;
+      var hit = tokenMemo ? tokenMemo.get(m) : null;
+      if (hit && hit.role === role && hit.content === content) {
+        n += hit.tokens;
+        continue;
+      }
+      var tokens = estimateTokens(role + '\n' + String(content || ''));
+      if (tokenMemo) tokenMemo.set(m, { role: role, content: content, tokens: tokens });
+      n += tokens;
     }
     return n;
   }
@@ -1102,7 +1128,7 @@
   var DIAG_TRAIL_STORE_MAX = 80;
   var DIAG_PROBES = {
     config: 1, inject: 1, bridge: 1, llm: 1, ocr: 1,
-    storage: 1, idb: 1, offscreen: 1, unhandled: 1, settings: 1, panel: 1, wait: 1
+    storage: 1, idb: 1, offscreen: 1, unhandled: 1, settings: 1, panel: 1, wait: 1, eval: 1
   };
   var DIAG_CODES = {
     Error: 1, Timeout: 1, Quota: 1, Bridge: 1, Inject: 1, Offscreen: 1,
@@ -1394,7 +1420,70 @@
     };
   }
 
+  // 附件名：面板与后台共用，同字节改名时旧名进 aliases
+  function mergeFileAliases(file, newName) {
+    if (!file) return file;
+    var next = String(newName || '').trim();
+    var prev = String(file.name || '').trim();
+    var aliases = [];
+    var seen = Object.create(null);
+    function add(n) {
+      var s = String(n || '').trim();
+      if (!s || seen[s] || (next && s === next)) return;
+      seen[s] = true;
+      aliases.push(s);
+    }
+    if (Array.isArray(file.aliases)) file.aliases.forEach(add);
+    if (prev && prev !== next) add(prev);
+    if (next) file.name = next;
+    file.aliases = aliases;
+    return file;
+  }
+
+  function imageExtFromMime(type, fallbackName) {
+    var t = String(type || '').toLowerCase();
+    if (t.indexOf('png') >= 0) return 'png';
+    if (t.indexOf('jpeg') >= 0 || t.indexOf('jpg') >= 0) return 'jpg';
+    if (t.indexOf('webp') >= 0) return 'webp';
+    if (t.indexOf('gif') >= 0) return 'gif';
+    if (t.indexOf('bmp') >= 0) return 'bmp';
+    if (t.indexOf('tif') >= 0) return 'tiff';
+    var n = String(fallbackName || '').toLowerCase();
+    var dot = n.lastIndexOf('.');
+    if (dot >= 0) {
+      var ext = n.slice(dot + 1);
+      if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tif', 'tiff'].indexOf(ext) >= 0) {
+        return ext === 'jpeg' ? 'jpg' : ext;
+      }
+    }
+    return 'png';
+  }
+
+  function uniqueAttachFileName(base, ext, existingNames) {
+    var seen = Object.create(null);
+    (existingNames || []).forEach(function (n) {
+      var s = String(n || '').trim().toLowerCase();
+      if (s) seen[s] = true;
+    });
+    var e = String(ext || '').replace(/^\./, '');
+    var suffix = e ? ('.' + e) : '';
+    var stem = String(base || '').trim() || '粘贴图片';
+    var candidate = stem + suffix;
+    if (!seen[candidate.toLowerCase()]) return { ok: true, name: candidate };
+    for (var i = 1; i <= 5; i++) {
+      candidate = stem + new Array(i + 1).join('new') + suffix;
+      if (!seen[candidate.toLowerCase()]) return { ok: true, name: candidate };
+    }
+    return { ok: false, name: candidate };
+  }
+
   return {
+    PAGE_DRIVERS: PAGE_DRIVERS,
+    normalizePageDriver: normalizePageDriver,
+    resolvePageDriver: resolvePageDriver,
+    mergeFileAliases: mergeFileAliases,
+    imageExtFromMime: imageExtFromMime,
+    uniqueAttachFileName: uniqueAttachFileName,
     STORAGE_SCHEMA_VERSION: STORAGE_SCHEMA_VERSION,
     MAX_OPS_PER_BATCH: MAX_OPS_PER_BATCH,
     MAX_BATCH_JSON_CHARS: MAX_BATCH_JSON_CHARS,
@@ -1415,7 +1504,6 @@
     GET_TEXT_DEDUP_MIN: GET_TEXT_DEDUP_MIN,
     GET_TEXT_DEDUP_HEAD: GET_TEXT_DEDUP_HEAD,
     ATTACHMENT_CONTEXT_MAX_CHARS: ATTACHMENT_CONTEXT_MAX_CHARS,
-    ATTACHMENT_CONTEXT_MAX_CHARS_CAP: ATTACHMENT_CONTEXT_MAX_CHARS_CAP,
     CONTEXT_TOKEN_SOFT: CONTEXT_TOKEN_SOFT,
     CONTEXT_TOKEN_HARD: CONTEXT_TOKEN_HARD,
     CONTEXT_PACK_STAGES: CONTEXT_PACK_STAGES,

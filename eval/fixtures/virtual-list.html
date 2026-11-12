@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>虚拟滚动列表</title>
+  <style>
+    #viewport { height: 300px; overflow-y: auto; border: 1px solid #ccc; width: 420px; position: relative; }
+    #spacer { position: relative; }
+    .row { position: absolute; left: 0; right: 0; height: 30px; line-height: 30px; padding: 0 8px; box-sizing: border-box; border-bottom: 1px solid #eee; }
+    .row button { float: right; }
+  </style>
+</head>
+<body>
+  <h1>合同列表（共 10000 条）</h1>
+  <div id="viewport"><div id="spacer"></div></div>
+  <p id="msg"></p>
+  <script>
+    var TOTAL = 10000, H = 30;
+    var vp = document.getElementById('viewport');
+    var spacer = document.getElementById('spacer');
+    spacer.style.height = (TOTAL * H) + 'px';
+    function render() {
+      var first = Math.floor(vp.scrollTop / H);
+      var last = Math.min(TOTAL - 1, first + Math.ceil(300 / H) + 2);
+      spacer.innerHTML = '';
+      for (var i = first; i <= last; i++) {
+        var row = document.createElement('div');
+        row.className = 'row';
+        row.style.top = (i * H) + 'px';
+        row.textContent = '合同 HT-' + String(i + 1).padStart(5, '0');
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = '归档';
+        btn.dataset.no = 'HT-' + String(i + 1).padStart(5, '0');
+        btn.addEventListener('click', function (ev) {
+          var no = ev.currentTarget.dataset.no;
+          fetch('/submit/virtual-list', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ archived: no })
+          }).then(function () { document.getElementById('msg').textContent = '已归档 ' + no; });
+        });
+        row.appendChild(btn);
+        spacer.appendChild(row);
+      }
+    }
+    vp.addEventListener('scroll', render);
+    render();
+  </script>
+</body>
+</html>

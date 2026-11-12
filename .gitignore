@@ -19,6 +19,13 @@ bin-release/
 
 node_modules/
 
+# Evaluation outputs (reports, traces, browser profiles) and the browsers the setup script downloads
+eval/out/
+eval/browsers/
+
+# Local model API for the eval harness. Copy eval/model.env.example and fill it in.
+eval/model.env
+
 # Agent tooling workspaces and the sibling pageagent project
 .cursor/
 .mimocode/

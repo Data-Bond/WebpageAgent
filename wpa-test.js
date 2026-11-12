@@ -12,6 +12,8 @@ const { execFileSync } = require('child_process');
 const ROOT = path.join(__dirname, 'agent');
 const C = require(path.join(ROOT, 'shared/contracts.js'));
 let failures = 0;
+// 异步断言登记在此，结尾统一等待后再汇总失败数
+const pendingAsyncChecks = [];
 function ok(cond, name) {
   if (cond) {
     console.log('  ok - ' + name);
@@ -21,7 +23,7 @@ function ok(cond, name) {
   }
 }
 
-const files = ['background.js', 'pagebridge.js', 'content.js', 'panel.js', 'office.js', 'settings.js', 'shared/contracts.js', 'shared/toolProtocol.js', 'shared/pdfPages.js', 'shared/webSkill.js', 'shared/i18n.js'];
+const files = ['background.js', 'pagebridge.js', 'content.js', 'panel.js', 'office.js', 'settings.js', 'trace.js', 'shared/contracts.js', 'shared/toolProtocol.js', 'shared/pdfPages.js', 'shared/webSkill.js', 'shared/i18n.js'];
 const srcs = {};
 for (const f of files) {
   const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
@@ -706,7 +708,6 @@ ok(/click 下拉 trigger 会切换列表/.test(bg), '手册说明 trigger click 
 }
 ok(!/读 fieldState.committed 再 done/.test(bg) && !/确认 fieldState.committed 后再 done/.test(bg),
   '手册不再要求读 committed 再 done');
-ok(/function evaluateSnapshotChecks/.test(bg) && /function decideDoneByChecks/.test(bg), '核对函数仍在，done 由模型决定');
 ok(/function nearestSectionTitle/.test(bridge) && /function applyDuplicateLabelSections/.test(bridge), '快照同名控件补 sec');
 ok(/kind: 'snapshot'/.test(bg) && /foldedHistory\.concat\(\[snapshotUser\]\)/.test(bg), '快照消息带 kind 且只拼进本轮请求');
 ok(!/pendingBoundedAfterChecks/.test(bg), '有 checks 时不再跨步自动 done');
@@ -838,7 +839,7 @@ ok(/memoCascaderHost/.test(extractFn(bridge, 'cascaderHostOf')) &&
   /memoBodyLayers/.test(extractFn(bridge, 'bodyLayerCandidates')),
   '宿主分类与弹层探测有代缓存');
 ok(/new MutationObserver/.test(bridge) && /attributeFilter/.test(bridge) &&
-  /beginPopupGen/.test(extractFn(bridge, 'snapshot')) &&
+  /beginPopupGen/.test(extractFn(bridge, 'snapshotPass')) &&
   /beginPopupGen/.test(extractFn(bridge, 'runOperations')) &&
   /bumpPopupGen/.test(extractFn(bridge, 'dispatchClick')) &&
   /bumpPopupGen/.test(extractFn(bridge, 'typeInto')),
@@ -1008,7 +1009,7 @@ ok(/actionableHidden = !!tagHostOf\(el\)/.test(bridge), '快照收录标签区�
 ok(/tagHostOf\(el\) \? 'tags'/.test(bridge), '快照把标签词云标成 tags widget');
 ok(/function fillTagWidget/.test(bridge), 'setVal 可写入标签词云');
 ok(!/关键词（最少三个）/.test(bg), '手册不写某一站栏目名');
-ok(/function fieldLabelOf/.test(bridge) && /fieldLabelOf\(el\)/.test(extractFn(bridge, 'snapshot')),
+ok(/function fieldLabelOf/.test(bridge) && /fieldLabelOf\(el\)/.test(extractFn(bridge, 'snapshotPass')),
   '快照用表单项 label 标注隐藏标签输入框');
 ok(!/级联菜单选项禁止直接 page\.click/.test(bridge), '允许 click 级联选项');
 ok(/function isOptionNode/.test(bridge) && /role === 'treeitem'/.test(extractFn(bridge, 'isOptionNode')),
@@ -1159,13 +1160,21 @@ ok(/function normalizeWebdavConfig\(/.test(bg) && /webdav: normalizeWebdavConfig
     && /attachDavLogBtn/.test(panelSrc)
     && /attach-dav-check/.test(panelSrc)
     && /attach-source-tall/.test(panelSrc)
-    && /min-height: 480px/.test(panelSrc)
+    && /\.modal\.attach-source-tall \{[\s\S]*?overflow: hidden/.test(panelSrc)
+    && /\.attach-dav-scroll \{[\s\S]*?min-height: 0[\s\S]*?overflow-y: auto/.test(panelSrc)
+    && /\.attach-dav-browse \.modal-actions \{ flex: 0 0 auto; \}/.test(panelSrc)
     && /panelDavChunk/.test(fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8'))
     && /mime: mime \|\| 'application\/octet-stream'/.test(fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8'))
     && /bytesToB64/.test(fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8'))
     && /b64ToBytes/.test(panelSrc)
     && !/import\(/.test(extractFn(bg, 'askOffscreenPanelDav')),
     '上传附件先选择本地文件或已保存的 WebDAV');
+  ok(/mime: fetched\.mime/.test(extractFn(bg, 'davFetchForPanel'))
+    && !/type: fetched\.mime/.test(extractFn(bg, 'davFetchForPanel'))
+    && /resp\.mime/.test(panelSrc) && !/resp\.type\b/.test(panelSrc),
+    '取回附件按 mime 传，不占用消息信封的 type 字段');
+  ok(/Object\.assign\(\{\}, data, \{ type: 'davResult'/.test(bg),
+    'davResult 信封 type 不会被取回结果的载荷覆盖');
   const offscreenDav = srcs['offscreen.js'] || fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
   ok(/createDavClient/.test(offscreenDav)
     && /davDbStoreBlob/.test(offscreenDav)
@@ -1242,7 +1251,7 @@ ok(!/当前指令是单步操作，已执行该步/.test(bg) && !/已拦住打�
   '不再按单步边界自动收工或拦住打包');
 
 const demoteStart = bg.indexOf('function isEngineUserMessage');
-const demoteEnd = bg.indexOf('\nfunction limitAttachmentContext');
+const demoteEnd = bg.indexOf('\nfunction isLocalPdfProcessError');
 ok(demoteStart >= 0 && demoteEnd > demoteStart, '可截取历史降级函数');
 const demoteSandbox = {};
 try {
@@ -1335,7 +1344,7 @@ ok(/function rememberResumeCheckpoint/.test(bg) && /function rememberLlmTrace/.t
     /clearTaskMemory\(origin\)/.test(extractFn(bg, 'discardOriginSession')) &&
     /clearResumeCheckpoint\(origin\)/.test(extractFn(bg, 'discardOriginSession')),
     '清空对话同时清记忆表与 resume 检查点');
-  ok(/lastReads\.delete/.test(extractFn(bg, 'clearTaskMemory')), 'clearTaskMemory 清 lastRead');
+  ok(/deleteLastRead\(key\)/.test(extractFn(bg, 'clearTaskMemory')), 'clearTaskMemory 清 lastRead');
   ok(/pausedOrigins\.delete\(tabId\)/.test(clearHist) && /clearPendingCheckpoint\(tabId\)/.test(clearHist),
     '清空对话同步清 pausedOrigins 与 pending 检查点');
   ok(/discardOriginSession\(origin\)/.test(clearHist), '清空对话立即丢弃该 origin 会话痕迹');
@@ -1357,33 +1366,14 @@ const boundSandbox = { WPA_CONTRACTS: C };
 try {
   vm.runInNewContext(
     bg.slice(boundStart, boundEnd) +
-      '\nthis.isBoundedInstruction = isBoundedInstruction;' +
       '\nthis.countMutatingOps = countMutatingOps;' +
-      '\nthis.opsIncludeMutation = opsIncludeMutation;' +
-      '\nthis.needsAttachBody = needsAttachBody;' +
-      '\nthis.decideAttachMode = decideAttachMode;' +
-      '\nthis.hasExtractIntent = hasExtractIntent;' +
-      '\nthis.isUploadOnlyTask = isUploadOnlyTask;' +
-      '\nthis.opsIncludeNeedAttach = opsIncludeNeedAttach;' +
-      '\nthis.needAttachNames = needAttachNames;' +
-      '\nthis.matchFilesByMention = matchFilesByMention;' +
-      '\nthis.fileIdentity = fileIdentity;' +
-      '\nthis.mentionTargets = mentionTargets;' +
-      '\nthis.toPinnedSet = toPinnedSet;' +
-      '\nthis.unpinnedFiles = unpinnedFiles;' +
-      '\nthis.historySuggestsFillFromAttach = historySuggestsFillFromAttach;',
+      '\nthis.opsIncludeMutation = opsIncludeMutation;',
     boundSandbox
   );
-  ok(typeof boundSandbox.isBoundedInstruction === 'function', 'isBoundedInstruction 可在测试中加载');
+  ok(typeof boundSandbox.countMutatingOps === 'function', 'countMutatingOps 可在测试中加载');
 } catch (e) {
-  ok(false, '加载 isBoundedInstruction 失败: ' + (e && e.message));
+  ok(false, '加载 countMutatingOps 失败: ' + (e && e.message));
 }
-const userClick = 'clickByText："选择数据文件"\nwithin：div.file-list';
-ok(boundSandbox.isBoundedInstruction(userClick), 'clickByText+within 视为单步指令');
-ok(boundSandbox.isBoundedInstruction('点击选择数据文件'), '短“点击…”视为单步指令');
-ok(!boundSandbox.isBoundedInstruction('点击选择数据文件，然后勾选那两个 txt'), '带“然后”的不是单步');
-ok(!boundSandbox.isBoundedInstruction('把这两个文件发布出去'), '开放式发布任务不是单步');
-ok(!boundSandbox.isBoundedInstruction('选择数据文件并勾选 AMD_opt_vasp_result.txt'), '带续步的选择不是单步');
 ok(boundSandbox.opsIncludeMutation([{ op: 'clickByText', args: ['选择数据文件'] }]), 'clickByText 算改页操作');
 ok(!boundSandbox.opsIncludeMutation([{ op: 'inspect', args: ['.file-list'] }]), 'inspect 不算改页操作');
 ok(boundSandbox.countMutatingOps([
@@ -1391,92 +1381,38 @@ ok(boundSandbox.countMutatingOps([
   { op: 'setChecked', args: [{ text: 'a.txt' }, true] }
 ]) === 2, '可数出打包的多个改页操作');
 
-ok(typeof boundSandbox.decideAttachMode === 'function', 'decideAttachMode 可在测试中加载');
-const attachFiles = [{ name: '简历.pdf', key: 'f1' }];
-function attachMode(task, extra) {
-  const x = extra || {};
-  return boundSandbox.decideAttachMode({
-    task: task,
-    files: x.files === undefined ? attachFiles : x.files,
-    lastOps: x.lastOps || [],
-    alreadyPinned: x.alreadyPinned == null ? false : x.alreadyPinned,
-    continueAsk: !!x.continueAsk,
-    messages: x.messages || [],
-    modelAskedNeedAttach: !!x.modelAskedNeedAttach,
-    resumeTask: !!x.resumeTask,
-    originalTask: x.originalTask || ''
-  });
+ok(!/function (decideAttachMode|hasExtractIntent|isUploadOnlyTask|matchFilesByMention|preprocessFiles|pinAttachBodyIfNeeded)\b/.test(bg)
+  && !/ATTACH_(SOURCE|ACTION|SEE|FILL_FORM|UPLOAD_ONLY)_RE/.test(bg) && !C.OPS.needAttach,
+  '附件正文不再按关键词钉入，needAttach 已删除');
+ok(/FILE_CATALOG_HEAD/.test(extractFn(bg, 'buildUserPrompt')) && /\{"file":"<key>"\}/.test(bg),
+  '用户提示只列附件目录，并写明 get 读附件');
+ok(/isAttachmentGet\(item\)/.test(extractFn(bg, 'runOperationsRouted')) && /readAttachmentForModel/.test(bg),
+  'get(target={file}) 在后台读附件切片');
+ok(/f\.textChars = /.test(extractFn(bg, 'prepareTaskAttachments')) && /textChars/.test(extractFn(bg, 'formatFileCatalogLine')),
+  '附件目录带正文字数');
+{
+  const attBox = {
+    WPA_CONTRACTS: C,
+    formatFileCatalogLine: function (f) { return '- ' + f.name; },
+    classifyFile: function () { return 'text'; },
+    textFromDataUrl: async function (u) { return u.replace('data:text/plain,', ''); },
+    getConfigMerged: async function () { return {}; },
+    ensureAttachText: async function () { return 'OCR正文'; }
+  };
+  vm.runInNewContext(extractFn(bg, 'isAttachmentGet') + '\nasync ' + extractFn(bg, 'readAttachmentForModel') +
+    '\nthis.isAttachmentGet = isAttachmentGet; this.readAttachmentForModel = readAttachmentForModel;', attBox);
+  ok(attBox.isAttachmentGet({ op: 'get', args: [{ file: 'f1' }] }) && !attBox.isAttachmentGet({ op: 'get', args: ['#a'] }),
+    '只有 target.file 的 get 走附件读取');
+  const attFiles = [{ name: 'a.txt', key: 'f1', kind: 'text', dataUrl: 'data:text/plain,0123456789' }];
+  pendingAsyncChecks.push((async function () {
+    const r1 = await attBox.readAttachmentForModel({ op: 'get', args: [{ file: 'f1' }, { limit: 4, offset: 2 }] }, { files: attFiles });
+    ok(r1.ok && r1.text === '2345' && r1.chars === 10 && r1.truncated && r1.textKind === 'attachment', '附件 get 按 limit/offset 切片');
+    const r2 = await attBox.readAttachmentForModel({ op: 'get', args: [{ file: 'nope' }] }, { files: attFiles });
+    ok(!r2.ok && r2.reason === 'no-attachment' && r2.catalog.length === 1, '未知 key 回诚实原因与目录');
+    const r3 = await attBox.readAttachmentForModel({ op: 'get', args: [{ file: 'a.txt' }] }, { files: attFiles });
+    ok(r3.ok && r3.text === '0123456789', '也可用文件名读附件');
+  })());
 }
-const attachCases = [
-  { task: '点击选择数据文件', want: 'catalog', note: '单步点击只要目录' },
-  { task: '把这两个文件发布出去', want: 'catalog', note: '纯发布只要目录' },
-  { task: '上传这两个文件', want: 'catalog', note: '上传指令不抽正文' },
-  { task: '把论文发布出去', want: 'catalog', note: '领域词论文不触发抽正文' },
-  { task: '申请试用账号', want: 'catalog', note: '开放式申请默认只要目录' },
-  { task: '根据附件填写姓名和单位', want: 'pin', note: '来源×动作→钉正文' },
-  { task: '见附件', want: 'pin', note: '见附件→钉正文' },
-  { task: '填表', want: 'pin', note: '填表→钉正文' },
-  { task: 'fill the form from the attached file', want: 'pin', note: '英文 fill from attachment→钉正文' },
-  { task: 'extract fields from the document', want: 'pin', note: '英文 extract from document→钉正文' },
-  { task: '根据附件填写', want: 'none', files: [], note: '无附件则为 none' },
-  { task: '根据附件填写', want: 'none', alreadyPinned: true, note: '已钉入则为 none' }
-];
-attachCases.forEach(function (c) {
-  ok(attachMode(c.task, c) === c.want, c.note + '（' + c.want + '）');
-});
-ok(attachMode('选一下单位', { lastOps: [{ op: 'setVal', args: ['#name', '张三'] }] }) === 'pin', '上一步已在填表则补钉正文');
-ok(attachMode('把这两个文件发布出去', { lastOps: [{ op: 'setVal', args: ['#title', 'x'] }] }) === 'catalog', 'upload-only 即使上步 setVal 也不抽正文');
-ok(attachMode('好的继续', {
-  continueAsk: true,
-  messages: [{ role: 'assistant', content: '{"operations":[{"op":"setVal","args":["#x","v"]}]}' }]
-}) === 'pin', '续答且历史在填表时钉正文');
-ok(attachMode('继续前面的工作', {
-  resumeTask: true,
-  originalTask: '根据附件填写姓名和单位',
-  messages: [{ role: 'assistant', content: '{"operations":[{"op":"setVal","args":["#name","李四"]}]}' }]
-}) === 'pin', '恢复且原任务/历史在填表时钉正文');
-ok(attachMode('随便点一下', { modelAskedNeedAttach: true }) === 'pin', '模型声明 needAttach 则钉正文');
-ok(boundSandbox.historySuggestsFillFromAttach([
-  { role: 'assistant', content: '{"action":"execute","operations":[{"op":"setVal","args":["#a","1"]}]}' }
-]), '历史含 setVal 视为正在填表');
-ok(boundSandbox.historySuggestsFillFromAttach([
-  { role: 'assistant', content: '{"action":"execute","operations":[{"op":"officeFill","args":["C11","1200"]}]}' }
-]), '历史含 officeFill 视为正在填表');
-ok(!boundSandbox.historySuggestsFillFromAttach([
-  { role: 'assistant', content: '{"action":"execute","operations":[{"op":"click","args":["#ok"]}]}' }
-]), '仅点击的历史不视为填表');
-ok(boundSandbox.opsIncludeNeedAttach([{ op: 'needAttach' }]), '可识别 needAttach op');
-ok(!boundSandbox.opsIncludeNeedAttach([{ op: 'setVal', args: ['#a', '1'] }]), '普通填值不算 needAttach');
-ok(boundSandbox.needAttachNames([{ op: 'needAttach', args: ['绩效报告.pdf'] }]).join() === '绩效报告.pdf',
-  'needAttach args 抽出文件名');
-ok(boundSandbox.needAttachNames([{ op: 'needAttach' }]).length === 0, 'needAttach 无 args 则为空');
-
-const mentionFiles = [
-  { name: '绩效报告.pdf', key: 'f1', contentHash: 'h1', aliases: ['renamed.pdf'] },
-  { name: '扫描件.pdf', key: 'f2', contentHash: 'h2' }
-];
-ok(boundSandbox.matchFilesByMention('根据「绩效报告.pdf」填写', mentionFiles).map(function (f) { return f.key; }).join() === 'f1',
-  '引号完整文件名命中');
-ok(boundSandbox.matchFilesByMention('请对照《绩效报告》填表', mentionFiles).map(function (f) { return f.key; }).join() === 'f1',
-  '书名号 stem 命中');
-ok(boundSandbox.matchFilesByMention('renamed.pdf 里的单位是？', mentionFiles).map(function (f) { return f.key; }).join() === 'f1',
-  '别名完整文件名命中');
-ok(boundSandbox.matchFilesByMention('根据绩效报告填写姓名', mentionFiles).map(function (f) { return f.key; }).join() === 'f1',
-  '唯一 stem 命中');
-ok(boundSandbox.matchFilesByMention('把这两个文件发布出去', mentionFiles).length === 0, '泛词「文件」不误中');
-ok(boundSandbox.matchFilesByMention('见附件', mentionFiles).length === 0, '泛词「附件」不误中');
-ok(boundSandbox.matchFilesByMention('这是一份 pdf', mentionFiles).length === 0, '泛词 pdf 不误中');
-ok(attachMode('看看「绩效报告.pdf」', { files: mentionFiles }) === 'pin', '点名文件即使无抽取意图也钉正文');
-ok(attachMode('根据附件填写', { files: mentionFiles }) === 'pin', '无点名抽取仍钉全部');
-ok(attachMode('根据附件填写', {
-  files: mentionFiles,
-  alreadyPinned: new Set(['h1', 'h2'])
-}) === 'none', '已钉集合含全部 hash 则为 none');
-ok(attachMode('再看扫描件.pdf', {
-  files: mentionFiles,
-  alreadyPinned: new Set(['h1'])
-}) === 'pin', '已钉集合可追加另一份');
-ok(/【附件数据】/.test(bg), '附件正文以数据块注入');
 ok(/starFields/.test(bg), '观察提示空星号项');
 ok(!/800字以内/.test(bg), '手册不写死英文描述 800 字');
 ok(/function fieldMetaOf/.test(bridge), '快照从当前页收集 maxlength/hint/字数');
@@ -1484,29 +1420,17 @@ ok(/applyFieldMeta\(entry, el\)/.test(bridge), '表单快照条目挂上当前�
 ok(/if \(isField\) applyFieldMeta\(node, el\)/.test(bridge), 'inspect 对 INPUT/TEXTAREA 也挂字段限制');
 ok(/var FIELD_TAGS = \{ INPUT: 1, SELECT: 1, TEXTAREA: 1 \}/.test(bridge), 'inspect 不再跳过表单输入框');
 ok(/output: rec\.output == null \? '' : rec\.output/.test(bg), '下载详情里的 output 是模型原文');
-ok(/opsIncludeNeedAttach\(parsed\.operations\)/.test(bg), 'execute 识别 needAttach');
-ok(/pinAttachBodyIfNeeded\(\{ force: true/.test(bg), 'needAttach 强制钉入正文');
-ok(/needAttach: no-files/.test(bg) && /needAttach: already-pinned/.test(bg) && /needAttach: pinned/.test(bg),
-  'needAttach 只回诚实状态');
-ok(!/不要再次 needAttach/.test(bg) && !/不要再输出 needAttach/.test(bg),
-  'needAttach 不教模型下一步');
-ok(/new Set\(\)/.test(bg) && /attachPinned\.add/.test(bg), '已钉 hash 集合可追加');
-ok(/未调用文本模型/.test(bg), '附件正文提取失败时中止且不调用文本模型');
-ok(/PDF 解析失败/.test(bg) && /isLocalPdfProcessError/.test(bg), '本地 PDF 超时不标成 OCR 失败');
+ok(/isLocalPdfProcessError\(e\)/.test(extractFn(bg, 'noteAttachParseFailure'))
+  && /noteAttachParseFailure\(ctx, eParse\)/.test(extractFn(bg, 'prepareTaskAttachments')),
+  '本地 PDF 超时不计入 OCR 熔断');
 ok(/function pickLargestVisibleCanvas/.test(bridge), 'page.ocr 对 0 尺寸 canvas 改选最大可见画布');
 ok(/canvas 显示尺寸为 0/.test(bridge), '无可用画布时明确报错而不是空图');
 
 const attachFailBox = {};
 try {
   vm.runInNewContext(
-    extractFn(bg, 'isLocalPdfProcessError') + '\n' +
-      extractFn(bg, 'attachBlockText') + '\n' +
-      extractFn(bg, 'attachBlockIsUsable') + '\n' +
-      extractFn(bg, 'attachPreprocessHasUsableBody') +
-      '\nthis.isLocalPdfProcessError = isLocalPdfProcessError;' +
-      '\nthis.attachBlockText = attachBlockText;' +
-      '\nthis.attachBlockIsUsable = attachBlockIsUsable;' +
-      '\nthis.attachPreprocessHasUsableBody = attachPreprocessHasUsableBody;',
+    extractFn(bg, 'isLocalPdfProcessError') +
+      '\nthis.isLocalPdfProcessError = isLocalPdfProcessError;',
     attachFailBox
   );
   ok(typeof attachFailBox.isLocalPdfProcessError === 'function', '附件失败判定函数可加载');
@@ -1517,16 +1441,6 @@ if (attachFailBox.isLocalPdfProcessError) {
   ok(attachFailBox.isLocalPdfProcessError(new Error('PDF 处理超时')), 'PDF 处理超时视为本地解析错误');
   ok(attachFailBox.isLocalPdfProcessError('offscreen 端口已断开'), 'offscreen 断开视为本地解析错误');
   ok(!attachFailBox.isLocalPdfProcessError(new Error('LLM 请求失败 HTTP 401')), '模型 HTTP 错误不是本地 PDF 错误');
-  ok(!attachFailBox.attachBlockIsUsable('【附件识别失败 a.pdf】PDF 处理超时'), '识别失败块不算可用正文');
-  ok(attachFailBox.attachBlockIsUsable('【OCR识别结果 a.pdf】\n正文'), '识别成功块算可用正文');
-  ok(!attachFailBox.attachPreprocessHasUsableBody({
-    textBlocks: [],
-    ocrBlocks: ['【附件识别失败 a.pdf】PDF 处理超时']
-  }), '仅失败块则没有可用正文');
-  ok(attachFailBox.attachPreprocessHasUsableBody({
-    textBlocks: ['【文本附件 a.txt】hello'],
-    ocrBlocks: ['【附件识别失败 b.pdf】x']
-  }), '另有成功文本附件则仍有可用正文');
 }
 ok(/cmd === 'prepareAttach'/.test(bg), '上传后可后台预解析附件');
 ok(/attachParseJobs/.test(bg) && /return await job/.test(extractFn(bg, 'ensureAttachText')),
@@ -1579,41 +1493,28 @@ if (hashBox.fileContentHash) {
   }
 }
 
-const aliasFn = extractFn(panelSrc, 'mergeFileAliases');
-ok(!!aliasFn, '面板有 mergeFileAliases');
-const aliasBox = {};
-try {
-  vm.runInNewContext(aliasFn + '\nthis.mergeFileAliases = mergeFileAliases;', aliasBox);
-  const merged = aliasBox.mergeFileAliases({ name: '绩效报告.pdf', aliases: [] }, 'renamed.pdf');
+ok(/mergeFileAliases = CONTRACTS\.mergeFileAliases/.test(panelSrc), '面板 mergeFileAliases 取自 shared/contracts');
+{
+  const merged = C.mergeFileAliases({ name: '绩效报告.pdf', aliases: [] }, 'renamed.pdf');
   ok(merged.name === 'renamed.pdf' && merged.aliases.indexOf('绩效报告.pdf') >= 0, '同 hash 改名合并别名');
-  const again = aliasBox.mergeFileAliases(merged, 'renamed.pdf');
+  const again = C.mergeFileAliases(merged, 'renamed.pdf');
   ok(again.aliases.indexOf('renamed.pdf') < 0, '当前名不写入 aliases');
-} catch (e) {
-  ok(false, '加载 mergeFileAliases 失败: ' + (e && e.message));
 }
 
 const tagBox = {};
 try {
   vm.runInNewContext(
-    'const ATTACHMENT_CONTEXT_MAX_CHARS = 150000;\n' +
-      extractFn(bg, 'mergeAttachNames') + '\n' +
-      extractFn(bg, 'normalizeOcrCacheEntry') + '\n' +
-      extractFn(bg, 'formatAttachBodyTag') + '\n' +
-      extractFn(bg, 'limitAttachmentContext') +
+    extractFn(bg, 'mergeAttachNames') + '\n' +
+      extractFn(bg, 'normalizeOcrCacheEntry') +
       '\nthis.mergeAttachNames = mergeAttachNames;' +
-      '\nthis.normalizeOcrCacheEntry = normalizeOcrCacheEntry;' +
-      '\nthis.formatAttachBodyTag = formatAttachBodyTag;' +
-      '\nthis.limitAttachmentContext = limitAttachmentContext;',
+      '\nthis.normalizeOcrCacheEntry = normalizeOcrCacheEntry;',
     tagBox
   );
-  ok(typeof tagBox.formatAttachBodyTag === 'function', '标签函数可加载');
+  ok(typeof tagBox.normalizeOcrCacheEntry === 'function', '缓存条目函数可加载');
 } catch (e) {
-  ok(false, '加载附件标签/缓存函数失败: ' + (e && e.message));
+  ok(false, '加载附件缓存函数失败: ' + (e && e.message));
 }
-if (tagBox.formatAttachBodyTag) {
-  const tag = tagBox.formatAttachBodyTag({ name: '绩效报告.pdf', key: 'f1', aliases: ['renamed.pdf'] });
-  ok(/附件正文 name="绩效报告\.pdf"/.test(tag) && /key="f1"/.test(tag) && /aliases="renamed\.pdf"/.test(tag),
-    '标签带 name/key/aliases');
+if (tagBox.normalizeOcrCacheEntry) {
   const oldCache = tagBox.normalizeOcrCacheEntry('纯文本正文');
   ok(oldCache.text === '纯文本正文' && Array.isArray(oldCache.names) && oldCache.names.length === 0,
     '缓存旧字符串兼容');
@@ -1621,23 +1522,16 @@ if (tagBox.formatAttachBodyTag) {
   ok(newCache.text === 'x' && newCache.names[0] === 'a.pdf', '缓存侧车 names');
   const names = tagBox.mergeAttachNames(['绩效报告.pdf'], 'renamed.pdf');
   ok(names.indexOf('绩效报告.pdf') >= 0 && names.indexOf('renamed.pdf') >= 0, '缓存 names 去重合并');
-  const limited = tagBox.limitAttachmentContext([
-    { text: 'AAA被点名的长正文' + new Array(80).join('甲'), preferred: true },
-    { text: 'BBB其它文件' + new Array(80).join('乙'), preferred: false }
-  ], 90);
-  ok(limited.truncated && limited.text.indexOf('AAA') >= 0 && limited.text.indexOf('BBB') < 0,
-    '点名块优先占满预算，不把点名文件砍掉');
 }
 
 ok(typeof demoteSandbox.buildUserPrompt === 'function', 'buildUserPrompt 已在降级沙箱');
 ok(demoteSandbox.buildUserPrompt('填表', [{ name: '绩效报告.pdf', key: 'f1', type: 'application/pdf', aliases: ['renamed.pdf'] }]).indexOf('别名 renamed.pdf') >= 0,
   '目录同步带别名');
 
-ok(/kind: 'attach-data'/.test(bg), '附件正文以 attach-data 钉入对话');
 ok(/function toApiChatMessages/.test(bg), '发给模型前剥离内部 kind');
 ok(/messages: toApiChatMessages\(messages\)/.test(bg), 'chat payload 使用纯 role/content');
 ok(/m\.kind === 'attach-data'/.test(bg), '持久化历史跳过附件正文');
-ok(/const snapP = takeSnapshot/.test(bg), '快照与按需抽附件并行');
+ok(/const snapP = openDialog \? Promise\.resolve\(dialogSnapshot\(openDialog\)\) : takeDriverSnapshot\(/.test(bg), '快照与按需抽附件并行');
 ok(/foldedHistory\.concat\(\[snapshotUser\]\)/.test(bg), '每步变化的快照放在请求末尾');
 
 const apiStart = bg.indexOf('\nfunction toApiChatMessages');
@@ -1830,10 +1724,8 @@ ok(extraParsed && extraParsed.action === 'execute' && extraParsed.operations[0].
 ok(extractSandbox.extractJson('{"action":"execute","operations":[{"op":"upload","args":[".in",["k1","k2"]]}]}').operations[0].args[1][1] === 'k2',
   '合法嵌套数组 args 不被多余括号修复误伤');
 const kimiBroken = '{"action":"execute","summary":"级联过滤搜索学科分类关键词“计算物理”","expect":"级联面板根据过滤词显示匹配路径，便于选择合适学科分类","operations":[{"op":"selectOption","args":["div.x","计算物理",{"filter":"物理"}]]}';
-const kimiParsed = extractSandbox.extractJson(kimiBroken);
-ok(kimiParsed && kimiParsed.action === 'execute' && kimiParsed.operations[0].op === 'selectOption' &&
-  kimiParsed.operations[0].args[2].filter === '物理',
-  'selectOption 末尾写成 }]]}（漏了操作对象的 }）时可修好');
+ok(!extractSandbox.extractJson(kimiBroken) && !/function missingJsonClosers/.test(bg),
+  '括号未收口不补全，交回模型重写');
 // 引擎首次解析走 parseJsonLenient + coerceAgentAction，双重编码在这一层修好
 const doubleEncoded = JSON.stringify('{"action":"execute","summary":"点","expect":"变","operations":[{"op":"click","args":["#a"]}]}');
 const doubleParsed = extractSandbox.coerceAgentAction &&
@@ -2278,15 +2170,31 @@ ok(/print-catalog/.test(panelSrc), '面板有 print 可复制目录');
     vm.runInNewContext(
       'const lastReads = this.lastReads;\n' +
       'const LAST_READ_DOM_STALE = this.LAST_READ_DOM_STALE;\n' +
+      (bg.match(/const LAST_READ_MAX_ENTRIES = \d+;/) || [''])[0] + '\n' +
+      (bg.match(/const LAST_READ_MAX_CHARS = \d+;/) || [''])[0] + '\n' +
+      'let lastReadsChars = 0;\n' +
       'const READ_MEMORY_SOURCE_OPS = { get: 1, print: 1, getText: 1, officeRead: 1 };\n' +
+      extractFn(bg, 'deleteLastRead') + '\n' +
+      extractFn(bg, 'setLastRead') + '\n' +
       extractFn(bg, 'pickMemorizeSource') + '\n' +
       extractFn(bg, 'batchHadReadSource') + '\n' +
       extractFn(bg, 'maybeInvalidateLastRead') + '\n' +
+      'this.setLastRead = setLastRead;\n' +
+      'this.lastReadsCharsNow = function () { return lastReadsChars; };\n' +
       'this.pickMemorizeSource = pickMemorizeSource;\n' +
       'this.batchHadReadSource = batchHadReadSource;\n' +
       'this.maybeInvalidateLastRead = maybeInvalidateLastRead;',
       invBox
     );
+    for (let n = 0; n < 70; n++) invBox.setLastRead('cap-' + n, 'body-' + n);
+    ok(invBox.lastReads.size === 64 && !invBox.lastReads.has('cap-0') && invBox.lastReads.has('cap-69'),
+      'lastReads 超过 64 条时淘汰最旧的');
+    invBox.setLastRead('huge', 'x'.repeat(600000));
+    ok(invBox.lastReads.get('huge').length < 300000 && /lastRead 截短/.test(invBox.lastReads.get('huge')),
+      '单条 lastRead 超过总量 1/8 时截短并写明');
+    for (let n = 0; n < 12; n++) invBox.setLastRead('big-' + n, 'y'.repeat(240000));
+    ok(invBox.lastReadsCharsNow() <= 2000000, 'lastReads 正文合计不超过 200 万字');
+    invBox.lastReads.clear();
     invBox.lastReads.set('origin-a', 'stale-body');
     invBox.maybeInvalidateLastRead('origin-a', { domChanged: 5419309 }, [
       { op: 'click', value: { ok: true, idx: 10 } }
@@ -2645,7 +2553,7 @@ ok(/contextTokenSoft/.test(settingsSrc), 'settings.js 读写 contextToken');
 ok(/收 tool_call/.test(panelSrc), 'panel tool_call 收字显示');
 ok(/usageMillionWarned/.test(panelSrc) && /1000000/.test(panelSrc), 'panel 百万 token 警告');
 
-ok(manifestVer === '6.8.1', '锁步版本为 6.8.1');
+ok(manifestVer === '7.0.0', '锁步版本为 7.0.0');
 const offscreenSrc = fs.readFileSync(path.join(ROOT, 'offscreen.js'), 'utf8');
 const offscreenHtml = fs.readFileSync(path.join(ROOT, 'offscreen.html'), 'utf8');
 const vendorReadme = fs.readFileSync(path.join(ROOT, 'vendor/README.md'), 'utf8');
@@ -2737,22 +2645,16 @@ ok(/pdf:' \+ pdfPageSpecKey\(cfg\)/.test(bg), '附件缓存 key 含 PDF 页范�
 ok(/按配置仅解析第 /.test(bg), '选页模式覆盖说明按配置页码');
 ok(/pdfParseMode/.test(bg) && /pdfParsePages/.test(bg) && /pdfTextMaxChars/.test(bg),
   '配置含 pdfParseMode/pdfParsePages/pdfTextMaxChars');
-ok(/ocrCacheMaxChars: 500000/.test(bg) && /attachContextMaxChars: WPA_CONTRACTS.ATTACHMENT_CONTEXT_MAX_CHARS/.test(bg),
-  'OCR 缓存默认 50 万字、多附件正文合计锁步契约');
+ok(/ocrCacheMaxChars: 500000/.test(bg) && !/attachContextMaxChars/.test(bg + settingsHtml + settingsSrc),
+  'OCR 缓存默认 50 万字；附件正文改由 get 读取，多附件合计上限已删除');
 ok(/id="ocrCacheMaxChars"/.test(settingsHtml) && /settings\.ocrCacheMax/.test(settingsHtml),
   '全局配置可改每个站点 OCR 缓存总字数');
 ok(/settings\.ocrCacheHint/.test(settingsHtml) && /OCR_CACHE_MAX_ENTRIES = 50/.test(bg),
   'OCR 缓存条数上限 50 且配置页有提示');
-ok(/id="attachContextMaxChars"/.test(settingsHtml) && /settings\.attachContextMax/.test(settingsHtml),
-  '全局配置可改发给文本模型的多附件正文合计');
 ok(/settings\.ocrCacheHint/.test(settingsHtml),
   '提示 OCR 缓存不是提示词也不是单份上限');
-ok(/settings\.attachContextHint/.test(settingsHtml),
-  '提示多附件合计不是文本层也不是 OCR 缓存');
-ok(/ocrCacheMaxChars/.test(settingsSrc) && /attachContextMaxChars/.test(settingsSrc),
-  '设置页收集 OCR 缓存与多附件合计上限');
-ok(/config\.attachContextMaxChars/.test(bg) && /ctx\.cfg && ctx\.cfg\.ocrCacheMaxChars/.test(bg),
-  '运行时按配置钳制多附件合计与 OCR 缓存总字数');
+ok(/ocrCacheMaxChars/.test(settingsSrc), '设置页收集 OCR 缓存上限');
+ok(/ctx\.cfg && ctx\.cfg\.ocrCacheMaxChars/.test(bg), '运行时按配置钳制 OCR 缓存总字数');
 ok(/clampInt\(maxChars, 50000, 2000000/.test(extractFn(bg, 'writeOcrCache')),
   'OCR 缓存写入按配置字数淘汰');
 ok(/pdfParseMode: 'pages'/.test(bg) && /pdfParsePages: '1,2,3,4,-3,-2,-1'/.test(bg) && /pdfTextMaxChars: 150000/.test(bg),
@@ -2775,12 +2677,13 @@ ok(/panel\.pageNumsPh/.test(panelSrc) && /panel\.pdfMineruHint/.test(panelSrc),
 ok(/spec\.maxChars/.test(bg) && /clampPdfTextMaxChars\(pageSpec && pageSpec.maxChars\)/.test(bg),
   '发给 offscreen 的 pageSpec 含钳制后的 maxChars');
 ok(/'pdfParseMode' in obj/.test(bg) && /'pdfParsePages' in obj/.test(bg) && /importClamped\('pdfTextMaxChars'/.test(bg) &&
-  /importClamped\('ocrCacheMaxChars'/.test(bg) && /importClamped\('attachContextMaxChars'/.test(bg),
-  '导入校验识别 PDF 解析字段与附件正文预算');
+  /importClamped\('ocrCacheMaxChars'/.test(bg),
+  '导入校验识别 PDF 解析字段与 OCR 缓存上限');
 
 const WPA_PDF_PAGES = require(path.join(ROOT, 'shared/pdfPages.js'));
 
-const importBox = { WPA_PDF_PAGES: WPA_PDF_PAGES, WPA_CONTRACTS: C };
+const TRACE = require(path.join(ROOT, 'trace.js'));
+const importBox = { WPA_PDF_PAGES: WPA_PDF_PAGES, WPA_CONTRACTS: C, WPA_TRACE: TRACE };
 try {
   vm.runInNewContext(
     extractFn(bg, 'clampInt') + '\n' +
@@ -2804,8 +2707,12 @@ try {
       extractFn(bg, 'loosenProviderShape') + '\n' +
       extractFn(bg, 'coerceImportedProviders') + '\n' +
       extractFn(bg, 'firstImportedProviderList') + '\n' +
+      extractFn(bg, 'normalizeWebdavConfig') + '\n' +
+      extractFn(bg, 'exportWebdavConfig') + '\n' +
+      extractFn(bg, 'importWebdavConfig') + '\n' +
       extractFn(bg, 'validateImportConfig') +
-      '\nthis.validateImportConfig = validateImportConfig;',
+      '\nthis.validateImportConfig = validateImportConfig;' +
+      '\nthis.exportWebdavConfig = exportWebdavConfig;',
     importBox
   );
   ok(typeof importBox.validateImportConfig === 'function', 'validateImportConfig 可加载');
@@ -2841,6 +2748,21 @@ if (importBox.validateImportConfig) {
     '旧 apiBase/model 仍可导入');
   const empty = v({ totally: 'unknown' }, cur);
   ok(empty.ok && empty.config.textProviders[0].apiKey === 'keep-me', '无识别字段时当作空合并，不失败');
+  const davCur = Object.assign({}, cur, { webdav: { url: 'https://dav.example.test/dav', username: 'u1', password: 'pw-1', root: 'docs' } });
+  ok(v({ maxSteps: 20 }, davCur).config.webdav.password === 'pw-1', '导入文件没有 webdav 时保留当前 WebDAV');
+  const maskedDav = importBox.exportWebdavConfig(davCur.webdav, false);
+  ok(maskedDav.password === '********' && maskedDav.url === 'https://dav.example.test/dav', '导出不含密钥时 WebDAV 密码遮盖');
+  const davBack = v({ webdav: maskedDav }, davCur).config.webdav;
+  ok(davBack.password === 'pw-1' && davBack.root === 'docs' && davBack.username === 'u1', '遮盖的 WebDAV 密码导入时取回当前值');
+  const davNew = v({ webdav: importBox.exportWebdavConfig({ url: 'https://n.example.test', username: 'u2', password: 'pw-2' }, true) }, davCur).config.webdav;
+  ok(davNew.password === 'pw-2' && davNew.url === 'https://n.example.test', '含密钥导出的 WebDAV 往返一致');
+  const traceCur = Object.assign({}, cur, { traceEnabled: false, traceKeepDays: 30, traceMaxMb: 500 });
+  const keptTrace = v({ maxSteps: 20 }, traceCur).config;
+  ok(keptTrace.traceEnabled === false && keptTrace.traceKeepDays === 30 && keptTrace.traceMaxMb === 500,
+    '导入文件没有轨迹设置时保留当前轨迹设置');
+  const newTrace = v({ traceEnabled: true, traceKeepDays: 999, traceMaxMb: 5 }, traceCur).config;
+  ok(newTrace.traceEnabled === true && newTrace.traceKeepDays === 90 && newTrace.traceMaxMb === 10,
+    '导入的轨迹设置按范围截断');
   const full = v({
     textProviders: [
       { name: 'NIC', providerType: 'OpenAI-chat-completions', baseURL: 'https://example.test/v1', apiKey: 'sk-test', models: 'a,b' },
@@ -2869,7 +2791,6 @@ if (importBox.validateImportConfig) {
     pdfParsePages: '1,2,3,-2,-1',
     pdfTextMaxChars: 20000,
     ocrCacheMaxChars: 800000,
-    attachContextMaxChars: 120000,
     diagCapKb: 80
   }, cur);
   ok(full.ok && full.config.textProviders.length === 2 && full.config.ocrProviders.length === 2,
@@ -2881,8 +2802,7 @@ if (importBox.validateImportConfig) {
   ok(full.config.diagCapKb === 80, '导入保留诊断探针日志上限');
   ok(full.config.pdfParsePages === '1,2,3,-2,-1' && full.config.pdfTextMaxChars === 20000,
     '导入保留 PDF 页码与文本层上限');
-  ok(full.config.ocrCacheMaxChars === 800000 && full.config.attachContextMaxChars === 120000,
-    '导入保留 OCR 缓存与多附件正文合计上限');
+  ok(full.config.ocrCacheMaxChars === 800000, '导入保留 OCR 缓存上限');
 }
 
 ok(/options_ui\.open_in_tab=true/.test(bg), 'settings 端口校验注释说明 open_in_tab 会带 tab');
@@ -3106,7 +3026,7 @@ ok(/snapIndex\[n\] = el;/.test(extractFn(bridge, 'hydrateSnapIndexFromDom'))
   && !/if \(!snapIndex\[n\]\)/.test(extractFn(bridge, 'hydrateSnapIndexFromDom')),
   'hydrate 无条件覆盖本 world 的过期节点引用');
 ok(/function clearWpaIdxAttrs\(/.test(bridge)
-  && /clearWpaIdxAttrs\(\);/.test(extractFn(bridge, 'snapshot')),
+  && /clearWpaIdxAttrs\(\);/.test(extractFn(bridge, 'snapshotPass')),
   '每轮快照编号前清掉上一轮 data-wpa-i');
 ok(/isNumericIdx\(rawSel\) != null/.test(extractFn(bridge, 'captureImage'))
   && /resolveTarget\(rawSel\)/.test(extractFn(bridge, 'captureImage')),
@@ -3119,9 +3039,9 @@ ok(/worldDefault: 'main'/.test(String(srcs['shared/contracts.js'].match(/listOpt
   'listOptions 默认页面 world（开下拉/滚虚拟列表，与 selectOption 同批）');
 ok(/\.el-pager li/.test(bridge) && /\.ant-pagination-item/.test(bridge), '快照收录常见分页页码');
 ok(/请点分页条上的页码/.test(bridge), '点击整条分页容器有明确报错');
-ok(/tag === 'LI'/.test(extractFn(bridge, 'snapshot')), '快照为分页 li 抽取可见文本');
-ok(/inPagerHost\(el\)/.test(extractFn(bridge, 'snapshot')), '分页控件提高快照保留优先级');
-const snapFn = extractFn(bridge, 'snapshot');
+ok(/tag === 'LI'/.test(extractFn(bridge, 'snapshotPass')), '快照为分页 li 抽取可见文本');
+ok(/inPagerHost\(el\)/.test(extractFn(bridge, 'snapshotPass')), '分页控件提高快照保留优先级');
+const snapFn = extractFn(bridge, 'snapshotPass');
 ok(!!snapFn, '可抽出 snapshot');
 ok(!/uniqueSelector\(el\)/.test(snapFn), 'snapshot L0 不再对每个元素 uniqueSelector');
 ok(/idx: idx/.test(snapFn), 'snapshot 写入 entry.idx');
@@ -3694,7 +3614,7 @@ ok(/scrollableShown/.test(bridge) && /scrollableTotal/.test(bridge), '快照含 
 
 const idleBox = {};
 try {
-  const mut = bg.slice(bg.indexOf('const MUTATING_HELPER_OPS'), bg.indexOf('\nconst HELPER_LINE_RE'));
+  const mut = bg.slice(bg.indexOf('const MUTATING_HELPER_OPS'), bg.indexOf('\nconst TASK_MEMORY_MAX'));
   const idleSrc = bg.slice(bg.indexOf('function opJudgmentLabel'), bg.indexOf('\nfunction hideBusyMaskTab'));
   vm.runInNewContext(
     mut + '\n' + idleSrc +
@@ -3745,7 +3665,7 @@ ok(/VIEW_PANEL_RE = \/suggest/.test(bridge) && /search-item/.test(bridge),
 ok(/function collectSubmitFailureContext/.test(bridge), '提交失败可收集字段说明');
 ok(/submitFailureContext/.test(bg) && /cmd === 'submitFailureContext'/.test(bridge), 'submitFailureContext 走桥接 dispatch');
 ok(/viewPrint/.test(bg) && /cmd === 'viewPrint'/.test(bridge), 'viewPrint 走桥接 dispatch');
-ok(/必填\|填写完整\|请先\|校验失败\|不通过/.test(bg), 'statusFailure 识别必填弹窗');
+ok(!/statusFailure/.test(bg) && /report\.newStatusMessages = /.test(bg), '新出现的提示原样回给模型，不再本地按关键词判失败');
 ok(/请先将必填项填写完整/.test('请先将必填项填写完整') &&
   /必填|填写完整|请先/.test('请先将必填项填写完整'), '必填弹窗正则可命中');
 ok(!/【技能·人员搜索】/.test(bg), '不再发人员搜索技能卡配方');
@@ -3758,7 +3678,7 @@ ok(/function finishTypedFilter/.test(bridge) &&
 ok(/function pageSignalBlock/.test(bg) && /【页面信号】/.test(bg), '回执交原文页面信号而非判定');
 ok(/【附近状态】/.test(bg) && !/禁止未读本段就再点下一步/.test(bg), '附近状态只交 JSON，不立法');
 ok(!/【未再次执行】/.test(bg) && !/请换 get\/click\/select/.test(bg), '不再注入未再次执行回执');
-ok(/verified = !!\(marked \|\| triggerMatched\)/.test(bridge) &&
+ok(/verified = !!\(ariaSelected \|\| triggerMatched\)/.test(bridge) &&
   !/triggerMatched \|\| optionClosed/.test(bridge),
   'select 不以弹层关闭当真选');
 ok(!/dispatchClick\(/.test(extractFn(bridge, 'finishTypedFilter')),
@@ -4006,8 +3926,19 @@ if (captchaOcrBox.looksLikeCaptchaCode) {
 }
 ok(!/opsWantFreshCaptcha/.test(bg), 'ocrFill 不再挂在重复护栏例外上');
 ok(/function enqueueDiagMut\(/.test(bg) && /enqueueDiagMut\(persistDiagTrail\)/.test(bg)
-  && /enqueueDiagMut\(function \(\) \{ return persistDiagRow\(rec\)/.test(bg),
-  '诊断错误与轨迹刷新共用写队列');
+  && /diagRowsPending\.push\(rec\)/.test(extractFn(bg, 'enqueueDiagWrite'))
+  && /scheduleDiagTrailFlush\(\)/.test(extractFn(bg, 'enqueueDiagWrite'))
+  && /diagRowsPending\.splice\(0/.test(bg.slice(bg.indexOf('async function persistDiagTrail('), bg.indexOf('async function flushDiagTrail('))),
+  '诊断行进内存队列，与轨迹一起防抖合并写入');
+ok(/pushSessionRing\('wpaTelemetry', 80/.test(bg) && /pushSessionRing\('runJournal:' \+ tabId, 40/.test(bg)
+  && !/async function recordTelemetry/.test(bg),
+  '遥测与运行日志改为内存环形缓冲加防抖');
+ok(/const storeP = Promise\.all\(\[/.test(bg) && /await storeP;/.test(bg),
+  '步骤开始的租约与历史写入和快照并行，调用模型前再等待');
+ok(/configMemo\.get\(key\)/.test(extractFn(bg, 'getConfigMerged')) && /configMemo\.clear\(\)/.test(extractFn(bg, 'storageSet')),
+  '合并配置按 origin 缓存，写配置时作废');
+ok(/TRANSCRIPT_FLUSH_MS = 800/.test(panelSrc) && /flushTranscript\(\);\s*if \(panelDisposed/.test(panelSrc),
+  '面板会话记录防抖写入，页面隐藏时立即写入');
 ok(/enqueueDiagMut\(/.test(extractFn(bg, 'clearDiagStore'))
   && /enqueueDiagMut\(/.test(extractFn(bg, 'exportDiagForHours'))
   && /persistDiagTrail\(/.test(extractFn(bg, 'exportDiagForHours')),
@@ -4033,11 +3964,11 @@ if (clampBox.clampInt) {
   ok(clampBox.clampInt(1.4, 0, 5000, 1400) === 1, 'clampInt 四舍五入');
 }
 
-const knobBox = {};
+const knobBox = { WPA_CONTRACTS: C };
 try {
   vm.runInNewContext(
     extractFn(bg, 'clampInt') + '\n' +
-      'const DEFAULT_CONFIG = { llmCallGapMs: 500, newTabOpenGapMs: 8000, busyMaskEnabled: false, llmTimeoutRetry: 2, llmErrorRetry: 2, pageQuietMs: 3000, suggestWaitMs: 1000 };\n' +
+      'const DEFAULT_CONFIG = { llmCallGapMs: 500, newTabOpenGapMs: 8000, busyMaskEnabled: false, llmTimeoutRetry: 2, llmErrorRetry: 2, pageQuietMs: 3000, suggestWaitMs: 1000, bidiPort: 9222 };\n' +
       extractFn(bg, 'applyRuntimeKnobs') +
       '\nthis.applyRuntimeKnobs = applyRuntimeKnobs;',
     knobBox
@@ -4113,8 +4044,9 @@ if (piiBox.maskPiiText) {
     '脱敏不误伤短数字 id');
 }
 
-const failRe = /失败|错误|无效|不合法|不能为空|不允许|未成功|必填|填写完整|请先|校验失败|不通过|error|failed|failure|invalid|required/i;
-ok(failRe.test('请先将必填项填写完整'), 'statusFailure 能识别必填项填写完整');
+ok(/verified = !!\(ariaSelected \|\| triggerMatched\)/.test(bridge) && /classHint: classHint/.test(bridge)
+  && /o\.classHint = /.test(extractFn(bg, 'compactOneHelperValue')),
+  'selectOption 只认 aria-selected 或 trigger 文字，class 名放 classHint');
 ok(/LAST_CHANCE_SNAPSHOT_MAX = WPA_CONTRACTS.SNAPSHOT_LAST_CHANCE_CHARS/.test(bg),
   '兜底快照上限锁步 SNAPSHOT_LAST_CHANCE_CHARS');
 ok(/SNAPSHOT_MAX_CHARS = WPA_CONTRACTS.SNAPSHOT_MAX_CHARS/.test(bg),
@@ -4125,7 +4057,7 @@ ok(!/禁止未修复就再点下一步/.test(bg) && !/核对项已满足/.test(b
   '快照头不再写可 done 或禁止下一步');
 ok(/function askExitPermit\(/.test(bg) && /征求用户是否结束/.test(bg), '停止前征求退出许可而不是直接 maxsteps');
 ok(/return await askExitPermit\('达到最大步数'\)/.test(bg), '步数用尽改为退出许可询问');
-ok(/takeSnapshot\(tabId, wantFull\)/.test(bg), '兜底轮向页面请求完整快照');
+ok(/takeDriverSnapshot\(tabId, wantFull, driver\)/.test(bg), '兜底轮向页面请求完整快照');
 ok(/调用大模型失败/.test(bg) && /return 'error'/.test(bg), '模型调用失败仍直接结束、不再额外请求模型');
 ok(/【视图变化】/.test(bg), '执行回执含视图变化');
 ok(/function diffViewPrint\(/.test(bg) && /function waitForSuggestSettle\(/.test(bg),
@@ -4626,25 +4558,11 @@ try {
   vm.runInNewContext(
     extractFn(bg, 'normalizeSee') + '\n' +
       extractFn(bg, 'normalizeEvalPrev') + '\n' +
-      extractFn(bg, 'evidenceNorm') + '\n' +
-      extractFn(bg, 'evidenceRank') + '\n' +
-      extractFn(bg, 'normalizeChecks') + '\n' +
       extractFn(bg, 'lastEvidenceFromMessages') + '\n' +
-      extractFn(bg, 'formatCheckVerdict') + '\n' +
-      extractFn(bg, 'formatPrevExpectLead') + '\n' +
-      extractFn(bg, 'fieldPreferScore') + '\n' +
-      extractFn(bg, 'rankFieldMatch') + '\n' +
-      extractFn(bg, 'pickCheckRow') + '\n' +
-      extractFn(bg, 'readCheckActual') + '\n' +
-      extractFn(bg, 'checkedWantTrue') + '\n' +
-      extractFn(bg, 'evalOneSnapshotCheck') + '\n' +
-      extractFn(bg, 'evaluateSnapshotChecks') + '\n' +
-      extractFn(bg, 'decideDoneByChecks') +
-      '\nthis.normalizeSee = normalizeSee;\nthis.normalizeChecks = normalizeChecks;\n' +
+      extractFn(bg, 'formatPrevExpectLead') +
+      '\nthis.normalizeSee = normalizeSee;\n' +
       'this.lastEvidenceFromMessages = lastEvidenceFromMessages;\n' +
-      'this.formatPrevExpectLead = formatPrevExpectLead;\n' +
-      'this.evaluateSnapshotChecks = evaluateSnapshotChecks;\n' +
-      'this.decideDoneByChecks = decideDoneByChecks;',
+      'this.formatPrevExpectLead = formatPrevExpectLead;',
     evidenceBox
   );
   ok(typeof evidenceBox.lastEvidenceFromMessages === 'function', 'lastEvidenceFromMessages 可在测试中加载');
@@ -4665,72 +4583,8 @@ if (evidenceBox.lastEvidenceFromMessages) {
   ok(evidenceBox.normalizeSee(['a'.repeat(120)])[0].length === 80, 'see 每条不超过 80 字');
 }
 
-if (evidenceBox.normalizeChecks && evidenceBox.evaluateSnapshotChecks) {
-  const sh = evidenceBox.normalizeChecks([{ field: 'Tag名称', value: 'v5.5.0' }]);
-  ok(sh.length === 1 && sh[0].attr === 'value' && sh[0].op === 'eq' && sh[0].value === 'v5.5.0',
-    'checks 简写 {field,value} → attr=value op=eq');
-  const emp = evidenceBox.normalizeChecks([{ field: 'Tag名称' }]);
-  ok(emp[0] && emp[0].op === 'nonempty' && emp[0].attr === 'value', '只有 field 时默认 value nonempty');
-  const urlC = evidenceBox.normalizeChecks([{ attr: 'url', op: 'contains', value: '/releases' }]);
-  ok(urlC[0] && urlC[0].attr === 'url' && urlC[0].op === 'contains', 'url contains 可无 field');
-  const tooMany = evidenceBox.normalizeChecks([1, 2, 3, 4, 5, 6, 7].map(function (n) {
-    return { field: 'f' + n };
-  }));
-  ok(tooMany.length === 6, 'checks 最多 6 条');
-  ok(evidenceBox.normalizeChecks([{}]).length === 0, '空对象不当成 url checks');
-
-  const snap = {
-    url: 'https://gitcode.com/hpcscc/WebpageAgent/releases',
-    elements: [
-      { idx: 3, tag: 'INPUT', label: '名称', sec: '基本信息', value: '旧名', placeholder: '' },
-      { idx: 8, tag: 'INPUT', label: '名称', sec: '发行版信息', value: '', placeholder: '请输入名称' },
-      { idx: 12, tag: 'INPUT', label: 'Tag', placeholder: '请选择 Tag', value: 'v5.5.0', widget: 'combobox' },
-      { idx: 20, tag: 'BUTTON', text: '发布' }
-    ]
-  };
-  const tagMet = evidenceBox.evaluateSnapshotChecks([{ field: 'Tag名称', op: 'nonempty' }], snap);
-  ok(tagMet.allMet && tagMet.rows[0].actual === 'v5.5.0', 'Tag名称 对上 placeholder「请选择 Tag」且 nonempty met');
-  const secUnmet = evidenceBox.evaluateSnapshotChecks(
-    [{ field: '名称', sec: '发行版信息', op: 'nonempty' }],
-    snap
-  );
-  ok(secUnmet.allUnmet && secUnmet.rows[0].actual === '', 'sec 消歧后核对应区块的空名称');
-  const secEq = evidenceBox.evaluateSnapshotChecks(
-    [{ field: '名称', sec: '基本信息', value: '旧名' }],
-    snap
-  );
-  ok(secEq.allMet, 'sec+简写 value 核对应区块');
-  const amb = evidenceBox.evaluateSnapshotChecks([{ field: '名称', op: 'nonempty' }], snap);
-  ok(amb.unknown === 1 && !amb.allMet && !amb.allUnmet, '同名无 sec 记 unknown，不误判');
-  const urlMet = evidenceBox.evaluateSnapshotChecks(
-    [{ attr: 'url', op: 'contains', value: '/releases' }],
-    snap
-  );
-  ok(urlMet.allMet, 'url contains 按快照 url 核对');
-  const existBtn = evidenceBox.evaluateSnapshotChecks(
-    [{ field: '发布', attr: 'text', op: 'exists' }],
-    snap
-  );
-  ok(existBtn.allMet, '按钮短文本 exists');
-  const evChecks = evidenceBox.lastEvidenceFromMessages([
-    { role: 'assistant', content: JSON.stringify({ action: 'execute', checks: [{ field: 'Tag名称' }] }) },
-    { role: 'assistant', content: JSON.stringify({ action: 'done', summary: '已完成' }) }
-  ]);
-  ok(evChecks && evChecks.checks && evChecks.checks[0].field === 'Tag名称',
-    '上步证据可只含 checks，跳过无证据的 done');
-  const vLead = evidenceBox.formatPrevExpectLead(evChecks, tagMet);
-  ok(vLead.indexOf('【上步字段】') >= 0 && vLead.indexOf('全部满足') < 0,
-    '快照前缀只附 actual，不打 met');
-
-  const gMet = evidenceBox.decideDoneByChecks(tagMet, false, true);
-  ok(gMet.allow && !gMet.block && gMet.reason === 'model', 'done 由模型决定，不再用 checks 门闩');
-  const gUnmet = evidenceBox.decideDoneByChecks(secUnmet, true, false);
-  ok(gUnmet.allow && !gUnmet.block, 'unmet checks 也不拦截 done');
-  const gLegacy = evidenceBox.decideDoneByChecks({ hasChecks: false }, false, false);
-  ok(gLegacy.allow && gLegacy.reason === 'model', '无 checks 时仍允许模型 done');
-  const gUnk = evidenceBox.decideDoneByChecks(amb, true, false);
-  ok(gUnk.allow && gUnk.reason === 'model', 'unknown checks 不拦截 done');
-}
+ok(!/function (evaluateSnapshotChecks|formatCheckVerdict|decideDoneByChecks|pickCheckRow)\b/.test(bg) && !/【上步字段】/.test(bg),
+  '不再按模糊字段匹配核对上步，只回显模型自己写的上步期待');
 
 const secApplyBox = {};
 try {
@@ -4773,8 +4627,7 @@ ok(/function skillCardsForSnapshot/.test(bg) &&
   '技能卡不再向模型塞配方');
 ok(!/禁止 type\/click\/ocr 打 canvas/.test(bg) && !/【技能·在线文档】/.test(bg),
   '不再发在线文档技能卡配方');
-ok(/officeFill: 1/.test(bg) && /FILL_FROM_ATTACH_OPS/.test(bg),
-  'officeFill 计入 FILL_FROM_ATTACH_OPS');
+ok(/officeFill: 1/.test(bg), 'officeFill 计入改页操作');
 ok(/officeRead: 1/.test(bridge) && /officeFill: 1/.test(bridge),
   'pagebridge 白名单含 officeRead/officeFill');
 ok(/officeContext:/.test(bridge) && /snapshotDigest/.test(bridge),
@@ -4897,9 +4750,6 @@ if (officeBox.makeGrid && officeBox.cellContextFromGrid) {
   ok(officeBox.inferSheetLayout(formRoles) === 'form', '版式为 form');
 }
 
-ok(attachMode('选一下单位', { lastOps: [{ op: 'officeFill', args: ['C11', '1200'] }] }) === 'pin',
-  '上一步 officeFill 视为填表则补钉正文');
-
 ok(/options_ui/.test(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')), 'manifest 登记全局配置页');
 ok(/data-i18n.*panel\.globalSettings/.test(panelSrc), '弹出框第一行有全局配置按钮');
 ok(/port\.name !== 'panel' && port\.name !== 'settings'/.test(bg), '后台接受 settings 端口');
@@ -4966,19 +4816,16 @@ ok(/clipboardTextIsContent\(clipboardPlainText\(dt\)\)/.test(extractFn(panelSrc,
   '粘贴文字走输入框默认行为，不进附件、不 OCR');
 ok(/needsName: fromPaste/.test(panelSrc) && /function namePastedAttachFromOcr/.test(bg),
   '无文件名的粘贴图片 OCR 后由文本模型命名');
-ok(/'new'\.repeat|join\('new'\)/.test(extractFn(panelSrc, 'uniqueAttachFileName')),
+ok(/join\('new'\)/.test(C.uniqueAttachFileName.toString()),
   '附件名冲突时追加 new 后缀最多 5 次');
+ok(/'shared\/i18n\.js', 'shared\/contracts\.js', 'shared\/webSkill\.js', 'panel\.js'/.test(bg),
+  '面板注入前先注入 shared/contracts.js');
 
-const pasteNameBox = {};
+const pasteNameBox = { uniqueAttachFileName: C.uniqueAttachFileName, imageExtFromMime: C.imageExtFromMime };
 try {
   vm.runInNewContext(
-    extractFn(panelSrc, 'uniqueAttachFileName') + '\n' +
-      extractFn(panelSrc, 'imageExtFromMime') + '\n' +
-      extractFn(bg, 'hasUsefulOcrText') + '\n' +
+    extractFn(bg, 'hasUsefulOcrText') + '\n' +
       extractFn(bg, 'sanitizeAttachTitle') +
-      '\nthis.uniqueAttachFileName = uniqueAttachFileName;' +
-      '\nthis.imageExtFromMime = imageExtFromMime;' +
-      '\nthis.hasUsefulOcrText = hasUsefulOcrText;' +
       '\nthis.sanitizeAttachTitle = sanitizeAttachTitle;',
     pasteNameBox
   );
@@ -5003,6 +4850,217 @@ if (pasteNameBox.uniqueAttachFileName) {
   const long = pasteNameBox.sanitizeAttachTitle('这是一段超过二十个汉字的附件名称应当被截断XYZ');
   ok(Array.from(long).length === 20, '附件名不超过 20 字');
 }
+{
+  const llmCase = panelSrc.slice(panelSrc.indexOf("case 'llmCall':"), panelSrc.indexOf("case 'llmCallDownload':"));
+  ok(/msg\.scope !== 'prepare'/.test(llmCase), '预处理的模型卡片不把面板切到运行中');
+  ok(/makeApiReporter\(postMsg, \{ scope: 'prepare' \}\)/.test(bg), '发送前的附件预处理卡片带 scope=prepare');
+  const runTaskSrc = bg.slice(bg.indexOf("} else if (cmd === 'runTask') {"));
+  const prepAt = runTaskSrc.indexOf('prepareTaskAttachments(files');
+  const runAt = runTaskSrc.indexOf('runStreamingTask(');
+  ok(prepAt > 0 && prepAt < runAt, 'runTask 先完成附件处理再执行指令');
+  ok(/withExternalWait\('prepareTaskAttachments'/.test(extractFn(bg, 'prepareTaskAttachments')),
+    '附件处理等待带 20 秒活跃日志');
+
+  const named = { name: '粘贴图片.png', type: 'image/png', aliases: [], needsName: true };
+  const prepBox = { WPA_CONTRACTS: C };
+  vm.runInNewContext(extractFn(bg, 'applyTaskAttachName') + '\nthis.applyTaskAttachName = applyTaskAttachName;', prepBox);
+  const finalName = prepBox.applyTaskAttachName(named, '发票', [named, { name: '发票.png', aliases: [] }]);
+  ok(finalName === '发票new.png' && named.name === '发票new.png' && named.aliases.indexOf('粘贴图片.png') >= 0 && !named.needsName,
+    '发送路径命名避开同批附件名，原名进 aliases');
+
+  const runBox = { fetch: fetch, WPA_CONTRACTS: C };
+  vm.runInNewContext(
+    extractFn(bg, 'asAbortSignal') + '\n' + extractFn(bg, 'isCancelledNow') + '\n' +
+      extractFn(bg, 'isUserCancelled') + '\n' + extractFn(bg, 'classifyFile') + '\n' +
+      'async ' + extractFn(bg, 'textFromDataUrl') + '\nasync ' + extractFn(bg, 'prepareTaskAttachments') +
+      '\nthis.prepareTaskAttachments = prepareTaskAttachments;',
+    runBox
+  );
+  const seen = [];
+  const sink = function (m) { seen.push(m); };
+  const textFile = { key: 'a', name: 'a.txt', kind: 'text', dataUrl: 'data:text/plain;base64,' + Buffer.from('hi').toString('base64') };
+  const lostFile = { key: 'b', name: 'b.txt', kind: 'text', dataUrl: '' };
+  pendingAsyncChecks.push(runBox.prepareTaskAttachments([textFile, lostFile], { postMsg: sink, cancelRef: null }).then(function (r) {
+    const states = seen.filter(function (m) { return m.type === 'attachPrep'; }).map(function (m) { return m.key + ':' + m.state; });
+    ok(states.join(',') === 'a:working,a:ready,b:working,b:failed', '附件按顺序处理，状态逐个推给面板');
+    ok(!r.ok && /附件「b\.txt」处理失败/.test(r.error) && /任务未开始/.test(r.error), '附件失败时报出名称且任务不开始');
+  }).catch(function (e) { ok(false, 'prepareTaskAttachments 运行失败: ' + (e && e.message)); }));
+}
+
+{
+  const T = require(path.join(ROOT, 'trace.js'));
+  const msgs = T.traceMessages([
+    { role: 'system', content: '手册' },
+    { role: 'user', kind: 'snapshot', content: '【页面快照】x' },
+    { role: 'user', content: [{ type: 'text', text: 'hi' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }] }
+  ]);
+  ok(msgs[1].kind === 'snapshot' && msgs[1].content === '【页面快照】x', '轨迹保留发出的完整快照文本');
+  ok(msgs[2].content[1].hash && msgs[2].content[1].chars === 26 && !msgs[2].content[1].image_url,
+    '轨迹里的图片只记录 hash 与字符数');
+  const resp = T.traceResponse({ content: '', tool_calls: [{ id: 'c1', function: { name: 'click', arguments: '{}' } }] }, { prompt: 1 });
+  ok(resp.tool_calls.length === 1 && resp.usage.prompt === 1, '轨迹记录模型原始 tool_calls 与用量');
+  const jsonl = T.toJsonl({ id: 't1', task: '填表' }, [{ seq: 1, step: 1 }, { seq: 2, step: 2 }]).trim().split('\n');
+  ok(jsonl.length === 3 && JSON.parse(jsonl[0]).type === 'task' && JSON.parse(jsonl[2]).seq === 2, '轨迹导出为 JSONL：任务行加步骤行');
+  const day = 86400000;
+  const now = 100 * day;
+  const drop = T.pickExpired([
+    { id: 'old', t0: now - 10 * day, bytes: 1 },
+    { id: 'a', t0: now - 3 * day, bytes: 60 },
+    { id: 'b', t0: now - 2 * day, bytes: 60 },
+    { id: 'c', t0: now - 1 * day, bytes: 60 }
+  ], now, 7, 130);
+  ok(drop.join(',') === 'old,a', '轨迹先按天数淘汰，再从最旧删到不超过字节上限');
+  ok(T.traceKnobs({}).traceEnabled === true && T.traceKnobs({ traceKeepDays: 0 }).traceKeepDays === 1, '轨迹设置默认开启并按范围截断');
+
+  const rst = bg.slice(bg.indexOf('async function runStreamingTask('), bg.indexOf('async function runMultiTask('));
+  ok(/flushStepTrace\(\);\s*stepTrace = traceId/.test(rst) && /WPA_TRACE\.endTask\(traceId/.test(rst),
+    '每步开始时写入上一步轨迹，任务结束时补写最后一步并收尾');
+  ok(/stepTrace\.messages = WPA_TRACE\.traceMessages\(contextMessages\)/.test(rst)
+    && /stepTrace\.response = WPA_TRACE\.traceResponse\(llmMessage/.test(rst)
+    && /stepTrace\.receiptText = toolStored/.test(rst),
+    '轨迹记录发出的 messages、原始回复与回执文本');
+  ok(/toolCalls: Array\.isArray\(rec\.toolCalls\)/.test(bg.slice(bg.indexOf('function traceJson('), bg.indexOf('function makeApiReporter('))),
+    '调用详情下载带 toolCalls');
+  ok(/cmd === 'downloadTrace'/.test(bg) && /cmd: 'downloadTrace'/.test(panelSrc), '面板可下载本页最近任务的轨迹');
+  ok(/importScripts\('trace\.js'\)/.test(bg), '后台加载 trace.js');
+  ok(/if \(cmd === 'settle'\) return settlePage\(payload\)/.test(bridge) && /new MutationObserver\(onMutations\)/.test(bridge),
+    'pagebridge 提供 MutationObserver 驱动的 settle');
+  ok(/'settle'/.test(extractFn(bg, 'settleOnPage')) && !/sleepCancellable\(180/.test(bg) && !/sleepCancellable\(350/.test(bg),
+    '建议列表与页面安静等待改为一次 settle 调用，不再按 180/350ms 轮询');
+  ok(/settled && settled\.probe/.test(rst) && /if \(!afterViewPrint && !dialogOpen && \(maySuggest/.test(rst),
+    'settle 带回的 probe 与视图直接使用，不再额外调用 probe/viewPrint');
+  ok(/isKnownOfficeHost\(await tabUrlOf\(tabId\)\)/.test(bg) && /snap\.officeHint \? await readOfficeDigest/.test(bg)
+    && /officeHint: officeEditorPresent\(\)/.test(bridge),
+    'officeDigest 只在办公站点或页面有名称框与编辑栏时调用');
+  {
+    const officeSrc = fs.readFileSync(path.join(ROOT, 'office.js'), 'utf8');
+    const listOf = (src, name) => (src.match(new RegExp(name + ' = \\[([\\s\\S]*?)\\];')) || [])[1].replace(/\s+/g, '');
+    ok(listOf(officeSrc, 'NAME_BOX_SELS') === listOf(bridge, 'OFFICE_NAME_BOX_SELS')
+      && listOf(officeSrc, 'FORMULA_SELS') === listOf(bridge, 'OFFICE_FORMULA_SELS'),
+      'pagebridge 的办公表格选择器与 office.js 一致');
+  }
+  ok(/function withDomPass\(fn\)/.test(bridge) && /return withDomPass\(function \(\) \{ return snapshotPass\(opts\); \}\)/.test(bridge)
+    && /if \(domPass && domPass\.contexts\) return domPass\.contexts/.test(bridge),
+    '一次快照内 context 列表与可见性只算一次');
+  ok(!/querySelectorAll\('\*'\)/.test(bridge) && /function descendantsLimited\(/.test(bridge),
+    '邻近文字与图片查找改为有上限的遍历');
+  ok(!/return JSON\.parse\(JSON\.stringify\(\{\s*outline/.test(bridge) && !/return JSON\.parse\(JSON\.stringify\(\{\s*url: location/.test(bridge),
+    '快照与 probe 不再在页面侧做 JSON 克隆');
+  const ssSrc = extractFn(bg, 'stringifySnapshot');
+  ok((ssSrc.match(/JSON\.stringify\(copy\)/g) || []).length === 1 && /lenCache/.test(ssSrc),
+    'stringifySnapshot 按字段缓存长度，只做一次整包序列化');
+  {
+    const officeSrc = fs.readFileSync(path.join(ROOT, 'office.js'), 'utf8');
+    const shrink = extractFn(officeSrc, 'shrinkDigest');
+    const box = { DIGEST_MAX_CHARS: 10000 };
+    vm.runInNewContext(shrink + '\nthis.shrinkDigest = shrinkDigest;', box);
+    const big = { kind: 'sheet', empties: Array.from({ length: 400 }, (_, i) => 'A' + i), headers: ['甲', '乙', '丙'], nearby: 'x'.repeat(500) };
+    const out = box.shrinkDigest(big, 900);
+    ok(JSON.stringify(out).length <= 900 && out.kind === 'sheet', 'shrinkDigest 按字段测长后仍压到上限内');
+    const sizeOf = function (o) { return JSON.stringify(o).length; };
+    const probeObj = { a: 1, b: undefined, c: [1, null], d: '引号"' };
+    const box2 = {};
+    vm.runInNewContext(shrink.replace('if (size() <= cap) return obj;', 'if (size() <= cap) return size();') + '\nthis.f = shrinkDigest;', box2);
+    ok(box2.f(probeObj, 99999) === sizeOf(probeObj), '字段测长公式与 JSON.stringify 长度一致');
+  }
+  ok(usageBox.parseLlmUsage({ prompt_tokens: 100, completion_tokens: 5, prompt_cache_hit_tokens: 64 }).cached === 64,
+    '用量读取 DeepSeek 的 prompt_cache_hit_tokens');
+  {
+    const msgs = [{ role: 'user', content: 'a'.repeat(300) }, { role: 'assistant', content: '好' }];
+    const t1 = C.estimateMessagesTokens(msgs);
+    msgs[0].content = 'b'.repeat(30);
+    const t2 = C.estimateMessagesTokens(msgs);
+    ok(t2 < t1 && t2 === C.estimateTokens('user\n' + 'b'.repeat(30)) + C.estimateTokens('assistant\n好'),
+      'token 估算按消息缓存，内容改写后重算');
+  }
+  ok(/attachGetMany\(origin/.test(extractFn(bg, 'hydrateFileRows')) && /attachPutMany\(origin/.test(bg)
+    && /let attachDbPromise = null/.test(bg),
+    '附件库连接常驻，读写按批一个事务');
+  ok(/signal: signal/.test(bg.slice(bg.indexOf('async function runPdfOrImageParse('), bg.indexOf('function fileNamesOf(')))
+    && !/signal: null/.test(bg.slice(bg.indexOf('async function runPdfOrImageParse('), bg.indexOf('function fileNamesOf(')))
+    && /processPdf\(f\.dataUrl, cancelRef, pageSpec\)/.test(bg),
+    '附件 OCR 与 PDF 解析带上任务的取消信号');
+  ok(/hasAttachBytes\(f\)/.test(panelSrc) && /f\.stored = true;\s*delete f\.dataUrl;/.test(panelSrc)
+    && /panelFileRows\(origin, got\[k\]\)/.test(bg) && /hydrateFileRows\(origin, msg\.files/.test(bg),
+    '面板附件存库后只留 key，后台按 key 读回字节');
+  ok(/CHILD_JOB_INDEX_KEY/.test(extractFn(bg, 'sweepOrphanChildJobs')) && /removeChildJobSession\(childTabId\)/.test(bg),
+    '孤儿子任务扫描走索引键');
+  ok(/FETCH_TIMEOUT_MS = 8000/.test(bridge) && /fetchErrors: fetchErrors/.test(bridge),
+    'scriptHints 抓取带 8 秒超时并回报失败数');
+  ok(/OCR_CACHE_GLOBAL_MAX_CHARS = 2000000/.test(bg) && /ocrCacheChain\.then/.test(bg) && !/ocrCacheWriteQueues/.test(bg),
+    'OCR 缓存内存优先、全局一条写队列、合计 200 万字上限');
+  {
+    const mf = JSON.parse(manifestSrc);
+    const imported = (bg.match(/importScripts\('([^']+)'\)/g) || []).map((s) => s.replace(/importScripts\('([^']+)'\)/, '$1'));
+    ok(mf.background.service_worker === 'background.js'
+      && JSON.stringify(mf.background.scripts) === JSON.stringify(imported.concat(['background.js'])),
+      'Firefox 事件页 scripts 与 SW 的 importScripts 顺序一致，background.js 在最后');
+    ok(mf.browser_specific_settings && mf.browser_specific_settings.gecko.id === 'webpage-agent@hpcscc'
+      && mf.browser_specific_settings.gecko.strict_min_version === '128.0' && mf.minimum_chrome_version === '121',
+      '清单写明 gecko id、Firefox 128 与 Chrome 121 起点');
+    ok(/if \(typeof importScripts === 'function'\) \{/.test(bg) && /function offscreenApiAvailable\(/.test(bg)
+      && /document\.createElement\('iframe'\)/.test(extractFn(bg, 'createOffscreenDoc')),
+      'Firefox 后台无 importScripts 与 chrome.offscreen 时用 iframe 承载 offscreen.html');
+    ok(/\['blocking'\]/.test(bg) && /\['asyncBlocking'\]/.test(bg) && /isFirefoxRuntime\(\)/.test(bg),
+      'WebDAV 认证应答在 Firefox 用 blocking 返回 Promise');
+    ok(/target\.saveDialog = null/.test(bg), 'Firefox 看不到系统保存框时 saveDialog 写 null');
+    for (const rel of mf.background.scripts) ok(fs.existsSync(path.join(ROOT, rel)), '后台脚本存在于 agent/：' + rel);
+  }
+  {
+    const mf = JSON.parse(manifestSrc);
+    ok(mf.permissions.indexOf('debugger') >= 0, '清单含 debugger 权限（Chrome DevTools Protocol 驱动）');
+    ok(['drivers/keys.js', 'drivers/dom.js', 'drivers/cdp.js', 'drivers/bidi.js'].every((f) => mf.background.scripts.indexOf(f) >= 0),
+      '驱动脚本同时列在 Firefox 事件页 scripts');
+    const K = require(path.join(ROOT, 'drivers/keys.js'));
+    const ca = K.parseChord('Control+A');
+    ok(ca && ca.mods.length === 1 && ca.mods[0].bit === 2 && ca.key === 'a' && ca.code === 'KeyA', '组合键 Control+A 解析出修饰键与按键');
+    ok(K.parseChord('Enter').vk === 13 && K.parseChord('ArrowDown').wd === '\uE015' && K.parseChord('Hyper+X') === null,
+      '按键表含 CDP 虚拟键码与 WebDriver 键值，未知修饰键返回 null');
+    ok(K.normalizeKeysArg('Tab').length === 1 && K.normalizeKeysArg(['Tab', '', 'Enter']).length === 2, 'keys 参数接受字符串或数组');
+    ok(/function opRunsOnDriver\(/.test(bg) && /o === 'key' \|\| o === 'drag' \|\| o === 'dialog'/.test(extractFn(bg, 'opRunsOnDriver'))
+      && /drv\.id === 'dom'/.test(extractFn(bg, 'opRunsOnDriver')),
+      'key/drag/dialog 总由驱动执行，cdp/bidi 下 click/type 也由驱动执行');
+    ok(/await driver\.impl\.attach\(tabId/.test(rst) && /await driver\.impl\.detach\(tabId\)/.test(rst)
+      && /任务未开始；可在全局配置的「页面操作方式」中改选其他方式/.test(rst),
+      '任务开始时附加驱动，失败即报错不改用其他方式，结束时断开');
+    ok(/openDialog \? Promise\.resolve\(dialogSnapshot\(openDialog\)\)/.test(rst) && /const dialogOpen = !!driver\.impl\.pendingDialog\(tabId\)/.test(rst),
+      '原生弹窗打开时快照只给弹窗，操作后跳过页面回读');
+    ok(/row\.value\.trusted = false/.test(extractFn(bg, 'stampPageReceipts')), '页面内执行的回执标 trusted=false');
+    ok(/if \(val\.occludedBy\)/.test(bg) && /o\.dialog = \{/.test(bg) && /o\.trusted = val\.trusted/.test(bg),
+      '回执压缩保留 driver/trusted/occludedBy/dialog');
+    ok(/locateForDriver\(payload\)/.test(bridge) && /occluded: occluded/.test(bridge) && /passPointerThroughAssistant\(\)/.test(bridge),
+      'pagebridge locate 滚到可见、检查中心点遮挡、让面板与遮罩不拦指针');
+    ok(/id="pageDriver"/.test(settingsHtml) && /value="auto"/.test(settingsHtml) && /value="dom"/.test(settingsHtml)
+      && /id="pageDriverAuto"/.test(settingsHtml) && /settings\.pageDriver\.autoPicked/.test(settingsSrc)
+      && /<script src="shared\/contracts\.js"><\/script>/.test(settingsHtml),
+      '全局配置页四个页面操作方式选项，auto 的选择结果显示在下拉框下方');
+    ok(/pageDriver: driver\.pageDriver,\s*driver: driver\.id/.test(rst), '轨迹记录用户选择的方式与实际驱动');
+    ok(mf.permissions.indexOf('webNavigation') >= 0, '清单含 webNavigation 权限（枚举跨源 frame）');
+    ok(/allFrames: true \}/.test(bg) && /\{ files: \['content\.js', 'pagebridge\.js'\], world: 'ISOLATED', allFrames: true \}/.test(bg),
+      '页面桥注入到所有 frame，面板只在顶层');
+    ok(/idxBase: k \* FRAME_IDX_STRIDE \+ 1/.test(bg) && /\[frame=' \+ f\.k \+ ' url=/.test(bg)
+      && /var idx = Math\.max\(0, \(Number\(opts && opts\.idxBase\) \|\| 1\) - 1\)/.test(bridge),
+      '跨源 frame 快照从 k*10000+1 起编号并以 [frame=k] 段并入大纲');
+    ok(/frameId !== batchFrame/.test(bg) && /callBridge\(tabId, world, 'runOps', \{ operations: chunk, armDownload: watchClick \}, frameId\)/.test(bg),
+      '页面操作按目标所在 frame 分批发送');
+    ok(/\{ frameId: frameId \|\| 0 \}/.test(bg), 'content.js 消息指定 frameId，不让所有 frame 抢答');
+    const frameBox = { snapFrames: new Map([[7, [{ k: 1, frameId: 33, url: 'https://b.test/' }]]]), FRAME_IDX_STRIDE: 10000 };
+    vm.runInNewContext(extractFn(bg, 'frameForIdx') + '\n' + extractFn(bg, 'frameForTarget') + '\nthis.f = frameForTarget;', frameBox);
+    ok(frameBox.f(7, 10005).frameId === 33 && frameBox.f(7, 9999) === null && frameBox.f(7, { frame: 1, selector: 'input' }).frameId === 33,
+      'idx 所在范围或 {frame:k} 都能找到对应 frame');
+  }
+  const evalBox = { URL: URL };
+  vm.runInNewContext(extractFn(bg, 'normalizeEvalServerUrl') + '\nthis.f = normalizeEvalServerUrl;', evalBox);
+  ok(evalBox.f('http://127.0.0.1:8787/x') === 'http://127.0.0.1:8787' && evalBox.f('http://localhost:9') === 'http://localhost:9',
+    '评测服务地址接受本机 http');
+  ok(evalBox.f('https://127.0.0.1:8787') === '' && evalBox.f('http://example.test') === '' && evalBox.f('') === '',
+    '评测服务地址拒绝非本机或非 http');
+  const evalLoopSrc = bg.slice(bg.indexOf('async function runEvalTask('), bg.indexOf('async function evalLoop('));
+  ok(/runStreamingTask\(\{/.test(evalLoopSrc) && /prepareTaskAttachments\(files/.test(evalLoopSrc) && /runOperationsSafe\(tabId/.test(evalLoopSrc),
+    '评测任务走与面板相同的附件处理和执行流程');
+  ok(/withExternalWait/.test(fs.readFileSync(path.join(ROOT, 'trace.js'), 'utf8')), '轨迹的 IndexedDB 等待带活跃日志');
+}
+
 const clipBox = {};
 try {
   vm.runInNewContext(
@@ -5258,8 +5316,8 @@ ok(/panel\.msg\.stopSent/.test(panelSrc),
   '停止超时后仍保留停止按钮');
 ok(/stillRunning && item && item.type === 'done'/.test(bg),
   '面板重连回放队列时，运行中任务的 done 不会把界面打成空闲');
-ok(/if \(!running\) setRunning\(true\);\s*upsertLlmCallCard/.test(panelSrc),
-  '任务过程中的模型调用会把停止按钮拉回来');
+ok(/if \(!running && msg\.scope !== 'prepare'\) setRunning\(true\);\s*upsertLlmCallCard/.test(panelSrc),
+  '任务过程中的模型调用会把停止按钮拉回来，发送前的附件预处理除外');
 ok(/type 只打字，不自动点选项/.test(bg), '短手册：type 不劫持为 select');
 const readmeCnSrc = fs.readFileSync(path.join(__dirname, 'README-cn.md'), 'utf8');
 const readmeSrc = fs.readFileSync(path.join(__dirname, 'README.md'), 'utf8');
@@ -5451,6 +5509,8 @@ function runCancelPrimitiveTests() {
 }
 
 runWaitBehaviorTests().then(runCancelPrimitiveTests).then(function () {
+  return Promise.all(pendingAsyncChecks);
+}).then(function () {
   if (failures) {
     console.error('\n' + failures + ' 项断言失败');
     process.exit(1);

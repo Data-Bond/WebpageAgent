@@ -662,25 +662,45 @@
     return makeGrid(bundle.cells || {}, rows, cols, bundle.merges || []);
   }
 
+  // 只重算被截短的 empties / headers / nearby 三个字段的 JSON 长度，其余字段长度测一次
   function shrinkDigest(obj, maxChars) {
     var cap = maxChars || DIGEST_MAX_CHARS;
-    var text = JSON.stringify(obj);
-    if (text.length <= cap) return obj;
+    var lens = {};
+    function fieldLen(k) {
+      if (lens[k] === undefined) {
+        var s = JSON.stringify(obj[k]);
+        lens[k] = s === undefined ? -1 : s.length;
+      }
+      return lens[k];
+    }
+    function size() {
+      var total = 2;
+      var n = 0;
+      var ks = Object.keys(obj);
+      for (var i = 0; i < ks.length; i++) {
+        var L = fieldLen(ks[i]);
+        if (L < 0) continue;
+        total += JSON.stringify(ks[i]).length + 1 + L;
+        n += 1;
+      }
+      return n ? total + n - 1 : 2;
+    }
+    if (size() <= cap) return obj;
     if (obj.empties && obj.empties.length) {
-      while (text.length > cap && obj.empties.length) {
+      while (size() > cap && obj.empties.length) {
         obj.empties = obj.empties.slice(0, Math.max(0, obj.empties.length - 8));
-        text = JSON.stringify(obj);
+        delete lens.empties;
       }
     }
-    if (text.length > cap && obj.headers && obj.headers.length) {
+    if (size() > cap && obj.headers && obj.headers.length) {
       obj.headers = obj.headers.slice(0, 2);
-      text = JSON.stringify(obj);
+      delete lens.headers;
     }
-    if (text.length > cap && obj.nearby) {
+    if (size() > cap && obj.nearby) {
       obj.nearby = String(obj.nearby).slice(0, 200);
-      text = JSON.stringify(obj);
+      delete lens.nearby;
     }
-    if (text.length > cap && obj.empties) obj.empties = [];
+    if (size() > cap && obj.empties) obj.empties = [];
     return obj;
   }
 

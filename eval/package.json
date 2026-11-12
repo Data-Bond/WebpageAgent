@@ -1,0 +1,20 @@
+{
+  "name": "webpage-agent-eval",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "node setup-browsers.mjs",
+    "chromium": "node run-chromium.mjs",
+    "firefox": "node run-firefox.mjs"
+  },
+  "dependencies": {
+    "antd": "5.27.4",
+    "dayjs": "1.11.18",
+    "element-plus": "2.11.4",
+    "playwright": "1.56.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "vue": "3.5.22",
+    "web-ext": "8.10.0"
+  }
+}

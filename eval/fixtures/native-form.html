@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>原生表单</title></head>
+<body>
+  <h1>人员登记</h1>
+  <form method="post" action="/submit/native-form">
+    <p><label>姓名 <input name="name" required></label></p>
+    <p><label>城市
+      <select name="city">
+        <option value="">请选择</option>
+        <option value="bj">北京</option>
+        <option value="sh">上海</option>
+        <option value="gz">广州</option>
+      </select>
+    </label></p>
+    <p><label><input type="radio" name="level" value="junior"> 初级</label>
+       <label><input type="radio" name="level" value="senior"> 高级</label></p>
+    <p><label><input type="checkbox" name="agree" value="yes"> 同意条款</label></p>
+    <p><label>备注 <textarea name="note"></textarea></label></p>
+    <button type="submit">提交</button>
+  </form>
+</body>
+</html>

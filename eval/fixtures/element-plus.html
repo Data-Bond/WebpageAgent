@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Element Plus 表单</title>
+  <link rel="stylesheet" href="/vendor/element-plus/dist/index.css">
+  <script src="/vendor/vue/dist/vue.global.prod.js"></script>
+  <script src="/vendor/element-plus/dist/index.full.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <h1>采购申请</h1>
+    <el-form label-width="100px" style="max-width:520px">
+      <el-form-item label="部门">
+        <el-select v-model="form.dept" placeholder="请选择部门">
+          <el-option v-for="d in depts" :key="d.value" :label="d.label" :value="d.value"></el-option>
+        </el-select>
+      </el-form-item>
+      <el-form-item label="地区">
+        <el-cascader v-model="form.region" :options="regions" placeholder="请选择地区"></el-cascader>
+      </el-form-item>
+      <el-form-item label="日期">
+        <el-date-picker v-model="form.date" type="date" value-format="YYYY-MM-DD" placeholder="选择日期"></el-date-picker>
+      </el-form-item>
+      <el-form-item label="标签">
+        <el-select v-model="form.tags" multiple filterable allow-create placeholder="输入标签后回车"></el-select>
+      </el-form-item>
+      <el-form-item>
+        <el-button type="primary" @click="submit">提交申请</el-button>
+      </el-form-item>
+    </el-form>
+    <p v-if="done" id="submitted">已提交</p>
+  </div>
+  <script>
+    Vue.createApp({
+      data() {
+        return {
+          done: false,
+          form: { dept: '', region: [], date: '', tags: [] },
+          depts: [
+            { value: 'rd', label: '研发部' },
+            { value: 'ops', label: '运维部' },
+            { value: 'fin', label: '财务部' }
+          ],
+          regions: [
+            { value: 'ah', label: '安徽', children: [{ value: 'hf', label: '合肥' }, { value: 'wh', label: '芜湖' }] },
+            { value: 'js', label: '江苏', children: [{ value: 'nj', label: '南京' }, { value: 'sz', label: '苏州' }] }
+          ]
+        };
+      },
+      methods: {
+        submit() {
+          fetch('/submit/element-plus', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(this.form)
+          }).then(() => { this.done = true; });
+        }
+      }
+    }).use(ElementPlus).mount('#app');
+  </script>
+</body>
+</html>

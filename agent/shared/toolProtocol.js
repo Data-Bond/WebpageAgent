@@ -17,14 +17,16 @@
           idx: { type: 'integer' },
           selector: { type: 'string' },
           text: { type: 'string' },
-          within: { type: 'string' }
+          within: { type: 'string' },
+          frame: { type: 'integer', description: '快照里 [frame=k] 段的 k：在这个跨源 frame 里按 selector/text 查找' },
+          file: { type: 'string', description: '仅 get：附件目录里的 key，读该附件正文' }
         }
       }
     ]
   };
 
   var OPENAI_TOOLS = [
-    { type: 'function', function: { name: 'get', description: '读控件或子树：committed（shown 展示字）、filter（可写框）、open/optionsTop（所属可见弹层）、错误提示。读页面地址/标题用 target 为 url 或 title。当前页是 PDF 用 target 为 document。纯文本会得到目录或唯一节点。limit 为正文字数（省略约 10000），offset 从第 N 字起（0 起算）；limit+offset 是切片。truncated 则加大 limit 或改 offset。', parameters: { type: 'object', properties: { target: TARGET, limit: { type: 'integer', description: '正文字数上限' }, offset: { type: 'integer', description: '从第 N 字起，0 起算' }, open: { type: 'boolean' } }, required: ['target'] } } },
+    { type: 'function', function: { name: 'get', description: '读控件或子树：committed（shown 展示字）、filter（可写框）、open/optionsTop（所属可见弹层）、错误提示。读页面地址/标题用 target 为 url 或 title。当前页是 PDF 用 target 为 document。读用户附件正文用 target 为 {file:key}。纯文本会得到目录或唯一节点。limit 为正文字数（省略约 10000），offset 从第 N 字起（0 起算）；limit+offset 是切片。truncated 则加大 limit 或改 offset。', parameters: { type: 'object', properties: { target: TARGET, limit: { type: 'integer', description: '正文字数上限' }, offset: { type: 'integer', description: '从第 N 字起，0 起算' }, open: { type: 'boolean' } }, required: ['target'] } } },
     { type: 'function', function: { name: 'type', description: '写入可编辑节点或过滤框。只打字，不自动点选项。附近列表出现或选项变了则本批停，下一轮再点。', parameters: { type: 'object', properties: { target: TARGET, value: { type: 'string' } }, required: ['target', 'value'] } } },
     { type: 'function', function: { name: 'click', description: '默认左键。button=hover 只把指针移到目标上，不点击、不点菜单项。button=right 只发上下文菜单。button=dblclick 为双击。可见建议项、级联叶子都可以点。带勾选控件的行左键回执带当前 selection。', parameters: { type: 'object', properties: { target: TARGET, button: { type: 'string', enum: ['left', 'right', 'hover', 'dblclick'], description: '省略或 left 为左键；hover 只移指针、不点击；right 只发右键菜单；dblclick 为双击。' }, within: { type: 'string' } }, required: ['target'] } } },
     { type: 'function', function: { name: 'check', description: '幂等勾选或取消复选/单选。带勾选控件的行回执带当前 selection。', parameters: { type: 'object', properties: { target: TARGET, value: { type: 'boolean' } }, required: ['target'] } } },
@@ -43,7 +45,10 @@
     { type: 'function', function: { name: 'goto', description: '打开 http(s) 地址，或用记忆表里的 name。须由模型调用，memorize 后不会自动跳转。', parameters: { type: 'object', properties: { url: { type: 'string' }, name: { type: 'string' } } } } },
     { type: 'function', function: { name: 'delegate', description: '在 click/goto 回执的 openedTab 上新开一轮子 agent。task 为子指令原文，引擎不改写。return 为子页须用 returnToParent 交回的字段名。', parameters: { type: 'object', properties: { tab: { description: '子 tabId，须为回执 openedTab/openedTabs 之一；省略或 opened 表示最近一条 openedTab' }, name: { type: 'string', description: '子任务短名' }, task: { type: 'string', description: '子 agent 的用户指令原文' }, return: { type: 'array', items: { type: 'string' }, description: '须交回的字段名' } }, required: ['task', 'return'] } } },
     { type: 'function', function: { name: 'returnToParent', description: '子任务把字段交回父页。仅在 delegate 的子 tab 上调用。引擎关掉子 tab，把对象原样交给父页。', parameters: { type: 'object', properties: {}, additionalProperties: true } } },
-    { type: 'function', function: { name: 'tabClose', description: '关掉本轮 openedTab 或指定 tabId。模型看到新标签页、决定不跟过去时用。', parameters: { type: 'object', properties: { tab: { description: 'tabId，须为回执 openedTab/openedTabs 之一；省略或 opened 表示最近一条 openedTab' } } } } }
+    { type: 'function', function: { name: 'tabClose', description: '关掉本轮 openedTab 或指定 tabId。模型看到新标签页、决定不跟过去时用。', parameters: { type: 'object', properties: { tab: { description: 'tabId，须为回执 openedTab/openedTabs 之一；省略或 opened 表示最近一条 openedTab' } } } } },
+    { type: 'function', function: { name: 'key', description: '按键或组合键。有 target 时先把焦点交给它。keys 为一个或一串：Enter、Tab、Escape、ArrowDown、Control+A 等。回执 trusted 为 false 时按键是页面内合成事件，浏览器默认动作（换焦点、输入字符）不会发生。', parameters: { type: 'object', properties: { target: TARGET, keys: { description: '"Control+A" 或 ["Tab","Enter"]' } }, required: ['keys'] } } },
+    { type: 'function', function: { name: 'drag', description: '把 from 拖到 to 的中心并松开。', parameters: { type: 'object', properties: { from: TARGET, to: TARGET }, required: ['from', 'to'] } } },
+    { type: 'function', function: { name: 'dialog', description: '处理浏览器原生弹窗（alert/confirm/prompt/beforeunload）。accept=true 为确定，false 为取消；prompt 可带 text。弹窗出现时上一步回执会带 dialog。', parameters: { type: 'object', properties: { accept: { type: 'boolean' }, text: { type: 'string' } }, required: ['accept'] } } }
   ];
 
   function toOpenAiTools() {
@@ -116,6 +121,9 @@
     }
     if (name === 'returnToParent') return [obj];
     if (name === 'tabClose') return [{ tab: obj.tab }];
+    if (name === 'key') return [obj.target != null ? obj.target : null, obj.keys];
+    if (name === 'drag') return [obj.from, obj.to];
+    if (name === 'dialog') return [{ accept: obj.accept !== false, text: obj.text }];
     return [target];
   }
 

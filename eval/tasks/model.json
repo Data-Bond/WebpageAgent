@@ -1,0 +1,82 @@
+[
+  {
+    "id": "model-native-form",
+    "page": "/fixtures/native-form.html",
+    "instruction": "在人员登记表里填写姓名张三，城市选上海，级别选高级，勾选同意条款，备注写“新入职”，然后提交。",
+    "check": { "submit": "native-form", "expect": { "name": "张三", "city": "sh", "level": "senior", "agree": "yes", "note": "新入职" } }
+  },
+  {
+    "id": "model-element-plus",
+    "page": "/fixtures/element-plus.html",
+    "instruction": "填写采购申请：部门选研发部，地区选江苏/苏州，日期选 2026-11-03，标签加上“服务器”，然后提交申请。",
+    "check": { "submit": "element-plus", "expect": { "dept": "rd", "region": ["js", "sz"], "date": "2026-11-03", "tags": ["服务器"] } }
+  },
+  {
+    "id": "model-antd",
+    "page": "/fixtures/antd.html",
+    "instruction": "把工单优先级设为紧急，负责人选李强，然后点分派。",
+    "check": { "submit": "antd", "expect": { "level": "p0", "owner": "u2" } }
+  },
+  {
+    "id": "model-upload",
+    "page": "/fixtures/upload.html",
+    "instruction": "报销事由填“差旅住宿”，把附件 invoice.txt 上传到发票文件，然后提交报销。",
+    "attachments": [{ "name": "invoice.txt", "type": "text/plain", "url": "/fixtures/files/invoice.txt" }],
+    "check": { "submit": "upload", "expect": { "reason": "差旅住宿", "invoice": "invoice.txt" } }
+  },
+  {
+    "id": "model-iframe-cross",
+    "page": "/fixtures/iframe-cross.html",
+    "instruction": "在嵌入的报名表里，参会人填李雷，场次选下午场，然后报名。",
+    "check": { "submit": "iframe-cross", "expect": { "attendee": "李雷", "session": "pm" } }
+  },
+  {
+    "id": "model-shadow-closed",
+    "page": "/fixtures/shadow-closed.html",
+    "instruction": "在订阅设置里把邮箱填为 team@example.test，然后点订阅。",
+    "check": { "submit": "shadow-closed", "expect": { "email": "team@example.test" } }
+  },
+  {
+    "id": "model-virtual-list",
+    "page": "/fixtures/virtual-list.html",
+    "instruction": "在合同列表里找到合同 HT-07321，点它那一行的归档。",
+    "check": { "submit": "virtual-list", "expect": { "archived": "HT-07321" } }
+  },
+  {
+    "id": "model-contenteditable",
+    "page": "/fixtures/contenteditable.html",
+    "instruction": "在周报正文里写“本周完成接口联调，下周开始压测”，然后保存周报。",
+    "check": { "submit": "contenteditable", "expect": { "text": "本周完成接口联调，下周开始压测" } }
+  },
+  {
+    "id": "model-drag-sort",
+    "page": "/fixtures/drag-sort.html",
+    "instruction": "把审批顺序调整为：部门经理、总监、财务，然后保存顺序。",
+    "check": { "submit": "drag-sort", "expect": { "order": ["部门经理", "总监", "财务"] } }
+  },
+  {
+    "id": "model-keyboard-only",
+    "page": "/fixtures/keyboard-only.html",
+    "instruction": "把审批级别选为二级并确认。",
+    "check": { "submit": "keyboard-only", "expect": { "level": "二级" } }
+  },
+  {
+    "id": "model-dialog-confirm",
+    "page": "/fixtures/dialogs.html",
+    "instruction": "删除“2026 年第三季度报表”这条记录，弹出确认时选择确定。",
+    "check": { "submit": "dialogs", "expect": { "action": "delete", "confirmed": "yes" } }
+  },
+  {
+    "id": "model-new-tab",
+    "page": "/fixtures/new-tab.html",
+    "instruction": "打开关于年度体检的通知，在通知页里用工号 A1024 确认参加。",
+    "check": { "submit": "new-tab", "expect": { "staffId": "A1024" } }
+  },
+  {
+    "id": "model-download",
+    "page": "/fixtures/download.html",
+    "browsers": ["chromium"],
+    "instruction": "导出月度报表的 CSV。",
+    "check": { "receiptIncludes": "report-2026-09.csv" }
+  }
+]

@@ -4,7 +4,7 @@
   'use strict';
 
   // 必须与 manifest.json 的 version、content.js 的 CONTENT_VERSION 相同。
-  var BRIDGE_VERSION = '6.8.1';
+  var BRIDGE_VERSION = '7.0.0';
   var SNAPSHOT_TIME_BUDGET_MS = 8000;
   var WAIT_TIMEOUT_MAX_MS = 8000;
   var SNAPSHOT_L0_CAP = 1000;
@@ -164,6 +164,8 @@
     var snapIndex = [];
     var prevSnapEls = null;
     var lastSnapElements = [];
+    // 本轮快照每个 idx 的大纲行与格式参数，applyAx 用浏览器无障碍树的 role/name/状态重写这些行
+    var lastOutlineMeta = {};
     var lastSampleAt = 0;
     function markSample() { lastSampleAt = Date.now(); }
 
@@ -176,7 +178,35 @@
 
     // 顶层文档、开放 ShadowRoot、同源 iframe 文档。跨域 iframe 无法由页面世界读取，
     // 会保留 iframe 元素本身供模型点击/导航，但不会伪装成可访问。
+    // 邻近文字与图片查找只看前 WALK_MAX_NODES 个后代、深度不超过 WALK_MAX_DEPTH，按文档序返回
+    var WALK_MAX_NODES = 200;
+    var WALK_MAX_DEPTH = 12;
+    function descendantsLimited(root, maxNodes, maxDepth) {
+      var out = [];
+      if (!root || !root.children) return out;
+      var stack = [];
+      for (var i = root.children.length - 1; i >= 0; i--) stack.push([root.children[i], 1]);
+      while (stack.length && out.length < maxNodes) {
+        var top = stack.pop();
+        var node = top[0];
+        out.push(node);
+        if (top[1] >= maxDepth || !node.children) continue;
+        for (var j = node.children.length - 1; j >= 0; j--) stack.push([node.children[j], top[1] + 1]);
+      }
+      return out;
+    }
+
+    // 一次 snapshot / probe / viewPrint 调用内的遍历缓存：context 列表、可见性与视口判定只算一次。
+    // 只在同步执行段内有效，调用结束即丢弃，不跨调用复用。
+    var domPass = null;
+    function withDomPass(fn) {
+      if (domPass) return fn();
+      domPass = { contexts: null, visible: new WeakMap(), viewport: new WeakMap() };
+      try { return fn(); } finally { domPass = null; }
+    }
+
     function collectContexts() {
+      if (domPass && domPass.contexts) return domPass.contexts;
       var out = [];
       var seen = new Set();
       function walk(root) {
@@ -194,6 +224,7 @@
         }
       }
       walk(document);
+      if (domPass) domPass.contexts = out;
       return out;
     }
 
@@ -461,6 +492,17 @@
     }
 
     function isVisible(el, style, ignorePointer) {
+      if (domPass && style === undefined && !ignorePointer && el) {
+        var hit = domPass.visible.get(el);
+        if (hit !== undefined) return hit;
+        var v = computeVisible(el, undefined, false);
+        domPass.visible.set(el, v);
+        return v;
+      }
+      return computeVisible(el, style, ignorePointer);
+    }
+
+    function computeVisible(el, style, ignorePointer) {
       if (!el || !el.ownerDocument) return false;
       // 调用方已取到 computed style 时复用，避免同一节点二次强制布局
       if (style === undefined) {
@@ -708,8 +750,7 @@
         out.push(s.slice(0, 80));
       }
       try { push(firstTextIn(item, FIELD_HINT_SEL, 80)); } catch (e0) {}
-      var nodes = [];
-      try { nodes = item.querySelectorAll ? Array.from(item.querySelectorAll('*')) : []; } catch (e1) { nodes = []; }
+      var nodes = descendantsLimited(item, WALK_MAX_NODES, WALK_MAX_DEPTH);
       for (var i = 0; i < nodes.length && out.length < cap; i++) {
         var n = nodes[i];
         if (el && (n === el || (el.contains && el.contains(n)))) continue;
@@ -750,8 +791,7 @@
         if (!root || out.length >= cap) return;
         try { if (!isVisible(root)) return; } catch (e1) {}
         try { push(ownText(root)); } catch (e2) {}
-        var nodes = [];
-        try { nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : []; } catch (e3) { nodes = []; }
+        var nodes = descendantsLimited(root, WALK_MAX_NODES, WALK_MAX_DEPTH);
         for (var i = 0; i < nodes.length && out.length < cap; i++) {
           var n = nodes[i];
           try { if (!isVisible(n)) continue; } catch (e4) {}
@@ -1149,9 +1189,8 @@
         var best = pickBestImage(inner);
         if (best) return best;
       }
-      var painted = [];
-      try { painted = el.querySelectorAll ? Array.from(el.querySelectorAll('*')) : []; } catch (e) { painted = []; }
-      for (var j = 0; j < painted.length && j < 80; j++) {
+      var painted = descendantsLimited(el, 80, WALK_MAX_DEPTH);
+      for (var j = 0; j < painted.length; j++) {
         if (cssDataUrl(painted[j])) return painted[j];
       }
       return el;
@@ -2206,6 +2245,17 @@
     }
 
     function inViewport(el) {
+      if (domPass && el) {
+        var hit = domPass.viewport.get(el);
+        if (hit !== undefined) return hit;
+        var v = computeInViewport(el);
+        domPass.viewport.set(el, v);
+        return v;
+      }
+      return computeInViewport(el);
+    }
+
+    function computeInViewport(el) {
       try {
         var r = el.getBoundingClientRect();
         if (!r || r.width <= 0 || r.height <= 0) return false;
@@ -3754,6 +3804,7 @@
       return (inOverlay ? '\t' : '') + (isNew ? '*' : '') + '[' + (entry && entry.idx) + ']<' + tag
         + attr('role', entry && entry.role && entry.role !== 'generic' ? entry.role : '')
         + attr('name', acc)
+        + attr('ax', entry && entry.ax)
         + attr('label', outLabel)
         + attr('sec', entry && entry.sec)
         + attr('title', outTitle)
@@ -3880,20 +3931,44 @@
       }
     }
 
+    // 与 office.js 的 NAME_BOX_SELS / FORMULA_SELS 相同：名称框与编辑栏同时存在才是在线表格。
+    // 引擎据此决定本步是否另取 officeDigest（已知办公站点总是取）。
+    var OFFICE_NAME_BOX_SELS = [
+      'input.bar-label', '.formula-bar input.bar-label', 'input[class*="bar-label"]',
+      '#t-name-box', 'input.docs-name-box', '.docs-name-box input'
+    ];
+    var OFFICE_FORMULA_SELS = [
+      '#alloy-simple-text-editor', '.formula-input', '.formula-bar [contenteditable="true"]',
+      '.cell-input', 'textarea.cell-input', '[class*="formula-bar"] [contenteditable="true"]',
+      '[class*="FormulaBar"] [contenteditable="true"]'
+    ];
+    function officeEditorPresent() {
+      function any(sels) {
+        for (var i = 0; i < sels.length; i++) {
+          try { if (document.querySelector(sels[i])) return true; } catch (e) {}
+        }
+        return false;
+      }
+      return any(OFFICE_NAME_BOX_SELS) && any(OFFICE_FORMULA_SELS);
+    }
+
+    // 结果只含字符串、数字与普通数组，executeScript 返回时由浏览器序列化，不另做 JSON 克隆
     function probeSignals() {
-      markSample();
-      return JSON.parse(JSON.stringify({
-        url: location.href || '',
-        title: document.title || '',
-        heading: extractHeading(),
-        activeMenu: extractActiveMenu(),
-        interactiveCount: countInteractive(),
-        domLen: domLength(),
-        domDigest: domDigest(),
-        statusMessages: statusMessages(),
-        framesSummary: framesSummary(),
-        formDigest: formDigest()
-      }));
+      return withDomPass(function () {
+        markSample();
+        return {
+          url: location.href || '',
+          title: document.title || '',
+          heading: extractHeading(),
+          activeMenu: extractActiveMenu(),
+          interactiveCount: countInteractive(),
+          domLen: domLength(),
+          domDigest: domDigest(),
+          statusMessages: statusMessages(),
+          framesSummary: framesSummary(),
+          formDigest: formDigest()
+        };
+      });
     }
 
 
@@ -4189,6 +4264,10 @@
       };
     }
     function collectViewPrint(opts) {
+      return withDomPass(function () { return collectViewPrintPass(opts); });
+    }
+
+    function collectViewPrintPass(opts) {
       opts = opts || {};
       var maxItems = opts.maxItems || 40;
       var keepLive = !!opts.keepLive;
@@ -4333,6 +4412,10 @@
     }
 
     function snapshot(opts) {
+      return withDomPass(function () { return snapshotPass(opts); });
+    }
+
+    function snapshotPass(opts) {
       var tSnap = Date.now();
       var full = !!(opts && opts.full);
       var l0Cap = full ? SNAPSHOT_L0_CAP_FULL : SNAPSHOT_L0_CAP;
@@ -4345,7 +4428,8 @@
       var elements = [];
       var skipHidden = 0;
       var skipNoSel = 0;
-      var idx = 0;
+      // 跨源 frame 的快照从 idxBase 起编号（第 k 个 frame 为 k*10000+1），引擎按 idx 范围把操作发回这个 frame
+      var idx = Math.max(0, (Number(opts && opts.idxBase) || 1) - 1);
       var truncatedByTime = false;
       var truncatedByL0 = false;
       var labeledOverflow = false;
@@ -4739,23 +4823,23 @@
 
       if (!timedOut()) {
         all = queryAllDeep(INTERACTIVE_SELECTOR);
-        var ordered = all.slice().sort(function (a, b) {
-          function score(el) {
-            var s = isVisible(el) ? 100 : 0;
-            var tag = el.tagName || '';
-            if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') s += 60;
-            if (tag === 'BUTTON' || (el.getAttribute && /button|checkbox|radio|option|textbox/.test(el.getAttribute('role') || ''))) s += 40;
-            if (el.getAttribute && (el.getAttribute('data-testid') || el.getAttribute('name') || el.getAttribute('aria-label'))) s += 20;
-            if (inPagerHost(el)) s += 80;
-            try { if (isIconActEl(el) || iconClassOf(el)) s += 50; } catch (eI) {}
-            try { if (isOverlayEl(el) || looksLikeOverlay(el)) s += 200; } catch (eOvS) {}
-            try { if (inViewport(el)) s += 40; } catch (eVp) {}
-            if (inNavAside(el)) s -= 20;
-            if (el.disabled) s -= 30;
-            return s;
-          }
-          return score(b) - score(a);
+        // 每个节点的排序分只算一次，再按分数降序（稳定排序，同分保持文档序）
+        var scoredAll = all.map(function (el) {
+          var s = isVisible(el) ? 100 : 0;
+          var tag = el.tagName || '';
+          if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') s += 60;
+          if (tag === 'BUTTON' || (el.getAttribute && /button|checkbox|radio|option|textbox/.test(el.getAttribute('role') || ''))) s += 40;
+          if (el.getAttribute && (el.getAttribute('data-testid') || el.getAttribute('name') || el.getAttribute('aria-label'))) s += 20;
+          if (inPagerHost(el)) s += 80;
+          try { if (isIconActEl(el) || iconClassOf(el)) s += 50; } catch (eI) {}
+          try { if (isOverlayEl(el) || looksLikeOverlay(el)) s += 200; } catch (eOvS) {}
+          try { if (inViewport(el)) s += 40; } catch (eVp) {}
+          if (inNavAside(el)) s -= 20;
+          if (el.disabled) s -= 30;
+          return { el: el, s: s };
         });
+        scoredAll.sort(function (a, b) { return b.s - a.s; });
+        var ordered = scoredAll.map(function (row) { return row.el; });
         for (var i = 0; i < ordered.length && !timedOut(); i++) {
           considerInteractive(ordered[i]);
         }
@@ -4805,6 +4889,7 @@
         pushOutline('[' + bz.idx + ']<BLOCK tag=' + bz.tag + ' chars=' + bz.chars + '>', 'pane');
       }
       var nextPrev = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+      lastOutlineMeta = {};
       for (var oi = 0; oi < elements.length; oi++) {
         var ent = elements[oi];
         var live = snapIndex[ent.idx];
@@ -4812,7 +4897,9 @@
         var isNew = !!(prevSnapEls && live && !prevSnapEls.has(live));
         var inOv = false;
         try { inOv = isOverlayEl(live); } catch (eOvL) {}
-        pushOutline(formatOutlineLine(ent, isNew, inOv), inOv ? 'overlay' : (ent.band || 'rest'));
+        var outLine = formatOutlineLine(ent, isNew, inOv);
+        lastOutlineMeta[ent.idx] = { entry: ent, isNew: isNew, inOverlay: inOv, line: outLine };
+        pushOutline(outLine, inOv ? 'overlay' : (ent.band || 'rest'));
       }
       var viewPrint = collectViewPrint({ maxItems: 40, keepLive: true });
       var viewItems = [];
@@ -4911,7 +4998,8 @@
       if (truncatedByTime) truncatedBy = 'time';
       else if (truncatedByL0 || elements.length >= l0Cap || labeledOverflow) truncatedBy = 'l0';
       else if (sc.truncated || sc.all.length > sc.shown.length) truncatedBy = 'l0';
-      return JSON.parse(JSON.stringify({
+      // 字段都是普通数据（_el 已在上面删除），executeScript 返回时由浏览器序列化，不另做 JSON 克隆
+      return {
         outline: outlineLines.join('\n'),
         panes: panes,
         blocks: blocks,
@@ -4951,11 +5039,12 @@
         statusMessages: statusMessages(),
         framesSummary: framesSummary(),
         formDigest: formDigest(),
+        officeHint: officeEditorPresent(),
         images: images,
         selection: selection,
         textActions: textActions,
         elements: elements
-      }));
+      };
     }
 
     function collectStarFields(elements) {
@@ -5749,7 +5838,16 @@
           }
         }
       }
+      // 每个脚本最多等 8 秒；失败原样记在 catalog 对应行的 error，并汇总 fetchErrors
+      var FETCH_TIMEOUT_MS = 8000;
       var fetched = 0;
+      var fetchErrors = 0;
+      function catalogRowFor(abs) {
+        for (var ci = 0; ci < catalog.length; ci++) {
+          if (catalog[ci].src && abs.indexOf(catalog[ci].src) >= 0) return catalog[ci];
+        }
+        return null;
+      }
       for (var j = 0; j < tags.length && fetched < MAX_FETCH && total < MAX_TOTAL; j++) {
         var src2 = '';
         try { src2 = String(tags[j].src || ''); } catch (e4) {}
@@ -5758,19 +5856,26 @@
         try { abs = String(new URL(src2, location.href)); } catch (e5) { continue; }
         if (origin && abs.indexOf(origin) !== 0) continue;
         fetched += 1;
+        var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+        var timer = ctrl ? setTimeout(function (c) { c.abort(); }, FETCH_TIMEOUT_MS, ctrl) : null;
         try {
-          var resp = await fetch(abs, { credentials: 'same-origin' });
+          var resp = await fetch(abs, { credentials: 'same-origin', signal: ctrl ? ctrl.signal : undefined });
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
           var body = await resp.text();
           var take = String(body || '').slice(0, MAX_EACH);
           chunks.push(take);
           total += take.length;
-          for (var ci = 0; ci < catalog.length; ci++) {
-            if (catalog[ci].src && abs.indexOf(catalog[ci].src) >= 0) {
-              catalog[ci].fetched = take.length;
-              break;
-            }
-          }
-        } catch (e6) {}
+          var row = catalogRowFor(abs);
+          if (row) row.fetched = take.length;
+        } catch (e6) {
+          fetchErrors += 1;
+          var errRow = catalogRowFor(abs);
+          var reason = (e6 && e6.name === 'AbortError') ? 'timeout' : String((e6 && (e6.message || e6.name)) || 'fetch').slice(0, 60);
+          if (errRow) errRow.error = reason;
+          else catalog.push({ src: abs.slice(0, 220), inline: false, error: reason });
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
       }
       var endpoints = harvestScriptEndpoints(chunks.join('\n'));
       var q = normText(needle);
@@ -5787,6 +5892,7 @@
         kind: 'query',
         scripts: catalog.slice(0, 40),
         endpoints: endpoints,
+        fetchErrors: fetchErrors,
         truncated: tags.length > catalog.length || fetched >= MAX_FETCH,
         note: '只返回脚本里的 URL 字符串线索，不是可执行代码。禁止 eval/runScript，禁止把打包文件全文塞进对话。'
       };
@@ -9137,20 +9243,22 @@
               dispatchClick(winner.el);
               var verifyUntil = Date.now() + 800;
               var verified = false;
+              var classHint = null;
               while (Date.now() < verifyUntil) {
-                var cls = String(winner.el.className || '');
-                var marked = /selected|layui-this|is-checked|chosen|ant-select-item-option-selected|active|is-active/.test(cls) ||
-                  (winner.el.getAttribute && winner.el.getAttribute('aria-selected') === 'true');
+                // 只有 aria-selected 与 trigger 文字算核实；选项上的 class 名只原样附上
+                var clsHit = String(winner.el.className || '').match(/\S*(selected|layui-this|is-checked|chosen|active)\S*/);
+                classHint = clsHit ? clsHit[0] : null;
+                var ariaSelected = !!(winner.el.getAttribute && winner.el.getAttribute('aria-selected') === 'true');
                 var triggerValue = '';
                 try { triggerValue = String(('value' in trigger ? trigger.value : '') || trigger.innerText || trigger.textContent || ''); } catch (e) {}
                 var triggerMatched = rankMatch(triggerValue, raw) >= 0 || rankMatch(triggerValue, winner.text) >= 0;
                 var optionClosed = !winner.el.isConnected || !isVisible(winner.el);
-                verified = !!(marked || triggerMatched);
+                verified = !!(ariaSelected || triggerMatched);
                 if (verified) break;
                 await page.sleep(100);
               }
               return { ok: true, kind: 'mutation', via: 'custom', text: winner.text, value: winner.value,
-                selector: winner.selector, verified: verified, opened: !optionClosed, searchUsed: !!usedQuery };
+                selector: winner.selector, verified: verified, classHint: classHint, opened: !optionClosed, searchUsed: !!usedQuery };
             }
 
             var matched = matchHarvest(harvested);
@@ -9822,6 +9930,329 @@
       }
     }
 
+    // 操作后的等待在页面内完成，一次桥接调用返回结果：
+    // MutationObserver 观察 document 与各 open shadow root；最后一次变化后安静 quietMs 即返回。
+    // 持续变化的页面（时钟、动画）再看稳定信号：view 模式比较弹层签名，dom 模式比较 probe 关键字段，连续两次相同也返回。
+    // 回执原样给出 quiet / waitedMs / mutations / reason，由引擎写入轨迹，不替模型判断页面是否就绪。
+    function settlePage(opts) {
+      opts = opts || {};
+      var quietMs = Math.max(50, Math.min(2000, Number(opts.quietMs) || 150));
+      var maxMs = Math.max(0, Math.min(15000, Number(opts.maxMs) || 0));
+      var viewMode = opts.mode === 'view';
+      var stableEvery = viewMode ? 180 : 350;
+      var targets = Array.isArray(opts.targets) ? opts.targets : [];
+      return new Promise(function (resolve) {
+        var started = Date.now();
+        var lastChange = started;
+        var mutations = 0;
+        var observers = [];
+        var prevSig = null;
+        var sameRounds = 0;
+        var nextSigAt = started + stableEvery;
+        function onMutations(list) {
+          mutations += list.length;
+          lastChange = Date.now();
+        }
+        collectContexts().forEach(function (root) {
+          var node = root && root.nodeType === 9 ? root.documentElement : root;
+          if (!node || typeof MutationObserver !== 'function') return;
+          try {
+            var mo = new MutationObserver(onMutations);
+            mo.observe(node, { subtree: true, childList: true, attributes: true, characterData: true });
+            observers.push(mo);
+          } catch (e) {}
+        });
+        function stableSig() {
+          if (viewMode) {
+            var v = collectViewPrint({ targets: targets });
+            return { sig: String(v && v.sig != null ? v.sig : ''), view: v };
+          }
+          var p = probeSignals();
+          return { sig: [p.domLen, p.domDigest, p.formDigest, p.interactiveCount].join('|'), probe: p };
+        }
+        function finish(reason) {
+          observers.forEach(function (mo) { try { mo.disconnect(); } catch (e) {} });
+          var out = {
+            ok: true,
+            reason: reason,
+            quiet: reason === 'quiet',
+            waitedMs: Date.now() - started,
+            mutations: mutations,
+            probe: probeSignals()
+          };
+          if (viewMode) out.view = collectViewPrint({ targets: targets });
+          resolve(out);
+        }
+        function tick() {
+          var now = Date.now();
+          if (now - lastChange >= quietMs) return finish('quiet');
+          if (now - started >= maxMs) return finish('timeout');
+          if (now >= nextSigAt) {
+            nextSigAt = now + stableEvery;
+            var s = stableSig().sig;
+            if (s === prevSig) sameRounds += 1;
+            else { prevSig = s; sameRounds = 0; }
+            if (sameRounds >= 2) return finish('stable');
+          }
+          setTimeout(tick, 25);
+        }
+        if (maxMs <= 0) return finish('timeout');
+        setTimeout(tick, 25);
+      });
+    }
+
+    // ===== 页面驱动支持：cdp / bidi 在浏览器层面发出可信输入，页面侧只负责定位、聚焦与回读 =====
+    var pointerPassUntil = 0;
+    var pointerPassTimer = null;
+    var pointerPassPrev = [];
+
+    // 驱动发指针事件期间，面板 iframe 与忙碌遮罩不接收指针事件，2.5 秒后自动恢复
+    function passPointerThroughAssistant() {
+      var els = [];
+      try {
+        var shell = document.getElementById('__ai-assistant-root');
+        var mask = document.getElementById('wpa-busy-mask');
+        if (shell) els.push(shell);
+        if (mask) els.push(mask);
+      } catch (e) {}
+      if (!pointerPassPrev.length) {
+        pointerPassPrev = els.map(function (el) { return { el: el, value: el.style.pointerEvents }; });
+      }
+      els.forEach(function (el) { el.style.pointerEvents = 'none'; });
+      pointerPassUntil = Date.now() + 2500;
+      if (pointerPassTimer) clearTimeout(pointerPassTimer);
+      pointerPassTimer = setTimeout(restorePointerThroughAssistant, 2500);
+    }
+    function restorePointerThroughAssistant() {
+      pointerPassTimer = null;
+      pointerPassPrev.forEach(function (row) { try { row.el.style.pointerEvents = row.value; } catch (e) {} });
+      pointerPassPrev = [];
+    }
+
+    function shortElDesc(el) {
+      if (!el || !el.tagName) return '';
+      var s = String(el.tagName).toLowerCase();
+      try { if (el.id) s += '#' + el.id; } catch (e) {}
+      try {
+        var cls = String(el.className && el.className.baseVal != null ? el.className.baseVal : el.className || '').trim().split(/\s+/).filter(Boolean).slice(0, 2);
+        if (cls.length) s += '.' + cls.join('.');
+      } catch (e2) {}
+      var t = '';
+      try { t = String(el.innerText || el.value || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 60); } catch (e3) {}
+      return t ? s + ' "' + t + '"' : s;
+    }
+
+    // 目标在顶层视口里的矩形：同源 iframe 逐级加上 frame 元素的位置
+    function topViewportRect(el) {
+      var r = el.getBoundingClientRect();
+      var x = r.left;
+      var y = r.top;
+      var win = el.ownerDocument && el.ownerDocument.defaultView;
+      while (win && win !== window && win.frameElement) {
+        var fr = win.frameElement.getBoundingClientRect();
+        x += fr.left + (win.frameElement.clientLeft || 0);
+        y += fr.top + (win.frameElement.clientTop || 0);
+        win = win.frameElement.ownerDocument && win.frameElement.ownerDocument.defaultView;
+      }
+      return { x: x, y: y, w: r.width, h: r.height };
+    }
+
+    function deepElementFromPoint(x, y) {
+      var doc = document;
+      var hit = null;
+      for (var depth = 0; depth < 8; depth++) {
+        var h = null;
+        try { h = doc.elementFromPoint(x, y); } catch (e) { h = null; }
+        if (!h) break;
+        while (h && h.shadowRoot) {
+          var inner = null;
+          try { inner = h.shadowRoot.elementFromPoint(x, y); } catch (e2) { inner = null; }
+          if (!inner || inner === h) break;
+          h = inner;
+        }
+        hit = h;
+        if ((h.tagName === 'IFRAME' || h.tagName === 'FRAME') && !isAssistantFrame(h)) {
+          var sub = null;
+          try { sub = h.contentDocument; } catch (e3) { sub = null; }
+          if (!sub) break;
+          var fr = h.getBoundingClientRect();
+          x -= fr.left + (h.clientLeft || 0);
+          y -= fr.top + (h.clientTop || 0);
+          doc = sub;
+          continue;
+        }
+        break;
+      }
+      return hit;
+    }
+
+    function composedContains(outer, inner) {
+      var n = inner;
+      for (var i = 0; n && i < 200; i++) {
+        if (n === outer) return true;
+        n = n.parentNode || n.host || null;
+      }
+      return false;
+    }
+
+    function resolveDriverTarget(target) {
+      var page = createPageApi();
+      var looked = lookupTarget(target, function (n, c) { return page.findControls(n, c); }, 20);
+      if (!looked || looked.kind !== 'one' || !looked.el) {
+        return { ok: false, reason: (looked && looked.reason) || (looked && looked.kind === 'many' ? 'ambiguous' : 'not-found'), catalog: (looked && looked.catalog) || [] };
+      }
+      return { ok: true, el: looked.el };
+    }
+
+    // locate：滚到可见、算中心点、检查中心点处是不是目标本身或其子孙
+    function locateForDriver(payload) {
+      hydrateSnapIndexFromDom();
+      var r = resolveDriverTarget(payload && payload.target);
+      if (!r.ok) return r;
+      var el = r.el;
+      try { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); } catch (e) {
+        try { el.scrollIntoView(); } catch (e2) {}
+      }
+      passPointerThroughAssistant();
+      var rect = topViewportRect(el);
+      if (!(rect.w > 0 && rect.h > 0)) {
+        return { ok: false, reason: 'not-visible', ref: ensureSnapIdx(el), catalog: [catalogLineForEl(el, {})] };
+      }
+      var x = rect.x + rect.w / 2;
+      var y = rect.y + rect.h / 2;
+      var hit = deepElementFromPoint(x, y);
+      var occluded = !!(hit && hit !== el && !composedContains(el, hit) && !composedContains(hit, el));
+      return {
+        ok: true,
+        ref: ensureSnapIdx(el),
+        rect: rect,
+        point: { x: Math.round(x), y: Math.round(y) },
+        viewport: { w: window.innerWidth || 0, h: window.innerHeight || 0, dpr: window.devicePixelRatio || 1 },
+        occluded: occluded,
+        occludedBy: occluded ? shortElDesc(hit) : ''
+      };
+    }
+
+    function elByRef(ref) {
+      hydrateSnapIndexFromDom();
+      var n = Number(ref);
+      if (!n) return null;
+      try { return resolveTarget(n); } catch (e) { return null; }
+    }
+
+    // 键盘输入之前把焦点交给目标；selectAll 时选中已有内容，后续插入的文字会替换它
+    function focusForDriver(payload) {
+      var el = elByRef(payload && payload.ref);
+      if (!el) return { ok: false, reason: 'stale-idx' };
+      try { el.focus({ preventScroll: true }); } catch (e) { try { el.focus(); } catch (e2) {} }
+      if (payload && payload.selectAll) {
+        try {
+          if (typeof el.select === 'function' && /^(INPUT|TEXTAREA)$/.test(el.tagName)) el.select();
+          else if (el.isContentEditable) {
+            var range = el.ownerDocument.createRange();
+            range.selectNodeContents(el);
+            var sel = el.ownerDocument.defaultView.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+          }
+        } catch (e3) {}
+      }
+      var active = null;
+      try { active = el.ownerDocument.activeElement; } catch (e4) {}
+      return { ok: true, focused: active === el || composedContains(el, active) };
+    }
+
+    // 驱动操作之后回读：值、字段状态、附近文字，与 DOM 驱动的回执字段相同
+    function afterDriverAction(payload) {
+      var el = elByRef(payload && payload.ref);
+      if (!el) return { ok: true, reason: 'target-gone' };
+      var out = { ok: true };
+      try {
+        if ('value' in el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) out.actual = String(el.value || '').slice(0, 200);
+        else if (el.isContentEditable) out.actual = String(el.innerText || '').trim().slice(0, 200);
+      } catch (e) {}
+      try { out.fieldState = collectFieldState(el, {}); } catch (e2) {}
+      try { if (el.isConnected) attachNear(out, el); } catch (e3) {}
+      return out;
+    }
+
+    // DOM 驱动的按键：合成 KeyboardEvent，isTrusted=false，浏览器默认动作（换焦点、输入字符）不会发生
+    function domKeysForDriver(payload) {
+      var el = payload && payload.ref ? elByRef(payload.ref) : null;
+      var targetEl = el || document.activeElement || document.body;
+      var chords = Array.isArray(payload && payload.keys) ? payload.keys : [];
+      for (var i = 0; i < chords.length; i++) {
+        var parts = String(chords[i]).split('+');
+        var key = parts.pop();
+        var mods = { ctrlKey: false, shiftKey: false, altKey: false, metaKey: false };
+        parts.forEach(function (m) {
+          var k = m.toLowerCase();
+          if (k === 'control' || k === 'ctrl') mods.ctrlKey = true;
+          else if (k === 'shift') mods.shiftKey = true;
+          else if (k === 'alt') mods.altKey = true;
+          else if (k === 'meta' || k === 'cmd') mods.metaKey = true;
+        });
+        var init = Object.assign({ key: key, bubbles: true, cancelable: true, composed: true }, mods);
+        try { targetEl.dispatchEvent(new KeyboardEvent('keydown', init)); } catch (e) {}
+        try { targetEl.dispatchEvent(new KeyboardEvent('keyup', init)); } catch (e2) {}
+      }
+      return { ok: true, keys: chords.length };
+    }
+
+    // DOM 驱动的拖动：合成 HTML5 拖放事件序列，带同一个 DataTransfer
+    function domDragForDriver(payload) {
+      var from = elByRef(payload && payload.fromRef);
+      var to = elByRef(payload && payload.toRef);
+      if (!from || !to) return { ok: false, reason: 'stale-idx' };
+      var dt = null;
+      try { dt = new DataTransfer(); } catch (e) { dt = null; }
+      function center(el) {
+        var r = el.getBoundingClientRect();
+        return { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+      }
+      function fire(el, type, pt) {
+        var ev = null;
+        try {
+          ev = new DragEvent(type, Object.assign({ bubbles: true, cancelable: true, composed: true, dataTransfer: dt }, pt));
+        } catch (e2) {
+          ev = new Event(type, { bubbles: true, cancelable: true });
+        }
+        el.dispatchEvent(ev);
+      }
+      var a = center(from);
+      var b = center(to);
+      fire(from, 'dragstart', a);
+      fire(to, 'dragenter', b);
+      fire(to, 'dragover', b);
+      fire(to, 'drop', b);
+      fire(from, 'dragend', b);
+      return { ok: true };
+    }
+
+    // 浏览器无障碍树的 role/name/状态（cdp 驱动读取）写回本轮元素，并重写对应的大纲行
+    function applyAxForDriver(payload) {
+      var map = (payload && payload.ax) || {};
+      var lines = [];
+      var changed = 0;
+      Object.keys(map).forEach(function (k) {
+        var meta = lastOutlineMeta[k];
+        var ax = map[k];
+        if (!meta || !ax) return;
+        var entry = meta.entry;
+        if (ax.role) entry.role = String(ax.role);
+        if (ax.name != null) entry.accName = String(ax.name);
+        if (ax.states && typeof ax.states === 'object') entry.axStates = Object.assign({}, entry.axStates || {}, ax.states);
+        entry.ax = 'browser';
+        var next = formatOutlineLine(entry, meta.isNew, meta.inOverlay);
+        if (next !== meta.line) {
+          lines.push({ old: meta.line, line: next });
+          meta.line = next;
+          changed += 1;
+        }
+      });
+      return { ok: true, changed: changed, lines: lines };
+    }
+
     async function runScript(source) {
       return {
         ok: false,
@@ -9846,6 +10277,22 @@
       }
       if (cmd === 'submitFailureContext') return collectSubmitFailureContext(payload.targets || []);
       if (cmd === 'viewPrint') return collectViewPrint(payload);
+      if (cmd === 'settle') return settlePage(payload);
+      if (cmd === 'locate') return locateForDriver(payload);
+      if (cmd === 'focusTarget') return focusForDriver(payload);
+      if (cmd === 'afterAction') return afterDriverAction(payload);
+      if (cmd === 'domKeys') return domKeysForDriver(payload);
+      if (cmd === 'domDrag') return domDragForDriver(payload);
+      if (cmd === 'applyAx') return applyAxForDriver(payload);
+      if (cmd === 'markTab') {
+        // bidi 驱动按这个属性把标签页对应到 browsing context
+        try { document.documentElement.setAttribute('data-wpa-tab', String(payload.tabId)); } catch (e) {}
+        return { ok: true };
+      }
+      if (cmd === 'armDownloadCapture') {
+        globalThis.__wpaDownloadArmed = !!payload.on;
+        return { ok: true };
+      }
       if (cmd === 'captureImage') return captureImage(payload.selector || '');
       if (cmd === 'readDocumentBytes') return readDocumentBytes();
       if (cmd === 'fetchUrlBytes') return bytesFromUrl(String(payload.url || ''));

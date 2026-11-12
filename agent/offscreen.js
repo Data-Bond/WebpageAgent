@@ -21,7 +21,7 @@ import {
   pipeBody
 } from './webdav.mjs';
 
-const OFFSCREEN_VERSION = '6.8.1';
+const OFFSCREEN_VERSION = '7.0.0';
 
 const MIN_USEFUL_CHARS = 40;
 const OCR_DPI = 120;

@@ -14,6 +14,7 @@
     document.documentElement.lang = I18N.getLocale() === 'en' ? 'en' : 'zh-CN';
     const closeBtns = document.querySelectorAll('.modal-x');
     closeBtns.forEach((btn) => { btn.setAttribute('aria-label', t('common.close')); });
+    if (typeof syncPageDriverUi === 'function' && document.getElementById('pageDriver')) syncPageDriverUi();
   }
 
   const TEXT_PROVIDER_TYPES = [
@@ -753,6 +754,42 @@
     $('pdfParseAllHint').hidden = pages;
   }
 
+  // 页面操作方式：按当前浏览器决定哪些选项可选，auto 的实际选择显示在下拉框下方
+  function settingsBrowserKind() {
+    if (typeof browser !== 'undefined' && browser.runtime && typeof browser.runtime.getBrowserInfo === 'function') return 'firefox';
+    if (typeof chrome !== 'undefined' && chrome.debugger && typeof chrome.debugger.attach === 'function') return 'chromium';
+    return 'other';
+  }
+
+  function syncPageDriverUi() {
+    const sel = $('pageDriver');
+    if (!sel) return;
+    const kind = settingsBrowserKind();
+    const unavailable = [];
+    Array.from(sel.options).forEach((opt) => {
+      let off = false;
+      if (opt.value === 'cdp' && kind !== 'chromium') { off = true; unavailable.push(t('settings.pageDriver.cdpOff')); }
+      if (opt.value === 'bidi' && kind !== 'firefox') { off = true; unavailable.push(t('settings.pageDriver.bidiOff')); }
+      opt.disabled = off;
+    });
+    if (sel.options[sel.selectedIndex] && sel.options[sel.selectedIndex].disabled) sel.value = 'auto';
+    const resolved = WPA_CONTRACTS.resolvePageDriver(sel.value, kind);
+    const resolvedOpt = Array.from(sel.options).find((opt) => opt.value === resolved);
+    $('pageDriverAuto').textContent = sel.value === 'auto'
+      ? t('settings.pageDriver.autoPicked') + (resolvedOpt ? resolvedOpt.textContent : resolved)
+      : '';
+    $('pageDriverUnavailable').textContent = unavailable.join(' ');
+    $('bidiFields').hidden = resolved !== 'bidi';
+    const port = clampInt($('bidiPort').value, 1, 65535, 9222);
+    $('bidiLaunchHint').textContent = t('settings.bidiLaunch', { port: port, origin: location.origin });
+  }
+
+  async function testBidi() {
+    const port = clampInt($('bidiPort').value, 1, 65535, 9222);
+    setStatus(t('settings.bidiTesting'));
+    send('testBidi', { port: port });
+  }
+
   function syncOpacityLabel() {
     const n = clampInt($('uiOpacity').value, 20, 100, 80);
     $('uiOpacityVal').textContent = n + '%';
@@ -781,7 +818,6 @@
       pdfParsePages: String($('pdfParsePages').value || '').trim() || '1,2,3,4,-3,-2,-1',
       pdfTextMaxChars: clampInt($('pdfTextMaxChars').value, 10000, 500000, 150000),
       ocrCacheMaxChars: clampInt($('ocrCacheMaxChars').value, 50000, 2000000, 500000),
-      attachContextMaxChars: clampInt($('attachContextMaxChars').value, 10000, 800000, 300000),
       contextTokenSoft: clampInt($('contextTokenSoft').value, 64000, 750000, 500000),
       contextTokenHard: clampInt($('contextTokenHard').value, 64000, 800000, 700000),
       busyMaskEnabled: !!$('busyMaskEnabled').checked,
@@ -792,6 +828,12 @@
       panelScaleY: clampInt($('panelScaleY').value, 30, 100, 90),
       uiFontScale: clampInt($('uiFontScale').value, 50, 200, 100),
       diagCapKb: clampInt($('diagCapKb').value, 10, 200, 50),
+      traceEnabled: !!$('traceEnabled').checked,
+      traceKeepDays: clampInt($('traceKeepDays').value, 1, 90, 7),
+      traceMaxMb: clampInt($('traceMaxMb').value, 10, 2000, 200),
+      evalServerUrl: String($('evalServerUrl').value || '').trim(),
+      pageDriver: $('pageDriver').value || 'auto',
+      bidiPort: clampInt($('bidiPort').value, 1, 65535, 9222),
       selectedTextTag: currentConfig ? currentConfig.selectedTextTag : null,
       selectedOcrTag: currentConfig ? currentConfig.selectedOcrTag : null
     };
@@ -835,7 +877,6 @@
     syncPdfParseUi();
     if ($('pdfTextMaxChars')) $('pdfTextMaxChars').value = String(clampInt(cfg.pdfTextMaxChars, 10000, 500000, 150000));
     if ($('ocrCacheMaxChars')) $('ocrCacheMaxChars').value = String(clampInt(cfg.ocrCacheMaxChars, 50000, 2000000, 500000));
-    if ($('attachContextMaxChars')) $('attachContextMaxChars').value = String(clampInt(cfg.attachContextMaxChars, 10000, 800000, 300000));
     if ($('contextTokenSoft')) $('contextTokenSoft').value = String(clampInt(cfg.contextTokenSoft, 64000, 750000, 500000));
     if ($('contextTokenHard')) {
       let hard = clampInt(cfg.contextTokenHard, 64000, 800000, 700000);
@@ -857,6 +898,13 @@
     $('panelScaleY').value = String(clampInt(cfg.panelScaleY, 30, 100, 90));
     $('uiFontScale').value = String(clampInt(cfg.uiFontScale, 50, 200, 100));
     if ($('diagCapKb')) $('diagCapKb').value = String(clampInt(cfg.diagCapKb, 10, 200, 50));
+    $('traceEnabled').checked = cfg.traceEnabled !== false;
+    $('traceKeepDays').value = String(clampInt(cfg.traceKeepDays, 1, 90, 7));
+    $('traceMaxMb').value = String(clampInt(cfg.traceMaxMb, 10, 2000, 200));
+    $('evalServerUrl').value = String(cfg.evalServerUrl || '');
+    $('pageDriver').value = WPA_CONTRACTS.normalizePageDriver(cfg.pageDriver);
+    $('bidiPort').value = String(clampInt(cfg.bidiPort, 1, 65535, 9222));
+    syncPageDriverUi();
     syncOpacityLabel();
     } finally {
       filling = false;
@@ -980,6 +1028,7 @@
     topCard(t('settings.export.card.ui'), { 'data-card': 'ui' });
     topCard(t('settings.export.card.runtime'), { 'data-card': 'runtime' });
     topCard(t('settings.export.card.archiveRedact'), { 'data-card': 'archiveRedact' });
+    topCard(t('settings.export.card.webdav'), { 'data-card': 'webdav' });
     topCard(t('settings.export.card.textPrompt'), { 'data-pick': 'textPrompt' });
     const textRows = collectProviderRows($('textProvidersList'), 'text');
     appendExportGroup(configBody, t('settings.export.card.textProviders'), (kids) => {
@@ -1021,6 +1070,7 @@
       ui: false,
       runtime: false,
       archiveRedact: false,
+      webdav: false,
       textPrompt: false,
       ocrPrompt: false,
       textIndexes: [],
@@ -1031,7 +1081,7 @@
     configBody.querySelectorAll('input[data-card]').forEach((el) => {
       if (!el.checked) return;
       const k = el.getAttribute('data-card');
-      if (k === 'diag' || k === 'ui' || k === 'runtime' || k === 'archiveRedact') pick[k] = true;
+      if (k === 'diag' || k === 'ui' || k === 'runtime' || k === 'archiveRedact' || k === 'webdav') pick[k] = true;
     });
     configBody.querySelectorAll('input[data-pick]').forEach((el) => {
       if (!el.checked) return;
@@ -1051,7 +1101,7 @@
 
   function exportConfigPickHasAny(pick) {
     if (!pick) return false;
-    if (pick.diag || pick.ui || pick.runtime || pick.archiveRedact || pick.textPrompt || pick.ocrPrompt) return true;
+    if (pick.diag || pick.ui || pick.runtime || pick.archiveRedact || pick.webdav || pick.textPrompt || pick.ocrPrompt) return true;
     return (pick.textIndexes && pick.textIndexes.length) || (pick.ocrIndexes && pick.ocrIndexes.length);
   }
 
@@ -1184,6 +1234,8 @@
         reconnecting = false;
         setStatus('');
       }
+    } else if (type === 'bidiTest') {
+      setStatus(msg.ok ? t('settings.bidiOk') + (msg.note ? '（' + msg.note + '）' : '') : (t('settings.bidiFail') + (msg.error || '')), msg.ok ? 'ok' : 'err');
     } else if (type === 'configSaved') {
       if (msg.ok) forceFill = true;
       setStatus(msg.ok ? t('settings.status.saved') : (t('settings.status.saveFail') + (msg.error ? '：' + msg.error : '')), msg.ok ? 'ok' : 'err');
@@ -1347,6 +1399,9 @@
       addProviderRow($('ocrProvidersList'), { name: 'OCR', providerType: 'OpenAI-chat-completions-image_url' }, 'ocr');
     });
     $('webdavTestBtn').addEventListener('click', () => { void testWebdav(); });
+    $('pageDriver').addEventListener('change', syncPageDriverUi);
+    $('bidiPort').addEventListener('input', syncPageDriverUi);
+    $('bidiTestBtn').addEventListener('click', () => { void testBidi(); });
     $('resultCopyBtn').addEventListener('click', copyResultBody);
     $('webdavListOk').addEventListener('click', () => {
       closeModal('webdavListModal');
@@ -1384,7 +1439,7 @@
         return;
       }
       const includeKeys = !!($('exportPickerIncludeKeys') && $('exportPickerIncludeKeys').checked);
-      if (includeKeys && (pick.textIndexes.length || pick.ocrIndexes.length)
+      if (includeKeys && (pick.textIndexes.length || pick.ocrIndexes.length || pick.webdav)
         && !window.confirm(t('settings.confirm.exportKeys'))) return;
       pendingDownloads = { config: true, diag: false };
       const sent = send('exportConfig', {
@@ -1394,6 +1449,7 @@
           ui: pick.ui,
           runtime: pick.runtime,
           archiveRedact: pick.archiveRedact,
+          webdav: pick.webdav,
           textPrompt: pick.textPrompt,
           ocrPrompt: pick.ocrPrompt,
           textIndexes: pick.textIndexes,

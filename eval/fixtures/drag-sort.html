@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>拖动排序</title>
+  <style>
+    #list { list-style: none; padding: 0; width: 260px; }
+    #list li { border: 1px solid #999; margin: 4px 0; padding: 8px; background: #f6f6f6; cursor: move; }
+  </style>
+</head>
+<body>
+  <h1>审批顺序</h1>
+  <p>把审批人拖动到正确顺序后保存。</p>
+  <ul id="list">
+    <li draggable="true" data-id="c">财务</li>
+    <li draggable="true" data-id="a">部门经理</li>
+    <li draggable="true" data-id="b">总监</li>
+  </ul>
+  <button id="save" type="button">保存顺序</button>
+  <p id="msg"></p>
+  <script>
+    var list = document.getElementById('list');
+    var dragging = null;
+    list.addEventListener('dragstart', function (ev) {
+      dragging = ev.target.closest('li');
+      ev.dataTransfer.setData('text/plain', dragging.dataset.id);
+      ev.dataTransfer.effectAllowed = 'move';
+    });
+    list.addEventListener('dragover', function (ev) { ev.preventDefault(); });
+    list.addEventListener('drop', function (ev) {
+      ev.preventDefault();
+      var target = ev.target.closest('li');
+      if (!dragging || !target || target === dragging) return;
+      // 常见排序列表的规则：往下拖放到目标之后，往上拖放到目标之前
+      var items = Array.from(list.children);
+      var after = items.indexOf(dragging) < items.indexOf(target);
+      list.insertBefore(dragging, after ? target.nextSibling : target);
+      dragging = null;
+    });
+    document.getElementById('save').addEventListener('click', function () {
+      var order = Array.from(list.children).map(function (li) { return li.textContent; });
+      fetch('/submit/drag-sort', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order: order })
+      }).then(function () { document.getElementById('msg').textContent = '已提交'; });
+    });
+  </script>
+</body>
+</html>
