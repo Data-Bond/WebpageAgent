@@ -412,6 +412,26 @@ ok(!/helper名仅可为 /.test(bg), '短手册不再枚举旧 helper 白名单�
 ok(/function stripFossilPrompt/.test(bg) && /withRuntimePlaybook/.test(bg),
   '存量系统提示会剥离 plan/script/page.q 化石段落后再拼短手册');
 ok(/function startOpenerWatch/.test(bg) && /openerTabId/.test(bg), '按 openerTabId 观测新 tab');
+ok(/onCreatedNavigationTarget/.test(extractFn(bg, 'startOpenerWatch')),
+  '新窗口用 sourceTabId 认回父页');
+ok(/function armNavCapture/.test(bridge) && /function takeNavCapture/.test(bridge) && /navBlocked/.test(bridge),
+  '点击期间记录 window.open，拦截时标记 navBlocked');
+ok(/if \(!t\) return false/.test(extractFn(bridge, 'navTargetIsNew')),
+  '空 target 不是新标签页');
+ok(!/navTargetName\(tgt \|\| '_blank'\)/.test(bridge),
+  'a.click 不把空 target 改写成 _blank');
+ok(/blocked: !err && ret == null/.test(extractFn(bridge, 'armNavCapture')) &&
+  !/function navOpenSeversOpener/.test(bridge),
+  'window.open 返回 null 都标 blocked，含 noopener');
+ok(/cmd === 'armNavCapture'/.test(bridge) && /cmd === 'takeNavCapture'/.test(bridge),
+  '桥接可布防与取回 window.open');
+ok(/function isLeavingNode/.test(bridge) && /if \(isLeavingNode\(el\)\) return/.test(bridge),
+  '视图采集跳过正在关闭的弹层');
+ok(/function pickNavTabs/.test(bg) && /function readNavOpens/.test(bg) && /createBlockedNavTabs/.test(bg),
+  '结束点击时认领新窗口并补开被拦截的 URL');
+ok(/【新标签页】/.test(bg) && /【未交接的新标签页】/.test(bg),
+  '打开新标签页后提示 delegate，未交接前不要重试点击');
+ok(/关闭动画不是失败/.test(bg), '手册说明下拉关闭动画不是点击失败');
 ok(/parentWindowId/.test(extractFn(bg, 'startOpenerWatch')) && /windowReady/.test(extractFn(bg, 'startOpenerWatch')),
   '无 openerTabId 时按同窗口候选记录新 tab');
 ok(/tab-not-opened-here/.test(extractFn(bg, 'resolveDelegateTab')),
@@ -437,7 +457,7 @@ ok(/createTabFromClickIntent\(val\.intentUrl/.test(bg),
   'afterFlush 在 waitBrief 后按 intentUrl 补开 tab');
 ok(/function mirrorPanelToOpenedTab/.test(bg) &&
   /mirrorPanelToOpenedTab\(tabId, openedNow/.test(bg) &&
-  /mirrorPanelToOpenedTab\(tabId, openedLate/.test(bg),
+  /mirrorPanelToOpenedTab\(tabId, known/.test(bg),
   'click 新开 tab 时父页面板可见则镜像到子页');
 ok(/pendingDelegateParent/.test(bg) && /function markPendingDelegate/.test(bg) &&
   /phase: 'standby'/.test(bg) && /childPendingDelegateInfo\(tabId\)/.test(bg),
@@ -467,6 +487,7 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
     childJobs: new Map(),
     pendingDelegateParent: new Map(),
     postToTab: function () {},
+    URL: URL,
     chrome: { storage: { session: {
       set: function () { return Promise.resolve(); },
       get: function () { return Promise.resolve({}); },
@@ -484,7 +505,7 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
       bg.slice(a0, a1) +
         '\nthis.attachOpenedToResultList = attachOpenedToResultList;\nthis.compactOpenedTab = compactOpenedTab;' +
         '\nthis.pickOpenedTab = pickOpenedTab;\nthis.rememberOpenedTabs = rememberOpenedTabs;\nthis.forgetOpenedTab = forgetOpenedTab;' +
-        '\nthis.clickResultWantsNewTab = clickResultWantsNewTab;',
+        '\nthis.clickResultWantsNewTab = clickResultWantsNewTab;\nthis.pickNavTabs = pickNavTabs;\nthis.navUrlsMatch = navUrlsMatch;',
       box
     );
     ok(typeof box.attachOpenedToResultList === 'function', 'attachOpenedToResultList 可在测试中加载');
@@ -518,6 +539,80 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
     'clickResultWantsNewTab 不认 _self');
   ok(!box.clickResultWantsNewTab({ intentUrl: '/rel/path', target: '_blank' }),
     'clickResultWantsNewTab 只认绝对 http(s) URL');
+  ok(box.clickResultWantsNewTab({ intentUrl: 'https://x.example/approval', navBlocked: true }),
+    '非 window.open 的拦截仍可补开');
+  ok(!box.clickResultWantsNewTab({ intentUrl: 'https://x.example/approval', target: '_blank', navVia: 'window.open', navBlocked: true }),
+    'window.open 返回 null 时不在 afterFlush 立刻补开');
+  ok(!box.clickResultWantsNewTab({ intentUrl: 'https://x.example/approval', target: '_blank', navVia: 'window.open' }),
+    'window.open 已成功时不重复 create');
+  ok(box.navUrlsMatch('https://sdc.example/approvalDetails/abc/', 'https://sdc.example/approvalDetails/abc'),
+    'navUrlsMatch 忽略末尾斜杠');
+  const pickedNav = box.pickNavTabs(
+    [{ tabId: 3, url: 'https://list.example/', title: 'list', openerTabId: 1 }],
+    [{ tabId: 8, url: 'https://sdc.example/approvalDetails/abc', title: '审批', foreign: true }],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: false }]
+  );
+  ok(pickedNav.tabs.length === 2 && pickedNav.tabs[1].tabId === 8 && pickedNav.unmatchedBlocked.length === 0,
+    'noopener 新窗口按 window.open 的 URL 认领');
+  const blockedNav = box.pickNavTabs(
+    [],
+    [{ tabId: 9, url: 'https://other.example/', title: '无关' }],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: true }]
+  );
+  ok(blockedNav.tabs.length === 0 && blockedNav.unmatchedBlocked.length === 1,
+    '被拦截的 window.open 不把无关窗口当成新标签页');
+  const sole = box.pickNavTabs(
+    [],
+    [{ tabId: 10, url: 'about:blank', title: '' }],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: false }]
+  );
+  ok(sole.tabs.length === 1 && sole.tabs[0].tabId === 10,
+    '一次成功的 window.open 对上唯一新窗口');
+  const nullOpen = box.pickNavTabs(
+    [],
+    [{ tabId: 22, url: 'about:blank', title: '' }],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: true }]
+  );
+  ok(nullOpen.tabs.length === 1 && nullOpen.tabs[0].tabId === 22 && nullOpen.unmatchedBlocked.length === 0,
+    'window.open 返回 null 但仍出现一个空白新窗口时不补开');
+  const blockedOnly = box.pickNavTabs(
+    [],
+    [],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: true }]
+  );
+  ok(blockedOnly.tabs.length === 0 && blockedOnly.unmatchedBlocked.length === 1,
+    'noopener 被拦截且没有新窗口时仍补开');
+  const sameBlank = box.pickNavTabs(
+    [{ tabId: 30, url: 'about:blank', title: '', openerTabId: 1 }],
+    [],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: true }]
+  );
+  ok(sameBlank.tabs.length === 1 && sameBlank.tabs[0].tabId === 30 && sameBlank.unmatchedBlocked.length === 0,
+    '同窗口空白页已出现时不再补开');
+  const redirected = box.pickNavTabs(
+    [{ tabId: 31, url: 'https://sdc.example/landed', title: '审批', openerTabId: 1 }],
+    [],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: true }]
+  );
+  ok(redirected.tabs.length === 1 && redirected.tabs[0].tabId === 31 && redirected.unmatchedBlocked.length === 0,
+    'sourceTabId 页已跳转时不再补开');
+  const pending = box.pickNavTabs(
+    [{ tabId: 32, url: '', pendingUrl: 'https://sdc.example/approvalDetails/abc', title: '' }],
+    [],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: true }]
+  );
+  ok(pending.tabs.length === 1 && pending.unmatchedBlocked.length === 0,
+    'pendingUrl 对得上时不再补开');
+  const loadingWindow = box.pickNavTabs(
+    [{ tabId: 40, url: 'about:blank', title: '', openerTabId: 1 }],
+    [{ tabId: 41, url: 'about:blank', title: '' }],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: true }]
+  );
+  const loadingHost = box.pickOpenedTab(loadingWindow.tabs);
+  ok(loadingWindow.unmatchedBlocked.length === 0 && loadingHost && loadingHost.tabId === 41,
+    '仍在加载的新窗口优先于同窗口空白页');
+  ok(box.pickOpenedTab(pickedNav.tabs).tabId === 8,
+    'URL 对得上的新窗口优先于同窗口里带 opener 的页');
 }
 {
   const fossilBox = {};

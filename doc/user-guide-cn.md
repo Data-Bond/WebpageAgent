@@ -174,9 +174,13 @@
 - `openedTab`：`{ tabId, url, title, windowId }`。同一步开出多个时还有 `openedTabs`，`openedTab` 取最后一条确定归属的记录。
 - 记录带 `openerTabId` 字段时为 Service Worker 按 `openerTabId` 确认的归属；不带该字段的记录是点击前后同窗口新开的候选页（`target=_blank` 的链接按浏览器规则不带 opener），归属由你按 url/title 与 `intentUrl` 旁证判断。
 - `yieldBatch: true`：本批已停，把新页事实交给下一轮。
-- `intentUrl` / `target`（例如 `_blank`）：来自链接节点的旁证。
+- `intentUrl` / `target`（例如 `_blank`）：来自链接节点，或来自点击期间的 `window.open` / `a.click`。
+- `navBlocked: true`：`window.open` 返回了 `null`。`noopener`/`noreferrer` 成功时也会返回 `null`，合成点击没有用户手势时则是真的被拦截。引擎先等新窗口出现；确认没有对应标签页后才代开该 URL。不会在点击刚结束时立刻再开一页。
+- 无 `openerTabId` 的新窗口（`noopener`，或 `window.open` 开出独立窗口）若 url 对得上这次打开，同样写入 `openedTab`。
 
-下一轮调用 `delegate` 把任务交给该页，或调用 `tabClose` 关掉它。
+下拉选项点中后，弹层会先播关闭动画再从页面消失。这不是点击失败，不要因为选项消失而重试。
+
+下一轮调用 `delegate` 把任务交给该页，或调用 `tabClose` 关掉它。`delegate` 的 `return` 可以是空数组：子页做完后 `done`，摘要交回父页。父页不要重做子页里的指令。
 
 **按** `target` **查找（左键短文）**
 
