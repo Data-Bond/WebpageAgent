@@ -6015,8 +6015,20 @@ function navUrlsMatch(a, b) {
   return !!na && na === nb;
 }
 
-// confirmed: opener 或同窗口；foreign: 其他窗口且无 opener（noopener / window.open 新窗口）。
-// 被拦截的 window.open 不在 foreign 里，交给 unmatchedBlocked 由 tabs.create 补开。
+function navRecordUrl(rec) {
+  if (!rec) return '';
+  return String(rec.url || rec.pendingUrl || '');
+}
+
+function navUrlUnset(url) {
+  const s = String(url || '');
+  return !s || s === 'about:blank' || s === 'chrome://newtab/';
+}
+
+// confirmed: opener、sourceTabId 或同窗口；foreign: 其他窗口且无 opener。
+// window.open 返回 null 时标签页可能已经在 confirmed/foreign 里（noopener、COOP），
+// 地址还是 about:blank、pendingUrl 或已经跳走。这种记录要认领，不能再 tabs.create。
+// 另一个窗口上已经是别的 http(s) 地址时不认领，避免把无关页当成这次打开。
 function pickNavTabs(confirmed, foreign, opens) {
   const out = [];
   const seen = {};
@@ -6042,20 +6054,35 @@ function pickNavTabs(confirmed, foreign, opens) {
   function claim(op) {
     if (op && claimed.indexOf(op) < 0) claimed.push(op);
   }
+  function unclaimedOpens() {
+    return httpOpens.filter(function (op) { return claimed.indexOf(op) < 0; });
+  }
   for (let k = 0; k < foreignList.length; k++) {
     const rec = foreignList[k];
     if (!rec) continue;
+    const recUrl = navRecordUrl(rec);
     for (let u = 0; u < httpOpens.length; u++) {
-      if (navUrlsMatch(rec.url, httpOpens[u].url)) { matched.push(rec); claim(httpOpens[u]); break; }
+      if (navUrlsMatch(recUrl, httpOpens[u].url)) { matched.push(rec); claim(httpOpens[u]); break; }
     }
   }
-  const unclaimed = httpOpens.filter(function (op) { return claimed.indexOf(op) < 0; });
+  let unclaimed = unclaimedOpens();
+  if (unclaimed.length === 1 && confirmedList.length) {
+    const op = unclaimed[0];
+    let host = null;
+    for (let c = 0; c < confirmedList.length; c++) {
+      const url = navRecordUrl(confirmedList[c]);
+      if (navUrlsMatch(url, op.url) || navUrlUnset(url)) { host = confirmedList[c]; break; }
+    }
+    // 同窗口或 sourceTabId 只有一条时，跳转后的地址也是这次打开，不再补开。
+    if (!host && confirmedList.length === 1) host = confirmedList[0];
+    if (host) claim(op);
+  }
+  unclaimed = unclaimedOpens();
   if (!matched.length && foreignList.length === 1 && unclaimed.length === 1) {
     const only = foreignList[0];
     const op = unclaimed[0];
-    const rawUrl = String(only && only.url || '');
-    const blank = !rawUrl || rawUrl === 'about:blank' || rawUrl === 'chrome://newtab/';
-    if (blank || !op.blocked || navUrlsMatch(rawUrl, op.url)) {
+    const rawUrl = navRecordUrl(only);
+    if (navUrlUnset(rawUrl) || !op.blocked || navUrlsMatch(rawUrl, op.url)) {
       matched.push(only);
       claim(op);
     }

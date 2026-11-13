@@ -582,6 +582,27 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
   );
   ok(blockedOnly.tabs.length === 0 && blockedOnly.unmatchedBlocked.length === 1,
     'noopener 被拦截且没有新窗口时仍补开');
+  const sameBlank = box.pickNavTabs(
+    [{ tabId: 30, url: 'about:blank', title: '', openerTabId: 1 }],
+    [],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: true }]
+  );
+  ok(sameBlank.tabs.length === 1 && sameBlank.tabs[0].tabId === 30 && sameBlank.unmatchedBlocked.length === 0,
+    '同窗口空白页已出现时不再补开');
+  const redirected = box.pickNavTabs(
+    [{ tabId: 31, url: 'https://sdc.example/landed', title: '审批', openerTabId: 1 }],
+    [],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: true }]
+  );
+  ok(redirected.tabs.length === 1 && redirected.tabs[0].tabId === 31 && redirected.unmatchedBlocked.length === 0,
+    'sourceTabId 页已跳转时不再补开');
+  const pending = box.pickNavTabs(
+    [{ tabId: 32, url: '', pendingUrl: 'https://sdc.example/approvalDetails/abc', title: '' }],
+    [],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: true }]
+  );
+  ok(pending.tabs.length === 1 && pending.unmatchedBlocked.length === 0,
+    'pendingUrl 对得上时不再补开');
 }
 {
   const fossilBox = {};
