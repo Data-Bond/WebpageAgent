@@ -5801,6 +5801,7 @@ function compactOpenedTab(tab) {
   };
   if (tab.windowId != null && Number.isFinite(Number(tab.windowId))) rec.windowId = Number(tab.windowId);
   if (tab.openerTabId != null && Number.isFinite(Number(tab.openerTabId))) rec.openerTabId = Math.round(Number(tab.openerTabId));
+  if (tab.navHost) rec.navHost = true;
   return rec;
 }
 
@@ -5935,6 +5936,9 @@ function forgetOpenedTab(parentTabId, tabId) {
 function pickOpenedTab(packed) {
   if (!packed || !packed.length) return null;
   for (let i = packed.length - 1; i >= 0; i--) {
+    if (packed[i] && packed[i].navHost) return packed[i];
+  }
+  for (let i = packed.length - 1; i >= 0; i--) {
     if (packed[i] && packed[i].openerTabId != null) return packed[i];
   }
   return packed[packed.length - 1];
@@ -6039,7 +6043,6 @@ function pickNavTabs(confirmed, foreign, opens) {
     out.push(one);
   }
   const confirmedList = Array.isArray(confirmed) ? confirmed : [];
-  for (let i = 0; i < confirmedList.length; i++) push(confirmedList[i]);
   const httpOpens = [];
   const src = Array.isArray(opens) ? opens : [];
   for (let j = 0; j < src.length; j++) {
@@ -6051,8 +6054,9 @@ function pickNavTabs(confirmed, foreign, opens) {
   const foreignList = Array.isArray(foreign) ? foreign : [];
   const matched = [];
   const claimed = [];
-  function claim(op) {
+  function claim(op, rec) {
     if (op && claimed.indexOf(op) < 0) claimed.push(op);
+    if (rec) rec.navHost = true;
   }
   function unclaimedOpens() {
     return httpOpens.filter(function (op) { return claimed.indexOf(op) < 0; });
@@ -6062,31 +6066,38 @@ function pickNavTabs(confirmed, foreign, opens) {
     if (!rec) continue;
     const recUrl = navRecordUrl(rec);
     for (let u = 0; u < httpOpens.length; u++) {
-      if (navUrlsMatch(recUrl, httpOpens[u].url)) { matched.push(rec); claim(httpOpens[u]); break; }
+      if (claimed.indexOf(httpOpens[u]) >= 0) continue;
+      if (navUrlsMatch(recUrl, httpOpens[u].url)) { matched.push(rec); claim(httpOpens[u], rec); break; }
     }
   }
+  // 先认领仍在加载的新窗口。同窗口空白页或任意一条 confirmed 不能先把这次打开占掉。
   let unclaimed = unclaimedOpens();
-  if (unclaimed.length === 1 && confirmedList.length) {
-    const op = unclaimed[0];
-    let host = null;
-    for (let c = 0; c < confirmedList.length; c++) {
-      const url = navRecordUrl(confirmedList[c]);
-      if (navUrlsMatch(url, op.url) || navUrlUnset(url)) { host = confirmedList[c]; break; }
-    }
-    // 同窗口或 sourceTabId 只有一条时，跳转后的地址也是这次打开，不再补开。
-    if (!host && confirmedList.length === 1) host = confirmedList[0];
-    if (host) claim(op);
-  }
-  unclaimed = unclaimedOpens();
   if (!matched.length && foreignList.length === 1 && unclaimed.length === 1) {
     const only = foreignList[0];
     const op = unclaimed[0];
     const rawUrl = navRecordUrl(only);
     if (navUrlUnset(rawUrl) || !op.blocked || navUrlsMatch(rawUrl, op.url)) {
       matched.push(only);
-      claim(op);
+      claim(op, only);
     }
   }
+  unclaimed = unclaimedOpens();
+  if (unclaimed.length === 1 && confirmedList.length && !foreignList.length) {
+    const op = unclaimed[0];
+    let host = null;
+    for (let c = 0; c < confirmedList.length; c++) {
+      const url = navRecordUrl(confirmedList[c]);
+      if (navUrlsMatch(url, op.url) || navUrlUnset(url)) { host = confirmedList[c]; break; }
+    }
+    if (!host && confirmedList.length === 1) host = confirmedList[0];
+    if (host) claim(op, host);
+  } else if (unclaimed.length === 1 && confirmedList.length === 1 && foreignList.length === 1) {
+    const op = unclaimed[0];
+    const host = confirmedList[0];
+    const url = navRecordUrl(host);
+    if (navUrlsMatch(url, op.url) || navUrlUnset(url)) claim(op, host);
+  }
+  for (let i = 0; i < confirmedList.length; i++) push(confirmedList[i]);
   for (let m = 0; m < matched.length; m++) push(matched[m]);
   const unmatchedBlocked = [];
   for (let b = 0; b < httpOpens.length; b++) {

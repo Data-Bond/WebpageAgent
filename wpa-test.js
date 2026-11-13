@@ -603,6 +603,16 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
   );
   ok(pending.tabs.length === 1 && pending.unmatchedBlocked.length === 0,
     'pendingUrl 对得上时不再补开');
+  const loadingWindow = box.pickNavTabs(
+    [{ tabId: 40, url: 'about:blank', title: '', openerTabId: 1 }],
+    [{ tabId: 41, url: 'about:blank', title: '' }],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: true }]
+  );
+  const loadingHost = box.pickOpenedTab(loadingWindow.tabs);
+  ok(loadingWindow.unmatchedBlocked.length === 0 && loadingHost && loadingHost.tabId === 41,
+    '仍在加载的新窗口优先于同窗口空白页');
+  ok(box.pickOpenedTab(pickedNav.tabs).tabId === 8,
+    'URL 对得上的新窗口优先于同窗口里带 opener 的页');
 }
 {
   const fossilBox = {};
