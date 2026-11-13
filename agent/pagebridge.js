@@ -27,6 +27,7 @@
     var scriptAborted = false;
     var trafficHook = null;
     var trafficLog = [];
+    var navCaptureState = null;
     // 弹层探测代缓存：同一代内共享分类与全页扫描结果；任何 DOM 结构或开态属性变动即整代失效
     var popupGen = 0;
     var memoCascaderHost = new WeakMap();
@@ -4263,6 +4264,19 @@
         html: compactViewHtml(el)
       };
     }
+    // Element UI / Vue 的 leave-active、leave-to 表示弹层正在播关闭动画，节点还会留在 DOM 里一帧。
+    // 当成新出现的选项会让模型以为点击没生效、只看到弹层消失。
+    function isLeavingNode(el) {
+      var n = el;
+      for (var d = 0; n && d < 8; d++) {
+        var cn = '';
+        try { cn = typeof n.className === 'string' ? n.className : String(n.className || ''); } catch (e) { cn = ''; }
+        if (/(?:^|\s)(?:[\w-]*leave-active|[\w-]*leave-to|v-leave(?:-to|-active)?)(?:\s|$)/i.test(cn)) return true;
+        n = n.parentElement;
+      }
+      return false;
+    }
+
     function collectViewPrint(opts) {
       return withDomPass(function () { return collectViewPrintPass(opts); });
     }
@@ -4278,8 +4292,10 @@
       function addEl(el, preferNear) {
         if (!el || items.length >= maxItems) return;
         if (isIgnored(el) || !isVisible(el)) return;
+        if (isLeavingNode(el)) return;
         try { if (isFileSelectRow(el) || fileRowOf(el)) return; } catch (eFile) {}
         var root = viewItemRootOf(el) || el;
+        if (isLeavingNode(root)) return;
         try { if (isFileSelectRow(root)) return; } catch (eFile2) {}
         if (seenEl && seenEl.has(root)) return;
         var rec = serializeViewItem(root);
@@ -5293,6 +5309,111 @@
       var h = clickNavHint(el);
       if (h.intentUrl) ret.intentUrl = h.intentUrl;
       if (h.target) ret.target = h.target;
+      return ret;
+    }
+
+    function resolveNavUrl(url) {
+      var raw = '';
+      try {
+        if (url == null) return '';
+        raw = String(url.url || url.href || url);
+      } catch (e0) { return ''; }
+      raw = String(raw || '').trim();
+      if (!raw || raw === 'about:blank') return '';
+      if (/^(javascript|data|blob|mailto|tel):/i.test(raw)) return '';
+      try { return new URL(raw, window.location.href).href.slice(0, 500); } catch (e1) { return ''; }
+    }
+
+    function navTargetName(name) {
+      var t = String(name == null ? '' : name).trim();
+      if (!t) return '_blank';
+      return t.slice(0, 32);
+    }
+
+    function navTargetIsNew(target) {
+      var t = String(target || '').trim().toLowerCase();
+      if (!t) return true;
+      return t !== '_self' && t !== '_parent' && t !== '_top';
+    }
+
+    // 点击期间包住 window.open / a.click。合成点击没有用户手势时 window.open 返回 null，
+    // 这里记下 URL 与 blocked，由 service worker 用 tabs.create 补开。
+    function armNavCapture() {
+      if (navCaptureState) return { ok: true, already: true };
+      var opens = [];
+      var prevOpen = window.open;
+      var prevAClick = null;
+      try { prevAClick = HTMLAnchorElement.prototype.click; } catch (eP) { prevAClick = null; }
+      function note(entry) {
+        if (!entry || !entry.url || !navTargetIsNew(entry.target)) return;
+        opens.push(entry);
+      }
+      window.open = function (url, name, features) {
+        var abs = resolveNavUrl(url);
+        var ret = null;
+        var err = null;
+        try { ret = typeof prevOpen === 'function' ? prevOpen.apply(window, arguments) : null; }
+        catch (e) { err = e; }
+        note({
+          via: 'window.open',
+          url: abs,
+          target: navTargetName(name),
+          blocked: !err && ret == null,
+          features: String(features || '').slice(0, 80)
+        });
+        if (err) throw err;
+        return ret;
+      };
+      if (typeof prevAClick === 'function') {
+        HTMLAnchorElement.prototype.click = function () {
+          try {
+            var href = resolveNavUrl(this && this.href);
+            var tgt = '';
+            try { tgt = String(this.getAttribute('target') || this.target || ''); } catch (eT) { tgt = ''; }
+            if (href && navTargetIsNew(tgt)) {
+              note({ via: 'a.click', url: href, target: navTargetName(tgt || '_blank'), blocked: false });
+            }
+          } catch (eA) {}
+          return prevAClick.apply(this, arguments);
+        };
+      }
+      navCaptureState = { opens: opens, prevOpen: prevOpen, prevAClick: prevAClick };
+      return { ok: true };
+    }
+
+    function takeNavCapture() {
+      if (!navCaptureState) return { ok: true, opens: [] };
+      var opens = navCaptureState.opens.slice();
+      try { if (navCaptureState.prevOpen) window.open = navCaptureState.prevOpen; } catch (e0) {}
+      try {
+        if (navCaptureState.prevAClick) HTMLAnchorElement.prototype.click = navCaptureState.prevAClick;
+      } catch (e1) {}
+      navCaptureState = null;
+      return { ok: true, opens: opens };
+    }
+
+    function navCaptureMark() {
+      return navCaptureState ? navCaptureState.opens.length : 0;
+    }
+
+    function navCaptureSince(mark) {
+      if (!navCaptureState) return [];
+      var n = Number(mark);
+      if (!Number.isFinite(n) || n < 0 || n > navCaptureState.opens.length) n = 0;
+      return navCaptureState.opens.slice(n);
+    }
+
+    function applyCapturedNav(ret, opens) {
+      if (!ret || typeof ret !== 'object' || !opens || !opens.length) return ret;
+      var last = null;
+      for (var i = opens.length - 1; i >= 0; i--) {
+        if (opens[i] && opens[i].url) { last = opens[i]; break; }
+      }
+      if (!last) return ret;
+      if (!ret.intentUrl) ret.intentUrl = last.url;
+      if (!ret.target) ret.target = last.target || '_blank';
+      if (last.blocked) ret.navBlocked = true;
+      if (last.via) ret.navVia = last.via;
       return ret;
     }
 
@@ -8644,6 +8765,7 @@
                 retargeted: optTarget !== el,
                 fieldState: (cascLift && cascLift.fieldState) || collectFieldState(cascFsEl || el, { harvest: true })
               };
+              applyClickNavHint(optRet, optTarget);
               applyFilePickerState(optRet, el, optPickerBefore);
               return withResolved(optRet, looked);
             }
@@ -9876,7 +9998,13 @@
           }
           var args = Array.isArray(item.args) ? item.args : [];
           var sinceCap = (op === 'click' || op === 'dblclick') ? Date.now() : 0;
+          var navMark = navCaptureMark();
           var value = await page[op].apply(page, args);
+          if (value && typeof value === 'object' &&
+              (op === 'click' || op === 'dblclick' || op === 'clickByText' ||
+               op === 'clickOptionByText' || op === 'selectOption' || op === 'select')) {
+            applyCapturedNav(value, navCaptureSince(navMark));
+          }
           if (sinceCap && value && typeof value === 'object') {
             var fileReady = false;
             try { fileReady = await waitDownloadCaptureReady(DOWNLOAD_CAPTURE_WAIT_MS, sinceCap); } catch (eCap) { fileReady = false; }
@@ -10293,6 +10421,8 @@
         globalThis.__wpaDownloadArmed = !!payload.on;
         return { ok: true };
       }
+      if (cmd === 'armNavCapture') return armNavCapture();
+      if (cmd === 'takeNavCapture') return takeNavCapture();
       if (cmd === 'captureImage') return captureImage(payload.selector || '');
       if (cmd === 'readDocumentBytes') return readDocumentBytes();
       if (cmd === 'fetchUrlBytes') return bytesFromUrl(String(payload.url || ''));

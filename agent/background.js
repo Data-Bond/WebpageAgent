@@ -288,7 +288,7 @@ const RUNTIME_PLAYBOOK =
   '通过工具操作当前页。禁止编造 CSS，禁止输出可执行 JS，禁止 plan/script。\n' +
   '工具：get type click check select scroll wait upload ocr ocrFill officeRead officeFill print memorize recall forget goto delegate returnToParent tabClose key drag dialog。\n' +
   '回执 driver/trusted：执行方式与是否可信输入；occluded 看 occludedBy；带 dialog 即原生弹窗挡住页面，先 dialog 处理。\n' +
-  'click/goto 若回执 openedTab 则本批停，下一轮 delegate 或 tabClose。点到带文档 href 的 a 且 target 为新上下文时，回执含 intentUrl/target；程序化打开被拦时引擎仍打开该 URL 并写 openedTab。\n' +
+  'click/goto 若回执 openedTab 则本批停，下一轮 delegate 或 tabClose。window.open 被拦（navBlocked）时代开并写 openedTab。下拉关闭动画不是失败。\n' +
   'JSON 回退：{"action":"execute","calls":[{"tool":"type","args":{"target":5,"value":"张三"}}]}。结束任务时单独输出 {"action":"done","summary":"给用户的结束说明"}。\n' +
   '定位优先本轮 idx，idx 每轮重排；回执 catalog 编号与上轮快照同批，跨轮作废。用户/技能中的 CSS 只对照本轮快照，勿当 click/get/type 的 target；提交 idx 或 name。\n' +
   'outline 的 role/name 为无障碍名；同串不重复堆字段。click 短文按 name 得 0/1/多：先查本轮 idx（含 hidden），失败回执带本轮 catalog；get 短文仍 live 反查，不是同一张表。\n' +
@@ -5796,7 +5796,7 @@ function compactOpenedTab(tab) {
   if (!Number.isFinite(n)) return null;
   const rec = {
     tabId: Math.round(n),
-    url: String(tab.url || '').slice(0, 500),
+    url: String(tab.url || tab.pendingUrl || '').slice(0, 500),
     title: String(tab.title || '').slice(0, 120)
   };
   if (tab.windowId != null && Number.isFinite(Number(tab.windowId))) rec.windowId = Number(tab.windowId);
@@ -5991,7 +5991,125 @@ function clickResultWantsNewTab(val) {
   if (!val || typeof val !== 'object') return false;
   if (val.openedTab && val.openedTab.tabId != null) return false;
   if (!isHttpIntentUrl(val.intentUrl)) return false;
+  if (val.navBlocked) return true;
+  // window.open 已返回窗口时标签页由 opener 监听认领，这里再 create 会开出重复页
+  if (val.navVia === 'window.open') return false;
   return isNewBrowsingContextTarget(val.target);
+}
+
+function navUrlsMatch(a, b) {
+  function norm(u) {
+    try {
+      const x = new URL(String(u || ''));
+      if (x.protocol !== 'http:' && x.protocol !== 'https:') return '';
+      let path = x.pathname || '/';
+      if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
+      return x.origin + path + x.search;
+    } catch (e) {
+      return '';
+    }
+  }
+  const na = norm(a);
+  const nb = norm(b);
+  return !!na && na === nb;
+}
+
+// confirmed: opener 或同窗口；foreign: 其他窗口且无 opener（noopener / window.open 新窗口）。
+// 被拦截的 window.open 不在 foreign 里，交给 unmatchedBlocked 由 tabs.create 补开。
+function pickNavTabs(confirmed, foreign, opens) {
+  const out = [];
+  const seen = {};
+  function push(rec) {
+    const one = compactOpenedTab(rec);
+    if (!one || seen[one.tabId]) return;
+    seen[one.tabId] = 1;
+    out.push(one);
+  }
+  const confirmedList = Array.isArray(confirmed) ? confirmed : [];
+  for (let i = 0; i < confirmedList.length; i++) push(confirmedList[i]);
+  const httpOpens = [];
+  const src = Array.isArray(opens) ? opens : [];
+  for (let j = 0; j < src.length; j++) {
+    const op = src[j];
+    if (!op || !isHttpIntentUrl(op.url)) continue;
+    if (!isNewBrowsingContextTarget(op.target || '_blank')) continue;
+    httpOpens.push(op);
+  }
+  const foreignList = Array.isArray(foreign) ? foreign : [];
+  const matched = [];
+  for (let k = 0; k < foreignList.length; k++) {
+    const rec = foreignList[k];
+    if (!rec) continue;
+    for (let u = 0; u < httpOpens.length; u++) {
+      if (navUrlsMatch(rec.url, httpOpens[u].url)) { matched.push(rec); break; }
+    }
+  }
+  const liveOpens = httpOpens.filter(function (op) { return op && !op.blocked; });
+  if (!matched.length && foreignList.length === 1 && liveOpens.length === 1) matched.push(foreignList[0]);
+  for (let m = 0; m < matched.length; m++) push(matched[m]);
+  const unmatchedBlocked = [];
+  for (let b = 0; b < httpOpens.length; b++) {
+    const op = httpOpens[b];
+    if (!op.blocked) continue;
+    let hit = false;
+    for (let t = 0; t < out.length; t++) {
+      if (navUrlsMatch(out[t].url, op.url)) { hit = true; break; }
+    }
+    if (!hit) unmatchedBlocked.push({ url: String(op.url).slice(0, 500), target: op.target || '_blank', blocked: true });
+  }
+  return { tabs: out, unmatchedBlocked: unmatchedBlocked };
+}
+
+function pendingOpenedLead(tabId) {
+  const list = lastOpenedByOpener.get(tabId);
+  if (!list || !list.length) return '';
+  const picked = pickOpenedTab(list);
+  if (!picked || picked.tabId == null) return '';
+  if (childJobs.has(picked.tabId)) return '';
+  const url = picked.url ? ' url=' + String(picked.url).slice(0, 180) : '';
+  return '【未交接的新标签页】tabId=' + picked.tabId + url +
+    '。先 delegate 把后续指令交给该页（return 可为空数组），或 tabClose。不要在当前页重试刚才的点击。\n';
+}
+
+function openedTabHandoffNote(raw) {
+  try {
+    const v = JSON.parse(String(raw || ''));
+    const rows = v && Array.isArray(v.results) ? v.results : [];
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const val = rows[i] && rows[i].value;
+      const tab = val && val.openedTab;
+      if (!tab || tab.tabId == null) continue;
+      const url = tab.url ? ' ' + String(tab.url).slice(0, 180) : '';
+      return '\n【新标签页】点击已打开新标签页' + url +
+        '。这一步成功，不要在当前页重试。下一轮 delegate：task 为用户要在新标签页继续的指令原文，return 可为空数组；子页做完后 done。不跟过去则 tabClose。';
+    }
+  } catch (e) {}
+  return '';
+}
+
+async function readNavOpens(tabId, frameIds) {
+  const opens = [];
+  const ids = Array.isArray(frameIds) ? frameIds.slice() : [];
+  for (let i = 0; i < ids.length; i++) {
+    const nav = await callBridge(tabId, 'MAIN', 'takeNavCapture', {}, ids[i] || 0);
+    if (nav && !nav.__error && Array.isArray(nav.opens)) {
+      for (let j = 0; j < nav.opens.length; j++) opens.push(nav.opens[j]);
+    }
+  }
+  return opens;
+}
+
+async function createBlockedNavTabs(parentTabId, blocked, config, cancelRef) {
+  const created = [];
+  const list = Array.isArray(blocked) ? blocked : [];
+  for (let i = 0; i < list.length; i++) {
+    const op = list[i];
+    if (!op || !isHttpIntentUrl(op.url)) continue;
+    if (isCancelledNow(cancelRef)) break;
+    const tab = await createTabFromClickIntent(op.url, parentTabId, config, cancelRef);
+    if (tab) created.push(tab);
+  }
+  return created;
 }
 
 function createTabFromClickIntent(intentUrl, openerTabId, config, cancelRef) {
@@ -6080,6 +6198,7 @@ function attachOpenedToResp(resp, opened, parentTabId) {
 
 function startOpenerWatch(parentTabId) {
   const opened = [];
+  const foreign = [];
   const pending = new Map();
   let parentWindowId = null;
   const windowReady = Promise.resolve().then(function () {
@@ -6145,25 +6264,94 @@ function startOpenerWatch(parentTabId) {
       }, 1500);
     }));
   }
+  function remember(row, asForeign) {
+    if (!row || row.tabId == null) return;
+    const id = row.tabId;
+    function drop(list) {
+      const at = list.findIndex(function (r) { return r && r.tabId === id; });
+      if (at >= 0) list.splice(at, 1);
+    }
+    if (!asForeign) {
+      drop(foreign);
+      const at = opened.findIndex(function (r) { return r && r.tabId === id; });
+      if (at >= 0) {
+        if (row.openerTabId != null) opened[at].openerTabId = row.openerTabId;
+        if (row.url) opened[at].url = row.url;
+        if (row.title) opened[at].title = row.title;
+        if (row.windowId != null) opened[at].windowId = row.windowId;
+        return;
+      }
+      opened.push(row);
+      return;
+    }
+    if (opened.some(function (r) { return r && r.tabId === id; })) return;
+    const fi = foreign.findIndex(function (r) { return r && r.tabId === id; });
+    if (fi >= 0) {
+      if (row.url) foreign[fi].url = row.url;
+      if (row.title) foreign[fi].title = row.title;
+      return;
+    }
+    row.foreign = true;
+    foreign.push(row);
+  }
   function onCreated(tab) {
     if (!tab || tab.id == null) return;
     const byOpener = tab.openerTabId === parentTabId;
     const p = Promise.resolve(windowReady).then(function () {
-      // target=_blank 隐含 noopener 时 openerTabId 为空，退到同窗口时间窗候选
-      if (!byOpener && (parentWindowId == null || tab.windowId !== parentWindowId)) return null;
+      const sameWindow = parentWindowId != null && tab.windowId === parentWindowId;
+      // 父窗口还没查到时，只收带 opener 的记录，避免把别的窗口算进来
+      if (!byOpener && parentWindowId == null) return null;
+      // noopener / window.open 新窗口没有 openerTabId，且 windowId 不同。先记为 foreign，
+      // 结束时用本次 window.open 的 URL 认领，认不出就丢掉。
+      if (!byOpener && !sameWindow) {
+        noteNewTabOpened();
+        return enrich(tab, false);
+      }
       noteNewTabOpened();
       return enrich(tab, byOpener);
     });
     const tracked = p.then(function (row) {
       pending.delete(tab.id);
-      if (row) opened.push(row);
+      if (!row) return null;
+      const rowWindow = row.windowId != null ? row.windowId : tab.windowId;
+      const otherWindow = !byOpener && parentWindowId != null && rowWindow !== parentWindowId;
+      remember(row, otherWindow);
       return row;
     });
     pending.set(tab.id, tracked);
   }
+  // sourceTabId 在 opener 被 noopener 拆掉、或新开的是独立窗口时仍然指向父页
+  function onNavTarget(details) {
+    if (!details || details.tabId == null || details.sourceTabId !== parentTabId) return;
+    if (details.tabId === parentTabId) return;
+    noteNewTabOpened();
+    const p = enrich({
+      id: details.tabId,
+      url: details.url || '',
+      title: '',
+      windowId: null,
+      openerTabId: parentTabId
+    }, true);
+    const key = 'nav:' + details.tabId;
+    const tracked = p.then(function (row) {
+      pending.delete(key);
+      if (!row) return null;
+      row.openerTabId = parentTabId;
+      remember(row, false);
+      return row;
+    });
+    pending.set(key, tracked);
+  }
   chrome.tabs.onCreated.addListener(onCreated);
+  if (chrome.webNavigation && chrome.webNavigation.onCreatedNavigationTarget) {
+    chrome.webNavigation.onCreatedNavigationTarget.addListener(onNavTarget);
+  }
   return {
     snapshot: function () { return opened.slice(); },
+    collect: async function (navOpens) {
+      if (pending.size) await Promise.all(Array.from(pending.values()));
+      return pickNavTabs(opened.slice(), foreign.slice(), navOpens);
+    },
     waitBrief: async function (idleMs, maxMs) {
       const idle = idleMs == null ? 80 : idleMs;
       const max = maxMs == null ? 400 : maxMs;
@@ -6187,6 +6375,11 @@ function startOpenerWatch(parentTabId) {
     },
     stop: async function () {
       try { chrome.tabs.onCreated.removeListener(onCreated); } catch (eS) {}
+      try {
+        if (chrome.webNavigation && chrome.webNavigation.onCreatedNavigationTarget) {
+          chrome.webNavigation.onCreatedNavigationTarget.removeListener(onNavTarget);
+        }
+      } catch (eN) {}
       if (pending.size) await Promise.all(Array.from(pending.values()));
       return opened.slice();
     }
@@ -6281,6 +6474,7 @@ function packChildRunEnd(job, result) {
     missing: missing
   };
   if (reason) out.reason = reason;
+  if (okFlag) out.hint = '子任务已结束。不要在父页重做，用 done 收尾';
   return out;
 }
 
@@ -6621,9 +6815,14 @@ async function resolveDelegateTab(parentTabId, spec, priorResults) {
 
 function childDelegatePlaybook(job) {
   if (!job) return '';
-  const keys = Array.isArray(job.returnKeys) ? job.returnKeys.join(', ') : '';
-  return '\n当前是 delegate 子任务「' + String(job.name || '').slice(0, 40) +
-    '」。凑齐 return 字段后调用 returnToParent。须交回：' + keys + '。';
+  const name = String(job.name || '').slice(0, 40);
+  const keys = Array.isArray(job.returnKeys) ? job.returnKeys.filter(Boolean) : [];
+  if (!keys.length) {
+    return '\n当前是 delegate 子任务「' + name +
+      '」。只执行这条子指令，不要重做父页已经完成的点击。做完后 action:done，summary 写给父页。';
+  }
+  return '\n当前是 delegate 子任务「' + name +
+    '」。凑齐 return 字段后调用 returnToParent。须交回：' + keys.join(', ') + '。';
 }
 
 async function runDelegateOp(parentTabId, spec, origin, priorResults, ctx) {
@@ -7485,6 +7684,8 @@ function compactOneHelperValue(op, val) {
   if (val.yieldBatch) o.yieldBatch = true;
   if (typeof val.intentUrl === 'string' && val.intentUrl) o.intentUrl = String(val.intentUrl).slice(0, 300);
   if (typeof val.target === 'string' && /^[_a-zA-Z]/.test(val.target)) o.target = String(val.target).slice(0, 32);
+  if (val.navBlocked) o.navBlocked = true;
+  if (val.navVia) o.navVia = String(val.navVia).slice(0, 24);
   if (val.openedTab && typeof val.openedTab === 'object') {
     const ot = compactOpenedTab(val.openedTab);
     if (ot) o.openedTab = ot;
@@ -8536,6 +8737,9 @@ async function runPageOpsBatch(tabId, operations, ctx) {
     const world = batchWorld;
     const frameId = batchFrame;
     const hadOpenable = chunk.some(function (it) { return opMayOpenTab(it && it.op); });
+    if (hadOpenable && world !== 'upload' && ctx && typeof ctx.armNavFrame === 'function') {
+      try { await ctx.armNavFrame(frameId); } catch (eArm) {}
+    }
     batch = [];
     batchWorld = null;
     batchFrame = 0;
@@ -8763,6 +8967,9 @@ async function runDriverOp(tabId, item, ctx) {
     if (op === 'click') {
       const opts = (args[1] && typeof args[1] === 'object') ? args[1] : {};
       const button = opts.button || 'left';
+      if (ctx && typeof ctx.armNavFrame === 'function' && button !== 'hover') {
+        try { await ctx.armNavFrame(loc.frameId || 0); } catch (eArm) {}
+      }
       await callBridge(tabId, 'MAIN', 'armDownloadCapture', { on: true }, loc.frameId);
       armPageDownloadWatch(tabId);
       let value;
@@ -10128,6 +10335,8 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       snapLead = '【退出许可】即将因步数用尽或无法继续而停止。若需用户决定是否结束，请 ask。\n';
     }
     snapLead = formatPrevExpectLead(lastEvidenceFromMessages(messages)) + snapLead;
+    const pendingLead = pendingOpenedLead(tabId);
+    if (pendingLead) snapLead += pendingLead;
     const dedupSeen = (WPA_CONTRACTS && typeof WPA_CONTRACTS.makeTextDedupSeen === 'function')
       ? WPA_CONTRACTS.makeTextDedupSeen()
       : null;
@@ -10316,8 +10525,19 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
 
       // 导航安全执行：结构化操作不依赖 eval/CSP；两种路径均不自动重试，避免重复副作用
       let openerWatch = null;
+      const navFrames = [];
+      const navSeen = new Set();
+      async function armNavFrame(frameId) {
+        const id = frameId || 0;
+        if (navSeen.has(id)) return;
+        navSeen.add(id);
+        const armed = await callBridge(tabId, 'MAIN', 'armNavCapture', {}, id);
+        if (!armed || armed.__error || armed.ok === false) navSeen.delete(id);
+        else navFrames.push(id);
+      }
       if ((parsed.operations || []).some(function (o) { return opMayOpenTab(o && o.op); })) {
         openerWatch = startOpenerWatch(tabId);
+        await armNavFrame(0);
       }
       try {
       const hintTask = (resumeMeta && resumeMeta.originalTask) || task;
@@ -10326,7 +10546,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       await saveHistory(origin, messages);
       if (stepTrace) stepTrace.timings.storageMs = (stepTrace.timings.storageMs || 0) + (Date.now() - tStore1);
       const tOps0 = Date.now();
-      const execution = await runOperationsSafe(tabId, attachTaskHintToOps(parsed.operations, hintTask), { postMsg, cancelRef, origin, config: config, flags: flagsFromPage(config), skillContext: skillContexts.get(tabId) || null, openerWatch: openerWatch, driver: driver, files: files, reporter: apiReporter });
+      const execution = await runOperationsSafe(tabId, attachTaskHintToOps(parsed.operations, hintTask), { postMsg, cancelRef, origin, config: config, flags: flagsFromPage(config), skillContext: skillContexts.get(tabId) || null, openerWatch: openerWatch, armNavFrame: armNavFrame, driver: driver, files: files, reporter: apiReporter });
       const tPost0 = Date.now();
       if (stepTrace) stepTrace.timings.opsMs = tPost0 - tOps0;
       const { resp: runResp } = execution;
@@ -10418,13 +10638,41 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       }
 
       if (openerWatch) {
-        const openedLate = await openerWatch.stop();
+        const opens = await readNavOpens(tabId, navFrames);
+        navFrames.length = 0;
+        navSeen.clear();
+        const picked = await openerWatch.collect(opens);
+        await openerWatch.stop();
         openerWatch = null;
-        if (runResp) {
-          attachOpenedToResp(runResp, openedLate, tabId);
-          if (openedLate && openedLate.length) {
-            await mirrorPanelToOpenedTab(tabId, openedLate, cancelRef);
+        const known = [];
+        const seenId = {};
+        function pushKnown(rec) {
+          const one = compactOpenedTab(rec);
+          if (!one || seenId[one.tabId]) return;
+          seenId[one.tabId] = 1;
+          known.push(one);
+        }
+        try {
+          const early = JSON.parse(String(runResp && runResp.result || ''));
+          const rows = early && Array.isArray(early.results) ? early.results : [];
+          for (let ei = 0; ei < rows.length; ei++) {
+            const val = rows[ei] && rows[ei].value;
+            if (!val) continue;
+            if (val.openedTab) pushKnown(val.openedTab);
+            if (Array.isArray(val.openedTabs)) {
+              for (let ej = 0; ej < val.openedTabs.length; ej++) pushKnown(val.openedTabs[ej]);
+            }
           }
+        } catch (eEarly) {}
+        (picked.tabs || []).forEach(pushKnown);
+        const blockedLeft = (picked.unmatchedBlocked || []).filter(function (op) {
+          return !known.some(function (rec) { return navUrlsMatch(rec.url, op.url); });
+        });
+        const created = await createBlockedNavTabs(tabId, blockedLeft, config, cancelRef);
+        created.forEach(pushKnown);
+        if (runResp && known.length) {
+          attachOpenedToResp(runResp, known, tabId);
+          await mirrorPanelToOpenedTab(tabId, known, cancelRef);
         }
       }
       if (childJob && childJob.exitChild) {
@@ -10535,6 +10783,7 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       if (viewDiff && (viewHasAdded || (viewDiff.changed && viewDiff.changed.length) || (viewDiff.removed && viewDiff.removed.length))) {
         toolStored += '\n【视图变化】\n' + stringifyViewDiff(viewDiff, 14000);
       }
+      if (resultRaw) toolStored += openedTabHandoffNote(resultRaw);
       if (parsed.operations && parsed.operations.some(function (op) { return op && op.op === 'officeFill'; })) {
         try {
           const batch = JSON.parse(resultRaw || '{}');
@@ -10601,6 +10850,10 @@ async function runStreamingTask({ tabId, origin, task, files, port, cancelRef, c
       if (i >= maxSteps) keepSlotForRetry();
       continue;
       } finally {
+        if (navFrames.length) {
+          try { await readNavOpens(tabId, navFrames.slice()); } catch (eN) {}
+          navFrames.length = 0;
+        }
         if (openerWatch) {
           try { await openerWatch.stop(); } catch (eW) {}
           openerWatch = null;

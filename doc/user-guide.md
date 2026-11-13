@@ -154,9 +154,13 @@ When a new tab opens, receipt includes:
 - `openedTab`: `{ tabId, url, title, windowId }`. Multiple: `openedTabs`; `openedTab` is last record with confirmed opener.
 - Records with `openerTabId` are confirmed by the service worker; records without are same-window candidates (`target=_blank` links often lack opener)—you judge via url/title and `intentUrl`.
 - `yieldBatch: true`: batch stopped; hand off to next round.
-- `intentUrl` / `target` (e.g. `_blank`): from the link node.
+- `intentUrl` / `target` (e.g. `_blank`): from the link, or from `window.open` / `a.click` during the click.
+- `navBlocked: true`: the page called `window.open`, but the synthetic click had no user gesture and the popup was blocked. The extension opens that URL and writes `openedTab`.
+- A new window with no `openerTabId` (`noopener`, or `window.open` into its own window) is still recorded when its url matches this open.
 
-Next round: `delegate` to that tab or `tabClose`.
+A dropdown that plays its close animation and then disappears after an option click is not a failed click. Do not retry just because the option vanished.
+
+Next round: `delegate` to that tab or `tabClose`. `delegate`'s `return` may be an empty array: the child finishes with `done` and the summary comes back. Do not redo the child task on the parent page.
 
 **Lookup by `target` (left short text)**
 
