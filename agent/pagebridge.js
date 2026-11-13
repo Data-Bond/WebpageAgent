@@ -5332,8 +5332,12 @@
 
     function navTargetIsNew(target) {
       var t = String(target || '').trim().toLowerCase();
-      if (!t) return true;
+      if (!t) return false;
       return t !== '_self' && t !== '_parent' && t !== '_top';
+    }
+
+    function navOpenSeversOpener(name, features) {
+      return /noopener|noreferrer/i.test(String(name || '') + ' ' + String(features || ''));
     }
 
     // 点击期间包住 window.open / a.click。合成点击没有用户手势时 window.open 返回 null，
@@ -5354,11 +5358,13 @@
         var err = null;
         try { ret = typeof prevOpen === 'function' ? prevOpen.apply(window, arguments) : null; }
         catch (e) { err = e; }
+        // noopener/noreferrer 成功时也返回 null，窗口已经建好，不能当成弹窗拦截。
+        var severed = navOpenSeversOpener(name, features);
         note({
           via: 'window.open',
           url: abs,
           target: navTargetName(name),
-          blocked: !err && ret == null,
+          blocked: !err && ret == null && !severed,
           features: String(features || '').slice(0, 80)
         });
         if (err) throw err;
@@ -5369,9 +5375,9 @@
           try {
             var href = resolveNavUrl(this && this.href);
             var tgt = '';
-            try { tgt = String(this.getAttribute('target') || this.target || ''); } catch (eT) { tgt = ''; }
+            try { tgt = this.getAttribute ? String(this.getAttribute('target') || '') : ''; } catch (eT) { tgt = ''; }
             if (href && navTargetIsNew(tgt)) {
-              note({ via: 'a.click', url: href, target: navTargetName(tgt || '_blank'), blocked: false });
+              note({ via: 'a.click', url: href, target: navTargetName(tgt), blocked: false });
             }
           } catch (eA) {}
           return prevAClick.apply(this, arguments);

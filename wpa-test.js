@@ -416,6 +416,14 @@ ok(/onCreatedNavigationTarget/.test(extractFn(bg, 'startOpenerWatch')),
   '新窗口用 sourceTabId 认回父页');
 ok(/function armNavCapture/.test(bridge) && /function takeNavCapture/.test(bridge) && /navBlocked/.test(bridge),
   '点击期间记录 window.open，拦截时标记 navBlocked');
+ok(/if \(!t\) return false/.test(extractFn(bridge, 'navTargetIsNew')),
+  '空 target 不是新标签页');
+ok(!/navTargetName\(tgt \|\| '_blank'\)/.test(bridge),
+  'a.click 不把空 target 改写成 _blank');
+ok(/noopener\|noreferrer/.test(extractFn(bridge, 'navOpenSeversOpener')) &&
+  /navOpenSeversOpener\(name, features\)/.test(extractFn(bridge, 'armNavCapture')) &&
+  /!severed/.test(extractFn(bridge, 'armNavCapture')),
+  'noopener 的 window.open 返回 null 不算拦截');
 ok(/cmd === 'armNavCapture'/.test(bridge) && /cmd === 'takeNavCapture'/.test(bridge),
   '桥接可布防与取回 window.open');
 ok(/function isLeavingNode/.test(bridge) && /if \(isLeavingNode\(el\)\) return/.test(bridge),
@@ -533,7 +541,9 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
   ok(!box.clickResultWantsNewTab({ intentUrl: '/rel/path', target: '_blank' }),
     'clickResultWantsNewTab 只认绝对 http(s) URL');
   ok(box.clickResultWantsNewTab({ intentUrl: 'https://x.example/approval', navBlocked: true }),
-    'window.open 被拦截时即使没有 target 也补开');
+    '非 window.open 的拦截仍可补开');
+  ok(!box.clickResultWantsNewTab({ intentUrl: 'https://x.example/approval', target: '_blank', navVia: 'window.open', navBlocked: true }),
+    'window.open 返回 null 时不在 afterFlush 立刻补开');
   ok(!box.clickResultWantsNewTab({ intentUrl: 'https://x.example/approval', target: '_blank', navVia: 'window.open' }),
     'window.open 已成功时不重复 create');
   ok(box.navUrlsMatch('https://sdc.example/approvalDetails/abc/', 'https://sdc.example/approvalDetails/abc'),
@@ -559,6 +569,13 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
   );
   ok(sole.tabs.length === 1 && sole.tabs[0].tabId === 10,
     '一次成功的 window.open 对上唯一新窗口');
+  const nullOpen = box.pickNavTabs(
+    [],
+    [{ tabId: 22, url: 'about:blank', title: '' }],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: true }]
+  );
+  ok(nullOpen.tabs.length === 1 && nullOpen.tabs[0].tabId === 22 && nullOpen.unmatchedBlocked.length === 0,
+    'window.open 返回 null 但仍出现一个空白新窗口时不补开');
 }
 {
   const fossilBox = {};

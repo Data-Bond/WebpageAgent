@@ -5991,9 +5991,10 @@ function clickResultWantsNewTab(val) {
   if (!val || typeof val !== 'object') return false;
   if (val.openedTab && val.openedTab.tabId != null) return false;
   if (!isHttpIntentUrl(val.intentUrl)) return false;
-  if (val.navBlocked) return true;
-  // window.open 已返回窗口时标签页由 opener 监听认领，这里再 create 会开出重复页
+  // window.open 返回 null 也可能是 noopener/COOP 已经开出窗口。afterFlush 只看见同窗口记录，
+  // 这里立刻 tabs.create 会和 foreign 窗口各开一页。补开放到步骤末尾，等 sourceTabId / URL 认领完。
   if (val.navVia === 'window.open') return false;
+  if (val.navBlocked) return true;
   return isNewBrowsingContextTarget(val.target);
 }
 
@@ -6037,20 +6038,33 @@ function pickNavTabs(confirmed, foreign, opens) {
   }
   const foreignList = Array.isArray(foreign) ? foreign : [];
   const matched = [];
+  const claimed = [];
+  function claim(op) {
+    if (op && claimed.indexOf(op) < 0) claimed.push(op);
+  }
   for (let k = 0; k < foreignList.length; k++) {
     const rec = foreignList[k];
     if (!rec) continue;
     for (let u = 0; u < httpOpens.length; u++) {
-      if (navUrlsMatch(rec.url, httpOpens[u].url)) { matched.push(rec); break; }
+      if (navUrlsMatch(rec.url, httpOpens[u].url)) { matched.push(rec); claim(httpOpens[u]); break; }
     }
   }
-  const liveOpens = httpOpens.filter(function (op) { return op && !op.blocked; });
-  if (!matched.length && foreignList.length === 1 && liveOpens.length === 1) matched.push(foreignList[0]);
+  const unclaimed = httpOpens.filter(function (op) { return claimed.indexOf(op) < 0; });
+  if (!matched.length && foreignList.length === 1 && unclaimed.length === 1) {
+    const only = foreignList[0];
+    const op = unclaimed[0];
+    const rawUrl = String(only && only.url || '');
+    const blank = !rawUrl || rawUrl === 'about:blank' || rawUrl === 'chrome://newtab/';
+    if (blank || !op.blocked || navUrlsMatch(rawUrl, op.url)) {
+      matched.push(only);
+      claim(op);
+    }
+  }
   for (let m = 0; m < matched.length; m++) push(matched[m]);
   const unmatchedBlocked = [];
   for (let b = 0; b < httpOpens.length; b++) {
     const op = httpOpens[b];
-    if (!op.blocked) continue;
+    if (!op.blocked || claimed.indexOf(op) >= 0) continue;
     let hit = false;
     for (let t = 0; t < out.length; t++) {
       if (navUrlsMatch(out[t].url, op.url)) { hit = true; break; }

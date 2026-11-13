@@ -155,7 +155,7 @@ When a new tab opens, receipt includes:
 - Records with `openerTabId` are confirmed by the service worker; records without are same-window candidates (`target=_blank` links often lack opener)—you judge via url/title and `intentUrl`.
 - `yieldBatch: true`: batch stopped; hand off to next round.
 - `intentUrl` / `target` (e.g. `_blank`): from the link, or from `window.open` / `a.click` during the click.
-- `navBlocked: true`: the page called `window.open`, but the synthetic click had no user gesture and the popup was blocked. The extension opens that URL and writes `openedTab`.
+- `navBlocked: true`: `window.open` returned `null` and the call was not `noopener`/`noreferrer` (those return `null` on success). The engine waits for the new window first, and opens the URL itself only when no matching tab appears. It does not create that tab during the early flush.
 - A new window with no `openerTabId` (`noopener`, or `window.open` into its own window) is still recorded when its url matches this open.
 
 A dropdown that plays its close animation and then disappears after an option click is not a failed click. Do not retry just because the option vanished.
