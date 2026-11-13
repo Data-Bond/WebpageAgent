@@ -420,10 +420,9 @@ ok(/if \(!t\) return false/.test(extractFn(bridge, 'navTargetIsNew')),
   '空 target 不是新标签页');
 ok(!/navTargetName\(tgt \|\| '_blank'\)/.test(bridge),
   'a.click 不把空 target 改写成 _blank');
-ok(/noopener\|noreferrer/.test(extractFn(bridge, 'navOpenSeversOpener')) &&
-  /navOpenSeversOpener\(name, features\)/.test(extractFn(bridge, 'armNavCapture')) &&
-  /!severed/.test(extractFn(bridge, 'armNavCapture')),
-  'noopener 的 window.open 返回 null 不算拦截');
+ok(/blocked: !err && ret == null/.test(extractFn(bridge, 'armNavCapture')) &&
+  !/function navOpenSeversOpener/.test(bridge),
+  'window.open 返回 null 都标 blocked，含 noopener');
 ok(/cmd === 'armNavCapture'/.test(bridge) && /cmd === 'takeNavCapture'/.test(bridge),
   '桥接可布防与取回 window.open');
 ok(/function isLeavingNode/.test(bridge) && /if \(isLeavingNode\(el\)\) return/.test(bridge),
@@ -576,6 +575,13 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
   );
   ok(nullOpen.tabs.length === 1 && nullOpen.tabs[0].tabId === 22 && nullOpen.unmatchedBlocked.length === 0,
     'window.open 返回 null 但仍出现一个空白新窗口时不补开');
+  const blockedOnly = box.pickNavTabs(
+    [],
+    [],
+    [{ via: 'window.open', url: 'https://sdc.example/approvalDetails/abc', target: '_blank', blocked: true }]
+  );
+  ok(blockedOnly.tabs.length === 0 && blockedOnly.unmatchedBlocked.length === 1,
+    'noopener 被拦截且没有新窗口时仍补开');
 }
 {
   const fossilBox = {};
