@@ -488,11 +488,35 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
     pendingDelegateParent: new Map(),
     postToTab: function () {},
     URL: URL,
-    chrome: { storage: { session: {
-      set: function () { return Promise.resolve(); },
-      get: function () { return Promise.resolve({}); },
-      remove: function () { return Promise.resolve(); }
-    } } },
+    taskResumeBlocked: new Set(),
+    taskLeaseKey: function (tabId) { return 'taskLease:' + tabId; },
+    TASK_LEASE_MAX_AGE_MS: 24 * 60 * 60 * 1000,
+    chrome: { storage: { session: (function () {
+      const store = {};
+      return {
+        _store: store,
+        set: function (obj) {
+          return Promise.resolve().then(function () { Object.assign(store, obj || {}); });
+        },
+        get: function (keys) {
+          return Promise.resolve().then(function () {
+            if (keys == null) return Object.assign({}, store);
+            const list = Array.isArray(keys) ? keys : [keys];
+            const out = {};
+            list.forEach(function (k) {
+              if (Object.prototype.hasOwnProperty.call(store, k)) out[k] = store[k];
+            });
+            return out;
+          });
+        },
+        remove: function (keys) {
+          return Promise.resolve().then(function () {
+            const list = Array.isArray(keys) ? keys : [keys];
+            list.forEach(function (k) { delete store[k]; });
+          });
+        }
+      };
+    })() } },
     WPA_CONTRACTS: {
       resolvePublicTool: function (n) {
         if (n === 'clickByText' || n === 'dblclick' || n === 'clickOptionByText') return 'click';
@@ -505,7 +529,8 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
       bg.slice(a0, a1) +
         '\nthis.attachOpenedToResultList = attachOpenedToResultList;\nthis.compactOpenedTab = compactOpenedTab;' +
         '\nthis.pickOpenedTab = pickOpenedTab;\nthis.rememberOpenedTabs = rememberOpenedTabs;\nthis.forgetOpenedTab = forgetOpenedTab;' +
-        '\nthis.clickResultWantsNewTab = clickResultWantsNewTab;\nthis.pickNavTabs = pickNavTabs;\nthis.navUrlsMatch = navUrlsMatch;',
+        '\nthis.clickResultWantsNewTab = clickResultWantsNewTab;\nthis.pickNavTabs = pickNavTabs;\nthis.navUrlsMatch = navUrlsMatch;' +
+        '\nthis.hydrateChildPendingDelegate = hydrateChildPendingDelegate;\nthis.childPendingDelegateInfo = childPendingDelegateInfo;',
       box
     );
     ok(typeof box.attachOpenedToResultList === 'function', 'attachOpenedToResultList 可在测试中加载');
@@ -613,6 +638,40 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
     '仍在加载的新窗口优先于同窗口空白页');
   ok(box.pickOpenedTab(pickedNav.tabs).tabId === 8,
     'URL 对得上的新窗口优先于同窗口里带 opener 的页');
+  pendingAsyncChecks.push((async function () {
+    await new Promise(function (r) { setTimeout(r, 40); });
+    const store = box.chrome.storage.session._store;
+    box.activeTasks.set(7, { origin: 'https://parent.example' });
+    box.chrome.tabs = {
+      get: function () { return Promise.resolve({ id: 7, url: 'https://parent.example/a' }); }
+    };
+    box.rememberOpenedTabs(7, [{ tabId: 21, url: 'https://child.example/p', title: '子页' }]);
+    let row = null;
+    for (let i = 0; i < 20; i++) {
+      row = store['pendingDelegate:21'];
+      if (row && row.parentTabId === 7) break;
+      await new Promise(function (r) { setTimeout(r, 10); });
+    }
+    ok(row && row.parentTabId === 7 && row.parentUrl === 'https://parent.example/a',
+      '开出子 tab 的待命记录写入 session，SW 重启后仍能恢复');
+    ok(Array.isArray(store.pendingDelegateIndex) && store.pendingDelegateIndex.indexOf(21) >= 0,
+      '待命子 tab 记在索引里');
+    box.activeTasks.delete(7);
+    box.pendingDelegateParent.delete(21);
+    store['taskLease:7'] = { origin: 'https://parent.example', savedAt: Date.now(), cancelled: false };
+    await box.hydrateChildPendingDelegate(21);
+    const restored = box.childPendingDelegateInfo(21);
+    ok(restored && restored.parentTabId === 7 && restored.parentUrl === 'https://parent.example/a',
+      '父任务只剩 session 租约时仍保持子页待命');
+    store['taskLease:7'] = { origin: 'https://parent.example', savedAt: Date.now(), cancelled: true };
+    box.pendingDelegateParent.delete(21);
+    await box.hydrateChildPendingDelegate(21);
+    for (let i = 0; i < 20 && store['pendingDelegate:21']; i++) {
+      await new Promise(function (r) { setTimeout(r, 10); });
+    }
+    ok(box.childPendingDelegateInfo(21) == null && !store['pendingDelegate:21'],
+      '父任务租约已取消时不再恢复待命');
+  })());
 }
 {
   const fossilBox = {};
@@ -5086,25 +5145,48 @@ if (pasteNameBox.uniqueAttachFileName) {
     'OCR 缓存内存优先、全局一条写队列、合计 200 万字上限');
   {
     const mf = JSON.parse(manifestSrc);
+    const ff = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.firefox.json'), 'utf8'));
     const imported = (bg.match(/importScripts\('([^']+)'\)/g) || []).map((s) => s.replace(/importScripts\('([^']+)'\)/, '$1'));
-    ok(mf.background.service_worker === 'background.js'
-      && JSON.stringify(mf.background.scripts) === JSON.stringify(imported.concat(['background.js'])),
+    ok(mf.manifest_version === 3 && mf.background && mf.background.service_worker === 'background.js'
+      && !Object.prototype.hasOwnProperty.call(mf.background, 'scripts') && !mf.background.type,
+      'Chromium 清单只有经典 service worker，不含 background.scripts');
+    ok(!mf.background.scripts && JSON.stringify(ff.background.scripts) === JSON.stringify(imported.concat(['background.js']))
+      && !ff.background.service_worker,
       'Firefox 事件页 scripts 与 SW 的 importScripts 顺序一致，background.js 在最后');
     ok(mf.browser_specific_settings && mf.browser_specific_settings.gecko.id === 'webpage-agent@hpcscc'
-      && mf.browser_specific_settings.gecko.strict_min_version === '128.0' && mf.minimum_chrome_version === '121',
+      && mf.browser_specific_settings.gecko.strict_min_version === '128.0' && mf.minimum_chrome_version === '121'
+      && ff.browser_specific_settings.gecko.id === 'webpage-agent@hpcscc',
       '清单写明 gecko id、Firefox 128 与 Chrome 121 起点');
+    ok(mf.action && !mf.browser_action && !ff.browser_action
+      && Array.isArray(mf.host_permissions) && mf.host_permissions.indexOf('<all_urls>') >= 0
+      && ff.host_permissions.indexOf('<all_urls>') >= 0,
+      'MV3 使用 action 与 host_permissions，不再使用 browser_action');
+    ok(mf.permissions.indexOf('webRequestBlocking') < 0 && mf.permissions.indexOf('webRequestAuthProvider') >= 0
+      && ff.permissions.indexOf('webRequestBlocking') >= 0 && ff.permissions.indexOf('webRequestAuthProvider') < 0
+      && ff.permissions.indexOf('offscreen') < 0 && ff.permissions.indexOf('debugger') < 0,
+      'webRequestBlocking 只在 Firefox 清单；Chromium 用 webRequestAuthProvider');
     ok(/if \(typeof importScripts === 'function'\) \{/.test(bg) && /function offscreenApiAvailable\(/.test(bg)
-      && /document\.createElement\('iframe'\)/.test(extractFn(bg, 'createOffscreenDoc')),
-      'Firefox 后台无 importScripts 与 chrome.offscreen 时用 iframe 承载 offscreen.html');
-    ok(/\['blocking'\]/.test(bg) && /\['asyncBlocking'\]/.test(bg) && /isFirefoxRuntime\(\)/.test(bg),
+      && /document\.createElement\('iframe'\)/.test(extractFn(bg, 'createOffscreenDoc'))
+      && /chrome\.windows\.create\(/.test(extractFn(bg, 'createOffscreenWindow')),
+      'Firefox 事件页用 iframe；没有 DOM 也没有 chrome.offscreen 时用窗口承载 offscreen.html');
+    ok(/\['blocking'\]/.test(bg) && /\['asyncBlocking'\]/.test(bg) && /isFirefoxRuntime\(\)/.test(bg)
+      && /function installDavAuthListener\(/.test(bg),
       'WebDAV 认证应答在 Firefox 用 blocking 返回 Promise');
     ok(/target\.saveDialog = null/.test(bg), 'Firefox 看不到系统保存框时 saveDialog 写 null');
-    for (const rel of mf.background.scripts) ok(fs.existsSync(path.join(ROOT, rel)), '后台脚本存在于 agent/：' + rel);
+    for (const rel of ff.background.scripts) ok(fs.existsSync(path.join(ROOT, rel)), '后台脚本存在于 agent/：' + rel);
+    const staged = execFileSync(process.execPath, [path.join(__dirname, 'scripts', 'stage-firefox.mjs')], { encoding: 'utf8' }).trim();
+    const stagedMf = JSON.parse(fs.readFileSync(path.join(staged, 'manifest.json'), 'utf8'));
+    ok(stagedMf.background && !stagedMf.background.service_worker
+      && JSON.stringify(stagedMf.background.scripts) === JSON.stringify(ff.background.scripts)
+      && !fs.existsSync(path.join(staged, 'manifest.firefox.json'))
+      && fs.existsSync(path.join(staged, 'background.js')),
+      'stage-firefox 生成的目录用事件页清单，且文件名是 manifest.json');
   }
   {
     const mf = JSON.parse(manifestSrc);
     ok(mf.permissions.indexOf('debugger') >= 0, '清单含 debugger 权限（Chrome DevTools Protocol 驱动）');
-    ok(['drivers/keys.js', 'drivers/dom.js', 'drivers/cdp.js', 'drivers/bidi.js'].every((f) => mf.background.scripts.indexOf(f) >= 0),
+    const ffDrivers = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.firefox.json'), 'utf8'));
+    ok(['drivers/keys.js', 'drivers/dom.js', 'drivers/cdp.js', 'drivers/bidi.js'].every((f) => ffDrivers.background.scripts.indexOf(f) >= 0),
       '驱动脚本同时列在 Firefox 事件页 scripts');
     const K = require(path.join(ROOT, 'drivers/keys.js'));
     const ca = K.parseChord('Control+A');

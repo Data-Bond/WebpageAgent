@@ -1,4 +1,6 @@
-// background.js — Chromium 上是 MV3 service worker；Firefox 上是事件页（manifest background.scripts 已按顺序加载共享脚本）
+// background.js — Chromium 清单只声明 MV3 service worker（经典脚本，才能 importScripts）。
+// Firefox 事件页由 scripts/stage-firefox.mjs 生成的清单按同一顺序加载这些文件，事件页没有 importScripts。
+// 事件页有 DOM，用隐藏 iframe 承载 offscreen.html；没有 DOM、也没有 chrome.offscreen 时改用最小化窗口。
 'use strict';
 
 if (typeof importScripts === 'function') {
@@ -3939,6 +3941,8 @@ let offscreenCreating = null;
 let offscreenPort = null;
 let offscreenPortReady = null;
 let offscreenPortReadyResolve = null;
+let offscreenWindowId = null;
+const OFFSCREEN_WINDOW_KEY = 'offscreenWindowId';
 
 function resetOffscreenPort() {
   offscreenPort = null;
@@ -3967,8 +3971,10 @@ function attachOffscreenPort(port) {
   });
 }
 
-// offscreen 文档的宿主：Chromium 用 chrome.offscreen；Firefox 的后台是带 DOM 的事件页，
-// 用隐藏 iframe 加载同一个 offscreen.html，消息与 Port 代码不变
+// offscreen 文档的宿主：
+// Chromium service worker 用 chrome.offscreen（后台没有 document）。
+// Firefox 事件页有 DOM，用隐藏 iframe 加载同一个 offscreen.html。
+// 两者都没有时（例如 Firefox 被装成 service worker），用最小化窗口承载，消息与 Port 不变。
 const OFFSCREEN_IFRAME_ID = 'wpa-offscreen-host';
 
 function offscreenApiAvailable() {
@@ -3979,20 +3985,79 @@ function offscreenIframe() {
   return typeof document !== 'undefined' ? document.getElementById(OFFSCREEN_IFRAME_ID) : null;
 }
 
+function rememberOffscreenWindow(id) {
+  offscreenWindowId = id;
+  try {
+    if (!chrome.storage || !chrome.storage.session || id == null) return;
+    const write = chrome.storage.session.set({ [OFFSCREEN_WINDOW_KEY]: id });
+    if (write && typeof write.catch === 'function') write.catch(function () {});
+  } catch (e) {}
+}
+
+function forgetOffscreenWindow() {
+  offscreenWindowId = null;
+  try {
+    if (!chrome.storage || !chrome.storage.session) return;
+    const removal = chrome.storage.session.remove(OFFSCREEN_WINDOW_KEY);
+    if (removal && typeof removal.catch === 'function') removal.catch(function () {});
+  } catch (e) {}
+}
+
+async function readOffscreenWindowId() {
+  if (offscreenWindowId != null) return offscreenWindowId;
+  try {
+    const saved = await chrome.storage.session.get(OFFSCREEN_WINDOW_KEY);
+    const id = saved && saved[OFFSCREEN_WINDOW_KEY];
+    if (id != null) offscreenWindowId = id;
+    return id;
+  } catch (e) {
+    return null;
+  }
+}
+
+function createOffscreenWindow() {
+  if (!chrome.windows || typeof chrome.windows.create !== 'function') {
+    return Promise.reject(new Error('浏览器没有 chrome.offscreen，后台也没有 DOM，无法加载 offscreen.html'));
+  }
+  return chrome.windows.create({
+    url: chrome.runtime.getURL('offscreen.html'),
+    type: 'popup',
+    focused: false,
+    width: 420,
+    height: 320
+  }).then(function (win) {
+    const id = win && win.id;
+    rememberOffscreenWindow(id);
+    if (id != null && chrome.windows.update) {
+      try {
+        const upd = chrome.windows.update(id, { state: 'minimized', focused: false });
+        if (upd && typeof upd.catch === 'function') upd.catch(function () {});
+      } catch (e) {}
+    }
+    return true;
+  });
+}
+
 async function closeOffscreenDoc() {
-  if (!offscreenApiAvailable()) {
-    const f = offscreenIframe();
-    if (f) f.remove();
+  if (offscreenApiAvailable()) {
+    try { await chrome.offscreen.closeDocument(); } catch (e) {}
     return;
   }
-  try { await chrome.offscreen.closeDocument(); } catch (e) {}
+  const f = offscreenIframe();
+  if (f) {
+    f.remove();
+    return;
+  }
+  const id = await readOffscreenWindowId();
+  forgetOffscreenWindow();
+  if (id != null && chrome.windows && chrome.windows.remove) {
+    try { await chrome.windows.remove(id); } catch (e) {}
+  }
 }
 
 function createOffscreenDoc() {
   if (!offscreenApiAvailable()) {
-    if (typeof document === 'undefined') {
-      return Promise.reject(new Error('浏览器没有 chrome.offscreen，后台也没有 DOM，无法加载 offscreen.html'));
-    }
+    if (typeof document === 'undefined') return createOffscreenWindow();
     const f = document.createElement('iframe');
     f.id = OFFSCREEN_IFRAME_ID;
     f.src = chrome.runtime.getURL('offscreen.html');
@@ -4007,7 +4072,17 @@ function createOffscreenDoc() {
 }
 
 async function hasOffscreenDoc() {
-  if (!offscreenApiAvailable()) return !!offscreenIframe();
+  if (!offscreenApiAvailable()) {
+    if (offscreenIframe()) return true;
+    const id = await readOffscreenWindowId();
+    if (id == null || !chrome.windows || !chrome.windows.get) return false;
+    try {
+      await chrome.windows.get(id);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
   try {
     if (chrome.runtime.getContexts) {
       const ctx = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
@@ -5824,15 +5899,134 @@ async function parentTabUrl(parentTabId) {
   }
 }
 
+const PENDING_DELEGATE_INDEX_KEY = 'pendingDelegateIndex';
+
+function pendingDelegateSessionKey(childTabId) {
+  return 'pendingDelegate:' + childTabId;
+}
+
+function persistPendingDelegate(childTabId, rec) {
+  try {
+    if (!chrome.storage || !chrome.storage.session) return;
+    const key = pendingDelegateSessionKey(childTabId);
+    const row = {
+      parentTabId: rec.parentTabId,
+      parentUrl: String(rec.parentUrl || '').slice(0, 500),
+      savedAt: Date.now()
+    };
+    const write = chrome.storage.session.get(PENDING_DELEGATE_INDEX_KEY).then(function (saved) {
+      const prev = saved && saved[PENDING_DELEGATE_INDEX_KEY];
+      const index = Array.isArray(prev) ? prev.slice() : [];
+      if (index.indexOf(childTabId) < 0) index.push(childTabId);
+      return chrome.storage.session.set({ [key]: row, [PENDING_DELEGATE_INDEX_KEY]: index });
+    });
+    if (write && typeof write.catch === 'function') write.catch(function () {});
+  } catch (e) {}
+}
+
+function dropPendingDelegateSession(childTabId) {
+  try {
+    if (!chrome.storage || !chrome.storage.session) return;
+    const key = pendingDelegateSessionKey(childTabId);
+    const write = chrome.storage.session.get(PENDING_DELEGATE_INDEX_KEY).then(function (saved) {
+      const prev = saved && saved[PENDING_DELEGATE_INDEX_KEY];
+      const index = Array.isArray(prev) ? prev.filter(function (id) { return id !== childTabId; }) : [];
+      const removal = chrome.storage.session.remove(key);
+      const done = removal && typeof removal.then === 'function' ? removal : Promise.resolve();
+      return done.then(function () {
+        return chrome.storage.session.set({ [PENDING_DELEGATE_INDEX_KEY]: index });
+      });
+    });
+    if (write && typeof write.catch === 'function') write.catch(function () {});
+  } catch (e) {}
+}
+
+function dropPendingDelegatesForParent(parentTabId) {
+  try {
+    if (!chrome.storage || !chrome.storage.session || parentTabId == null) return;
+    const write = chrome.storage.session.get(PENDING_DELEGATE_INDEX_KEY).then(function (saved) {
+      const index = Array.isArray(saved && saved[PENDING_DELEGATE_INDEX_KEY]) ? saved[PENDING_DELEGATE_INDEX_KEY].slice() : [];
+      if (!index.length) return;
+      return chrome.storage.session.get(index.map(pendingDelegateSessionKey)).then(function (rows) {
+        const removeKeys = [];
+        const next = [];
+        for (let i = 0; i < index.length; i++) {
+          const id = index[i];
+          const row = rows && rows[pendingDelegateSessionKey(id)];
+          if (row && row.parentTabId === parentTabId) {
+            removeKeys.push(pendingDelegateSessionKey(id));
+            pendingDelegateParent.delete(id);
+          } else next.push(id);
+        }
+        const removal = removeKeys.length ? chrome.storage.session.remove(removeKeys) : Promise.resolve();
+        return Promise.resolve(removal).then(function () {
+          return chrome.storage.session.set({ [PENDING_DELEGATE_INDEX_KEY]: next });
+        });
+      });
+    });
+    if (write && typeof write.catch === 'function') write.catch(function () {});
+  } catch (e) {}
+}
+
+// sessionBacked：记录来自 chrome.storage.session。Service Worker 被杀掉后 activeTasks 是空的，
+// 不能据此把尚未 delegate 的子 tab 当成可以重新发送。
 function childPendingDelegateInfo(childTabId) {
   if (childTabId == null) return null;
   const rec = pendingDelegateParent.get(childTabId);
   if (!rec || rec.parentTabId == null) return null;
-  if (!activeTasks.has(rec.parentTabId) || activeTasks.has(childTabId) || childJobs.has(childTabId)) {
+  if (activeTasks.has(childTabId) || childJobs.has(childTabId) || taskResumeBlocked.has(rec.parentTabId)) {
     pendingDelegateParent.delete(childTabId);
+    dropPendingDelegateSession(childTabId);
+    return null;
+  }
+  if (!activeTasks.has(rec.parentTabId) && !rec.sessionBacked) {
+    pendingDelegateParent.delete(childTabId);
+    dropPendingDelegateSession(childTabId);
     return null;
   }
   return { parentTabId: rec.parentTabId, parentUrl: String(rec.parentUrl || '').slice(0, 500) };
+}
+
+async function parentTaskStillLive(parentTabId) {
+  if (parentTabId == null) return false;
+  if (taskResumeBlocked.has(parentTabId)) return false;
+  if (activeTasks.has(parentTabId)) return true;
+  try {
+    const key = taskLeaseKey(parentTabId);
+    const saved = await chrome.storage.session.get(key);
+    const lease = saved && saved[key];
+    if (!lease || lease.cancelled || !lease.origin) return false;
+    return Date.now() - Number(lease.savedAt || 0) <= TASK_LEASE_MAX_AGE_MS;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function hydrateChildPendingDelegate(childTabId) {
+  if (childTabId == null) return;
+  const existing = pendingDelegateParent.get(childTabId);
+  if (existing && !existing.sessionBacked) return;
+  if (existing && existing.sessionBacked && activeTasks.has(existing.parentTabId) && !taskResumeBlocked.has(existing.parentTabId)) return;
+  try {
+    const key = pendingDelegateSessionKey(childTabId);
+    const saved = await chrome.storage.session.get(key);
+    const row = saved && saved[key];
+    if (!row || row.parentTabId == null) {
+      if (existing) pendingDelegateParent.delete(childTabId);
+      return;
+    }
+    if (!(await parentTaskStillLive(row.parentTabId))) {
+      pendingDelegateParent.delete(childTabId);
+      dropPendingDelegateSession(childTabId);
+      return;
+    }
+    if (taskResumeBlocked.has(row.parentTabId)) return;
+    pendingDelegateParent.set(childTabId, {
+      parentTabId: row.parentTabId,
+      parentUrl: row.parentUrl || '',
+      sessionBacked: !activeTasks.has(row.parentTabId)
+    });
+  } catch (e) {}
 }
 
 function notifyChildDelegateFrom(childTabId, parentUrl) {
@@ -5869,13 +6063,17 @@ async function markPendingDelegate(parentTabId, packed) {
     if (childTabId === parentTabId) continue;
     if (activeTasks.has(childTabId) || childJobs.has(childTabId)) continue;
     pendingDelegateParent.set(childTabId, { parentTabId: parentTabId, parentUrl: parentUrl });
+    persistPendingDelegate(childTabId, { parentTabId: parentTabId, parentUrl: parentUrl });
     notifyChildStandby(childTabId, parentUrl);
   }
 }
 
 function clearPendingDelegateChild(childTabId) {
   if (childTabId == null) return;
-  if (!pendingDelegateParent.delete(childTabId)) return;
+  const had = pendingDelegateParent.delete(childTabId);
+  // 内存里没有（SW 刚重启、还没 hydrate）也要清 session，避免子页一直停在待命
+  dropPendingDelegateSession(childTabId);
+  if (!had) return;
   postToTab(childTabId, null, { type: 'taskState', phase: 'idle' });
 }
 
@@ -5888,6 +6086,7 @@ function clearPendingDelegateForParent(parentTabId) {
   for (let i = 0; i < cleared.length; i++) {
     clearPendingDelegateChild(cleared[i]);
   }
+  dropPendingDelegatesForParent(parentTabId);
 }
 
 // 记录父页开出的全部新 tab（含无 openerTabId 的同窗口候选），供 delegate/tabClose 校验与默认解析
@@ -11309,6 +11508,7 @@ chrome.runtime.onConnect.addListener((port) => {
       } catch (eLease) {}
     }
     const sessionOrigin = (active && active.origin) || pausedOrigins.get(tabId) || origin;
+    if (tabId != null) await hydrateChildPendingDelegate(tabId);
     const pendingDelegate = childPendingDelegateInfo(tabId);
     postMsg({
       type: 'ready', tabId, origin: sessionOrigin, pageOrigin: origin,
@@ -12055,6 +12255,7 @@ chrome.runtime.onConnect.addListener((port) => {
     } else if (cmd === 'runTask') {
       (async () => {
         deferredTaskMessages.delete(tabId);
+        await hydrateChildPendingDelegate(tabId);
         if (childPendingDelegateInfo(tabId)) {
           postMsg({ type: 'error', message: '此页等待父页 delegate，暂不可发送新任务' });
           return;
@@ -12388,16 +12589,26 @@ function answerDavAuth(details) {
   });
 }
 
-// Chromium 用 asyncBlocking 回调；Firefox 用 blocking 并返回 Promise
-if (isFirefoxRuntime()) {
-  chrome.webRequest.onAuthRequired.addListener(function (details) {
-    return answerDavAuth(details);
-  }, { urls: ['http://*/*', 'https://*/*'] }, ['blocking']);
-} else {
-  chrome.webRequest.onAuthRequired.addListener(function (details, callback) {
-    answerDavAuth(details).then(callback);
-  }, { urls: ['http://*/*', 'https://*/*'] }, ['asyncBlocking']);
+// Chromium 用 asyncBlocking（权限 webRequestAuthProvider，MV3 不能再声明 webRequestBlocking）。
+// Firefox 事件页清单带 webRequestBlocking，用 blocking 并返回 Promise。
+// 登记失败不能拖垮后面的 onMessage 与 bootKernel（例如把 Chromium 清单装进 Firefox）。
+function installDavAuthListener() {
+  try {
+    if (!chrome.webRequest || !chrome.webRequest.onAuthRequired) return;
+    if (isFirefoxRuntime()) {
+      chrome.webRequest.onAuthRequired.addListener(function (details) {
+        return answerDavAuth(details);
+      }, { urls: ['http://*/*', 'https://*/*'] }, ['blocking']);
+    } else {
+      chrome.webRequest.onAuthRequired.addListener(function (details, callback) {
+        answerDavAuth(details).then(callback);
+      }, { urls: ['http://*/*', 'https://*/*'] }, ['asyncBlocking']);
+    }
+  } catch (e) {
+    try { diagFail('webRequest', e); } catch (e2) {}
+  }
 }
+installDavAuthListener();
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.cmd) return;
@@ -12815,6 +13026,32 @@ async function evalLoop() {
   }
 }
 
+async function rehydrateOpenedTabs() {
+  let all = null;
+  try { all = await chrome.storage.session.get(null); } catch (e) { return; }
+  if (!all) return;
+  const keys = Object.keys(all);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (key.indexOf('openedTab:') !== 0) continue;
+    const parentTabId = Number(key.slice('openedTab:'.length));
+    if (!Number.isFinite(parentTabId) || lastOpenedByOpener.has(parentTabId)) continue;
+    const raw = all[key];
+    const list = Array.isArray(raw) ? raw.map(compactOpenedTab).filter(Boolean) : [];
+    if (list.length) lastOpenedByOpener.set(parentTabId, list);
+  }
+}
+
+async function rehydratePendingDelegates() {
+  let saved = null;
+  try { saved = await chrome.storage.session.get(PENDING_DELEGATE_INDEX_KEY); } catch (e) { return; }
+  const index = saved && saved[PENDING_DELEGATE_INDEX_KEY];
+  if (!Array.isArray(index)) return;
+  for (let i = 0; i < index.length; i++) {
+    try { await hydrateChildPendingDelegate(index[i]); } catch (e) {}
+  }
+}
+
 async function bootKernel() {
   try { await ensureOriginEpochs(); } catch (e) {}
   try { await ensureStorageSchema(); } catch (e) {}
@@ -12828,6 +13065,8 @@ async function bootKernel() {
   } catch (e) {}
   try { await loadDiagStore(); } catch (e) {}
   try { await ensureTaskAlarms(); } catch (e) {}
+  try { await rehydrateOpenedTabs(); } catch (e) {}
+  try { await rehydratePendingDelegates(); } catch (e) {}
   try { await ensureDavAlarms(); } catch (e) {}
   try {
     if (chrome.alarms && chrome.alarms.create) chrome.alarms.create('wpa-gc', { periodInMinutes: 1 });

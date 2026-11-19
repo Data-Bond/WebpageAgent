@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "网页智能体助手",
-    "version": "7.0.0",
+  "version": "7.0.0",
   "description": "网页智能体（Webpage Agent）：通过大模型自动操作当前网页，理解页面、填写表单、点击、上传已附加文件等。",
   "minimum_chrome_version": "121",
   "browser_specific_settings": {
@@ -13,19 +13,7 @@
   "permissions": ["activeTab", "scripting", "storage", "tabs", "offscreen", "downloads", "unlimitedStorage", "alarms", "webRequest", "webRequestAuthProvider", "debugger", "webNavigation"],
   "host_permissions": ["<all_urls>"],
   "background": {
-    "service_worker": "background.js",
-    "scripts": [
-      "shared/contracts.js",
-      "shared/toolProtocol.js",
-      "shared/pdfPages.js",
-      "shared/webSkill.js",
-      "trace.js",
-      "drivers/keys.js",
-      "drivers/dom.js",
-      "drivers/cdp.js",
-      "drivers/bidi.js",
-      "background.js"
-    ]
+    "service_worker": "background.js"
   },
   "action": {
     "default_title": "网页智能体助手"
