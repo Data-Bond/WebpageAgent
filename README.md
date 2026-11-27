@@ -51,7 +51,13 @@ You may also download a release archive, unpack it, enable Developer mode in Chr
 
 **Manual** Unpack a release or clone this repo, enable Developer mode, and load the **`agent` directory** (not the repo root). Installer paths: `WebpageAgent-Latest\agent` (recommended) or `unpacked-folder\agent`. When cloning, load `agent` inside the repo.
 
-**Firefox** Open `about:debugging#/runtime/this-firefox`, click **Load Temporary Add-on…**, and pick `agent/manifest.json`. A temporary add-on is removed when Firefox closes; load it again next time.
+**Firefox** Chrome and Edge only accept a Manifest V3 `background.service_worker`. Putting `background.scripts` in that same manifest makes Chromium refuse to load it (`'background.scripts' requires manifest version of 2 or lower`). Firefox 128+ still uses an event page (`background.scripts`, so the background has a DOM, and WebDAV 401 responses use `webRequestBlocking`). The manifests are split: load the **`agent` directory** in Chrome / Edge. For Firefox, stage the event-page tree first.
+
+```bash
+node scripts/stage-firefox.mjs
+```
+
+Open `about:debugging#/runtime/this-firefox`, click **Load Temporary Add-on…**, and pick the generated `dist/firefox/manifest.json`. A temporary add-on is removed when Firefox closes; stage and load it again next time.
 
 ## Page operation mode
 

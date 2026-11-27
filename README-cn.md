@@ -51,7 +51,13 @@ chmod +x WebpageAgent-Installer-Linux-Mac.sh && ./WebpageAgent-Installer-Linux-M
 
 **手动**：从 Release 解压，或 clone 本仓库后，在 Chrome / Edge 的扩展页打开开发人员模式，加载 **`agent` 目录**（不是仓库根）。安装脚本给出的两条路径都可用：`WebpageAgent-Latest\agent`（推荐）与 `解压文件夹\agent`。直接 clone 时加载仓库里的 `agent`。
 
-**Firefox**：打开 `about:debugging#/runtime/this-firefox`，点「临时载入附加组件」，选择 `agent/manifest.json`。临时载入的扩展在 Firefox 关闭后失效，下次需要重新载入。
+**Firefox**：Chrome / Edge 只接受 Manifest V3 的 `background.service_worker`。同一份清单里再写 `background.scripts`，Chromium 会拒载并提示 `'background.scripts' requires manifest version of 2 or lower`。Firefox 128+ 仍用事件页（`background.scripts`，后台有 DOM，WebDAV 的 401 用 `webRequestBlocking`）。因此清单按浏览器分开：Chrome / Edge 加载 **`agent` 目录**；Firefox 先生成事件页目录再载入。
+
+```bash
+node scripts/stage-firefox.mjs
+```
+
+打开 `about:debugging#/runtime/this-firefox`，点「临时载入附加组件」，选择生成的 `dist/firefox/manifest.json`。临时载入的扩展在 Firefox 关闭后失效，下次需要重新生成并载入。
 
 ## 页面操作方式
 

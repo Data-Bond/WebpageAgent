@@ -481,6 +481,7 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
 {
   const a0 = bg.indexOf('function compactOpenedTab');
   const a1 = bg.indexOf('function startOpenerWatch');
+  const delegateEpoch = { n: 0 };
   const box = {
     lastOpenedByOpener: new Map(),
     activeTasks: new Map(),
@@ -488,11 +489,40 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
     pendingDelegateParent: new Map(),
     postToTab: function () {},
     URL: URL,
-    chrome: { storage: { session: {
-      set: function () { return Promise.resolve(); },
-      get: function () { return Promise.resolve({}); },
-      remove: function () { return Promise.resolve(); }
-    } } },
+    taskResumeBlocked: new Set(),
+    taskLeaseKey: function (tabId) { return 'taskLease:' + tabId; },
+    TASK_LEASE_MAX_AGE_MS: 24 * 60 * 60 * 1000,
+    ensureOriginEpochs: function () { return Promise.resolve(); },
+    sessionEpochMatches: function (origin, storedEpoch) {
+      if (storedEpoch == null || Number(storedEpoch) < 0) return delegateEpoch.n === 0;
+      return Number(storedEpoch) === delegateEpoch.n;
+    },
+    chrome: { storage: { session: (function () {
+      const store = {};
+      return {
+        _store: store,
+        set: function (obj) {
+          return Promise.resolve().then(function () { Object.assign(store, obj || {}); });
+        },
+        get: function (keys) {
+          return Promise.resolve().then(function () {
+            if (keys == null) return Object.assign({}, store);
+            const list = Array.isArray(keys) ? keys : [keys];
+            const out = {};
+            list.forEach(function (k) {
+              if (Object.prototype.hasOwnProperty.call(store, k)) out[k] = store[k];
+            });
+            return out;
+          });
+        },
+        remove: function (keys) {
+          return Promise.resolve().then(function () {
+            const list = Array.isArray(keys) ? keys : [keys];
+            list.forEach(function (k) { delete store[k]; });
+          });
+        }
+      };
+    })() } },
     WPA_CONTRACTS: {
       resolvePublicTool: function (n) {
         if (n === 'clickByText' || n === 'dblclick' || n === 'clickOptionByText') return 'click';
@@ -505,7 +535,10 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
       bg.slice(a0, a1) +
         '\nthis.attachOpenedToResultList = attachOpenedToResultList;\nthis.compactOpenedTab = compactOpenedTab;' +
         '\nthis.pickOpenedTab = pickOpenedTab;\nthis.rememberOpenedTabs = rememberOpenedTabs;\nthis.forgetOpenedTab = forgetOpenedTab;' +
-        '\nthis.clickResultWantsNewTab = clickResultWantsNewTab;\nthis.pickNavTabs = pickNavTabs;\nthis.navUrlsMatch = navUrlsMatch;',
+        '\nthis.clickResultWantsNewTab = clickResultWantsNewTab;\nthis.pickNavTabs = pickNavTabs;\nthis.navUrlsMatch = navUrlsMatch;' +
+        '\nthis.hydrateChildPendingDelegate = hydrateChildPendingDelegate;\nthis.childPendingDelegateInfo = childPendingDelegateInfo;' +
+        '\nthis.persistPendingDelegate = persistPendingDelegate;\nthis.dropPendingDelegatesForParent = dropPendingDelegatesForParent;' +
+        '\nthis.pendingDelegateIndexSettled = pendingDelegateIndexSettled;\nthis.parentTaskStillLive = parentTaskStillLive;',
       box
     );
     ok(typeof box.attachOpenedToResultList === 'function', 'attachOpenedToResultList 可在测试中加载');
@@ -613,7 +646,155 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
     '仍在加载的新窗口优先于同窗口空白页');
   ok(box.pickOpenedTab(pickedNav.tabs).tabId === 8,
     'URL 对得上的新窗口优先于同窗口里带 opener 的页');
+  pendingAsyncChecks.push((async function () {
+    await new Promise(function (r) { setTimeout(r, 40); });
+    const store = box.chrome.storage.session._store;
+    box.activeTasks.set(7, { origin: 'https://parent.example' });
+    box.chrome.tabs = {
+      get: function () { return Promise.resolve({ id: 7, url: 'https://parent.example/a' }); }
+    };
+    box.rememberOpenedTabs(7, [{ tabId: 21, url: 'https://child.example/p', title: '子页' }]);
+    let row = null;
+    for (let i = 0; i < 20; i++) {
+      row = store['pendingDelegate:21'];
+      if (row && row.parentTabId === 7) break;
+      await new Promise(function (r) { setTimeout(r, 10); });
+    }
+    ok(row && row.parentTabId === 7 && row.parentUrl === 'https://parent.example/a',
+      '开出子 tab 的待命记录写入 session，SW 重启后仍能恢复');
+    ok(Array.isArray(store.pendingDelegateIndex) && store.pendingDelegateIndex.indexOf(21) >= 0,
+      '待命子 tab 记在索引里');
+    box.activeTasks.delete(7);
+    box.pendingDelegateParent.delete(21);
+    store['taskLease:7'] = { origin: 'https://parent.example', savedAt: Date.now(), cancelled: false };
+    await box.hydrateChildPendingDelegate(21);
+    const restored = box.childPendingDelegateInfo(21);
+    ok(restored && restored.parentTabId === 7 && restored.parentUrl === 'https://parent.example/a',
+      '父任务只剩 session 租约时仍保持子页待命');
+    store['taskLease:7'] = { origin: 'https://parent.example', savedAt: Date.now(), cancelled: true };
+    box.pendingDelegateParent.delete(21);
+    await box.hydrateChildPendingDelegate(21);
+    for (let i = 0; i < 20 && store['pendingDelegate:21']; i++) {
+      await new Promise(function (r) { setTimeout(r, 10); });
+    }
+    ok(box.childPendingDelegateInfo(21) == null && !store['pendingDelegate:21'],
+      '父任务租约已取消时不再恢复待命');
+
+    box.persistPendingDelegate(41, { parentTabId: 7, parentUrl: 'https://a.example/' });
+    box.persistPendingDelegate(42, { parentTabId: 7, parentUrl: 'https://b.example/' });
+    await box.pendingDelegateIndexSettled();
+    ok(store.pendingDelegateIndex.indexOf(41) >= 0 && store.pendingDelegateIndex.indexOf(42) >= 0
+      && store['pendingDelegate:41'] && store['pendingDelegate:42'],
+      '并发写入待命索引时两条都留下');
+
+    store['pendingDelegate:51'] = { parentTabId: 9, parentUrl: 'https://old.example/', savedAt: Date.now() };
+    if (store.pendingDelegateIndex.indexOf(51) < 0) store.pendingDelegateIndex.push(51);
+    const baseGet = box.chrome.storage.session.get;
+    let heldIndexGets = 0;
+    let releasePersist = null;
+    const persistGate = new Promise(function (resolve) { releasePersist = resolve; });
+    box.chrome.storage.session.get = function (keys) {
+      const read = baseGet(keys);
+      if (keys === 'pendingDelegateIndex' && heldIndexGets === 0) {
+        heldIndexGets++;
+        return persistGate.then(function () { return read; });
+      }
+      return read;
+    };
+    box.persistPendingDelegate(52, { parentTabId: 9, parentUrl: 'https://new.example/' });
+    const dropped = box.dropPendingDelegatesForParent(9);
+    releasePersist();
+    await Promise.all([dropped, box.pendingDelegateIndexSettled()]);
+    box.chrome.storage.session.get = baseGet;
+    ok(!store['pendingDelegate:51'] && !store['pendingDelegate:52']
+      && store.pendingDelegateIndex.indexOf(51) < 0 && store.pendingDelegateIndex.indexOf(52) < 0,
+      '清理父页待命时，进行中的索引写入不会把子 tab 写回来');
+
+    box.pendingDelegateParent.set(21, { parentTabId: 7, parentUrl: 'https://parent.example/a', sessionBacked: true });
+    box.activeTasks.set(7, {});
+    const whileRunning = box.childPendingDelegateInfo(21);
+    ok(whileRunning && whileRunning.parentTabId === 7 && box.pendingDelegateParent.get(21).sessionBacked === false,
+      '父任务续跑期间子页仍待命，并取消 sessionBacked');
+    box.activeTasks.delete(7);
+    ok(box.childPendingDelegateInfo(21) == null,
+      '父任务结束后不再因为 sessionBacked 把子页留在待命');
+
+    delegateEpoch.n = 1;
+    store['pendingDelegate:21'] = { parentTabId: 7, parentUrl: 'https://parent.example/a', savedAt: Date.now() };
+    if (store.pendingDelegateIndex.indexOf(21) < 0) store.pendingDelegateIndex.push(21);
+    store['taskLease:7'] = { origin: 'https://parent.example', savedAt: Date.now(), cancelled: false, sessionEpoch: 0 };
+    box.pendingDelegateParent.delete(21);
+    box.activeTasks.delete(7);
+    await box.hydrateChildPendingDelegate(21);
+    await box.pendingDelegateIndexSettled();
+    ok(box.childPendingDelegateInfo(21) == null && !store['pendingDelegate:21'],
+      '会话世代已变时不按旧租约恢复子页待命');
+    delegateEpoch.n = 0;
+  })());
 }
+pendingAsyncChecks.push((async function () {
+  let src = extractFn(bg, 'resumeTaskFromAlarm');
+  if (src.indexOf('async ') !== 0) src = 'async ' + src;
+  async function runResume(lease, epochOk) {
+    const cleared = [];
+    const ran = [];
+    const sb = {
+      activeTasks: new Map(),
+      taskResumeBlocked: new Set(),
+      taskResumeInflight: new Set(),
+      taskRemainByTab: new Map(),
+      panelPorts: new Map(),
+      skillContexts: new Map(),
+      pausedOrigins: new Map(),
+      TASK_LEASE_MAX_AGE_MS: 24 * 60 * 60 * 1000,
+      TASK_CRASH_RESUME_MAX: 5,
+      taskLeaseKey: function (id) { return 'taskLease:' + id; },
+      clearTaskLease: function () { return Promise.resolve(); },
+      hideBusyMaskTab: function () {},
+      postToTab: function () {},
+      scheduleTaskAlarm: function () {},
+      ensureOriginEpochs: function () { return Promise.resolve(); },
+      sessionEpochMatches: function () { return epochOk; },
+      parentHasLiveChildWork: function () { return Promise.resolve(false); },
+      releaseStaleChildrenForParent: function () { return Promise.resolve(); },
+      inject: function () { return Promise.resolve(); },
+      loadChildJob: function () { return Promise.resolve(null); },
+      loadStoredTaskFiles: function () { return Promise.resolve([]); },
+      runStreamingTask: function () { ran.push('run'); return Promise.resolve('done'); },
+      finishResurrectedChild: function () { return Promise.resolve(); },
+      runMultiTask: function () { return Promise.resolve(); },
+      makeCancelRef: function () { return { cancelled: false, abort: function () {} }; },
+      diagFail: function () {},
+      clearPendingDelegateForParent: function (id) { cleared.push(id); },
+      chrome: {
+        storage: {
+          session: {
+            get: function () {
+              const bag = {};
+              if (lease) bag['taskLease:4'] = lease;
+              return Promise.resolve(bag);
+            },
+            set: function () { return Promise.resolve(); }
+          }
+        },
+        tabs: { get: function () { return Promise.resolve({ id: 4 }); } }
+      }
+    };
+    vm.runInNewContext(src + '\nthis.resumeTaskFromAlarm = resumeTaskFromAlarm;', sb);
+    await sb.resumeTaskFromAlarm(4);
+    return { cleared: cleared, ran: ran };
+  }
+  const done = await runResume({
+    origin: 'https://p.example', savedAt: Date.now(), sessionEpoch: 1, cancelled: false
+  }, true);
+  ok(done.ran.length === 1 && done.cleared.indexOf(4) >= 0,
+    '闹钟续跑结束时清掉父页的子页待命');
+  const stale = await runResume({
+    origin: 'https://p.example', savedAt: Date.now(), sessionEpoch: 0, cancelled: false
+  }, false);
+  ok(stale.ran.length === 0 && stale.cleared.indexOf(4) >= 0,
+    '会话世代不符时闹钟续跑不启动，并清掉子页待命');
+})());
 {
   const fossilBox = {};
   const fossilStart = bg.indexOf('const PLAYBOOK_BEGIN');
@@ -5086,25 +5267,48 @@ if (pasteNameBox.uniqueAttachFileName) {
     'OCR 缓存内存优先、全局一条写队列、合计 200 万字上限');
   {
     const mf = JSON.parse(manifestSrc);
+    const ff = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.firefox.json'), 'utf8'));
     const imported = (bg.match(/importScripts\('([^']+)'\)/g) || []).map((s) => s.replace(/importScripts\('([^']+)'\)/, '$1'));
-    ok(mf.background.service_worker === 'background.js'
-      && JSON.stringify(mf.background.scripts) === JSON.stringify(imported.concat(['background.js'])),
+    ok(mf.manifest_version === 3 && mf.background && mf.background.service_worker === 'background.js'
+      && !Object.prototype.hasOwnProperty.call(mf.background, 'scripts') && !mf.background.type,
+      'Chromium 清单只有经典 service worker，不含 background.scripts');
+    ok(!mf.background.scripts && JSON.stringify(ff.background.scripts) === JSON.stringify(imported.concat(['background.js']))
+      && !ff.background.service_worker,
       'Firefox 事件页 scripts 与 SW 的 importScripts 顺序一致，background.js 在最后');
     ok(mf.browser_specific_settings && mf.browser_specific_settings.gecko.id === 'webpage-agent@hpcscc'
-      && mf.browser_specific_settings.gecko.strict_min_version === '128.0' && mf.minimum_chrome_version === '121',
+      && mf.browser_specific_settings.gecko.strict_min_version === '128.0' && mf.minimum_chrome_version === '121'
+      && ff.browser_specific_settings.gecko.id === 'webpage-agent@hpcscc',
       '清单写明 gecko id、Firefox 128 与 Chrome 121 起点');
+    ok(mf.action && !mf.browser_action && !ff.browser_action
+      && Array.isArray(mf.host_permissions) && mf.host_permissions.indexOf('<all_urls>') >= 0
+      && ff.host_permissions.indexOf('<all_urls>') >= 0,
+      'MV3 使用 action 与 host_permissions，不再使用 browser_action');
+    ok(mf.permissions.indexOf('webRequestBlocking') < 0 && mf.permissions.indexOf('webRequestAuthProvider') >= 0
+      && ff.permissions.indexOf('webRequestBlocking') >= 0 && ff.permissions.indexOf('webRequestAuthProvider') < 0
+      && ff.permissions.indexOf('offscreen') < 0 && ff.permissions.indexOf('debugger') < 0,
+      'webRequestBlocking 只在 Firefox 清单；Chromium 用 webRequestAuthProvider');
     ok(/if \(typeof importScripts === 'function'\) \{/.test(bg) && /function offscreenApiAvailable\(/.test(bg)
-      && /document\.createElement\('iframe'\)/.test(extractFn(bg, 'createOffscreenDoc')),
-      'Firefox 后台无 importScripts 与 chrome.offscreen 时用 iframe 承载 offscreen.html');
-    ok(/\['blocking'\]/.test(bg) && /\['asyncBlocking'\]/.test(bg) && /isFirefoxRuntime\(\)/.test(bg),
+      && /document\.createElement\('iframe'\)/.test(extractFn(bg, 'createOffscreenDoc'))
+      && /chrome\.windows\.create\(/.test(extractFn(bg, 'createOffscreenWindow')),
+      'Firefox 事件页用 iframe；没有 DOM 也没有 chrome.offscreen 时用窗口承载 offscreen.html');
+    ok(/\['blocking'\]/.test(bg) && /\['asyncBlocking'\]/.test(bg) && /isFirefoxRuntime\(\)/.test(bg)
+      && /function installDavAuthListener\(/.test(bg),
       'WebDAV 认证应答在 Firefox 用 blocking 返回 Promise');
     ok(/target\.saveDialog = null/.test(bg), 'Firefox 看不到系统保存框时 saveDialog 写 null');
-    for (const rel of mf.background.scripts) ok(fs.existsSync(path.join(ROOT, rel)), '后台脚本存在于 agent/：' + rel);
+    for (const rel of ff.background.scripts) ok(fs.existsSync(path.join(ROOT, rel)), '后台脚本存在于 agent/：' + rel);
+    const staged = execFileSync(process.execPath, [path.join(__dirname, 'scripts', 'stage-firefox.mjs')], { encoding: 'utf8' }).trim();
+    const stagedMf = JSON.parse(fs.readFileSync(path.join(staged, 'manifest.json'), 'utf8'));
+    ok(stagedMf.background && !stagedMf.background.service_worker
+      && JSON.stringify(stagedMf.background.scripts) === JSON.stringify(ff.background.scripts)
+      && !fs.existsSync(path.join(staged, 'manifest.firefox.json'))
+      && fs.existsSync(path.join(staged, 'background.js')),
+      'stage-firefox 生成的目录用事件页清单，且文件名是 manifest.json');
   }
   {
     const mf = JSON.parse(manifestSrc);
     ok(mf.permissions.indexOf('debugger') >= 0, '清单含 debugger 权限（Chrome DevTools Protocol 驱动）');
-    ok(['drivers/keys.js', 'drivers/dom.js', 'drivers/cdp.js', 'drivers/bidi.js'].every((f) => mf.background.scripts.indexOf(f) >= 0),
+    const ffDrivers = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.firefox.json'), 'utf8'));
+    ok(['drivers/keys.js', 'drivers/dom.js', 'drivers/cdp.js', 'drivers/bidi.js'].every((f) => ffDrivers.background.scripts.indexOf(f) >= 0),
       '驱动脚本同时列在 Firefox 事件页 scripts');
     const K = require(path.join(ROOT, 'drivers/keys.js'));
     const ca = K.parseChord('Control+A');

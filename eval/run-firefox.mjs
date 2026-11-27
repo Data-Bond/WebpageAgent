@@ -12,10 +12,12 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { firefoxBinary, readModelEnv } from './browsers.mjs';
 import { startEvalServer, loadTasks, configFromEnv } from './server.mjs';
+import { stageFirefoxExtension } from '../scripts/stage-firefox.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const env = readModelEnv(path.join(HERE, 'model.env'), process.env);
-const AGENT = path.resolve(HERE, '..', 'agent');
+// Firefox 加载事件页清单（background.scripts）。agent/manifest.json 只给 Chromium 的 service worker。
+const AGENT = stageFirefoxExtension();
 const GECKO_ID = 'webpage-agent@hpcscc';
 const BIDI_PORT = Number(process.env.WPA_BIDI_PORT || 9222);
 

@@ -40,3 +40,6 @@ OPTIMIZATION.md
 WebpageAgent-*/
 WebpageAgent-Latest
 *.zip
+
+# Firefox event-page tree produced by scripts/stage-firefox.mjs
+dist/
