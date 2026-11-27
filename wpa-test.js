@@ -481,6 +481,7 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
 {
   const a0 = bg.indexOf('function compactOpenedTab');
   const a1 = bg.indexOf('function startOpenerWatch');
+  const delegateEpoch = { n: 0 };
   const box = {
     lastOpenedByOpener: new Map(),
     activeTasks: new Map(),
@@ -491,6 +492,11 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
     taskResumeBlocked: new Set(),
     taskLeaseKey: function (tabId) { return 'taskLease:' + tabId; },
     TASK_LEASE_MAX_AGE_MS: 24 * 60 * 60 * 1000,
+    ensureOriginEpochs: function () { return Promise.resolve(); },
+    sessionEpochMatches: function (origin, storedEpoch) {
+      if (storedEpoch == null || Number(storedEpoch) < 0) return delegateEpoch.n === 0;
+      return Number(storedEpoch) === delegateEpoch.n;
+    },
     chrome: { storage: { session: (function () {
       const store = {};
       return {
@@ -530,7 +536,9 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
         '\nthis.attachOpenedToResultList = attachOpenedToResultList;\nthis.compactOpenedTab = compactOpenedTab;' +
         '\nthis.pickOpenedTab = pickOpenedTab;\nthis.rememberOpenedTabs = rememberOpenedTabs;\nthis.forgetOpenedTab = forgetOpenedTab;' +
         '\nthis.clickResultWantsNewTab = clickResultWantsNewTab;\nthis.pickNavTabs = pickNavTabs;\nthis.navUrlsMatch = navUrlsMatch;' +
-        '\nthis.hydrateChildPendingDelegate = hydrateChildPendingDelegate;\nthis.childPendingDelegateInfo = childPendingDelegateInfo;',
+        '\nthis.hydrateChildPendingDelegate = hydrateChildPendingDelegate;\nthis.childPendingDelegateInfo = childPendingDelegateInfo;' +
+        '\nthis.persistPendingDelegate = persistPendingDelegate;\nthis.dropPendingDelegatesForParent = dropPendingDelegatesForParent;' +
+        '\nthis.pendingDelegateIndexSettled = pendingDelegateIndexSettled;\nthis.parentTaskStillLive = parentTaskStillLive;',
       box
     );
     ok(typeof box.attachOpenedToResultList === 'function', 'attachOpenedToResultList 可在测试中加载');
@@ -671,8 +679,122 @@ ok(/等待子标签页：/.test(bg), '父面板等待子页文案');
     }
     ok(box.childPendingDelegateInfo(21) == null && !store['pendingDelegate:21'],
       '父任务租约已取消时不再恢复待命');
+
+    box.persistPendingDelegate(41, { parentTabId: 7, parentUrl: 'https://a.example/' });
+    box.persistPendingDelegate(42, { parentTabId: 7, parentUrl: 'https://b.example/' });
+    await box.pendingDelegateIndexSettled();
+    ok(store.pendingDelegateIndex.indexOf(41) >= 0 && store.pendingDelegateIndex.indexOf(42) >= 0
+      && store['pendingDelegate:41'] && store['pendingDelegate:42'],
+      '并发写入待命索引时两条都留下');
+
+    store['pendingDelegate:51'] = { parentTabId: 9, parentUrl: 'https://old.example/', savedAt: Date.now() };
+    if (store.pendingDelegateIndex.indexOf(51) < 0) store.pendingDelegateIndex.push(51);
+    const baseGet = box.chrome.storage.session.get;
+    let heldIndexGets = 0;
+    let releasePersist = null;
+    const persistGate = new Promise(function (resolve) { releasePersist = resolve; });
+    box.chrome.storage.session.get = function (keys) {
+      const read = baseGet(keys);
+      if (keys === 'pendingDelegateIndex' && heldIndexGets === 0) {
+        heldIndexGets++;
+        return persistGate.then(function () { return read; });
+      }
+      return read;
+    };
+    box.persistPendingDelegate(52, { parentTabId: 9, parentUrl: 'https://new.example/' });
+    const dropped = box.dropPendingDelegatesForParent(9);
+    releasePersist();
+    await Promise.all([dropped, box.pendingDelegateIndexSettled()]);
+    box.chrome.storage.session.get = baseGet;
+    ok(!store['pendingDelegate:51'] && !store['pendingDelegate:52']
+      && store.pendingDelegateIndex.indexOf(51) < 0 && store.pendingDelegateIndex.indexOf(52) < 0,
+      '清理父页待命时，进行中的索引写入不会把子 tab 写回来');
+
+    box.pendingDelegateParent.set(21, { parentTabId: 7, parentUrl: 'https://parent.example/a', sessionBacked: true });
+    box.activeTasks.set(7, {});
+    const whileRunning = box.childPendingDelegateInfo(21);
+    ok(whileRunning && whileRunning.parentTabId === 7 && box.pendingDelegateParent.get(21).sessionBacked === false,
+      '父任务续跑期间子页仍待命，并取消 sessionBacked');
+    box.activeTasks.delete(7);
+    ok(box.childPendingDelegateInfo(21) == null,
+      '父任务结束后不再因为 sessionBacked 把子页留在待命');
+
+    delegateEpoch.n = 1;
+    store['pendingDelegate:21'] = { parentTabId: 7, parentUrl: 'https://parent.example/a', savedAt: Date.now() };
+    if (store.pendingDelegateIndex.indexOf(21) < 0) store.pendingDelegateIndex.push(21);
+    store['taskLease:7'] = { origin: 'https://parent.example', savedAt: Date.now(), cancelled: false, sessionEpoch: 0 };
+    box.pendingDelegateParent.delete(21);
+    box.activeTasks.delete(7);
+    await box.hydrateChildPendingDelegate(21);
+    await box.pendingDelegateIndexSettled();
+    ok(box.childPendingDelegateInfo(21) == null && !store['pendingDelegate:21'],
+      '会话世代已变时不按旧租约恢复子页待命');
+    delegateEpoch.n = 0;
   })());
 }
+pendingAsyncChecks.push((async function () {
+  let src = extractFn(bg, 'resumeTaskFromAlarm');
+  if (src.indexOf('async ') !== 0) src = 'async ' + src;
+  async function runResume(lease, epochOk) {
+    const cleared = [];
+    const ran = [];
+    const sb = {
+      activeTasks: new Map(),
+      taskResumeBlocked: new Set(),
+      taskResumeInflight: new Set(),
+      taskRemainByTab: new Map(),
+      panelPorts: new Map(),
+      skillContexts: new Map(),
+      pausedOrigins: new Map(),
+      TASK_LEASE_MAX_AGE_MS: 24 * 60 * 60 * 1000,
+      TASK_CRASH_RESUME_MAX: 5,
+      taskLeaseKey: function (id) { return 'taskLease:' + id; },
+      clearTaskLease: function () { return Promise.resolve(); },
+      hideBusyMaskTab: function () {},
+      postToTab: function () {},
+      scheduleTaskAlarm: function () {},
+      ensureOriginEpochs: function () { return Promise.resolve(); },
+      sessionEpochMatches: function () { return epochOk; },
+      parentHasLiveChildWork: function () { return Promise.resolve(false); },
+      releaseStaleChildrenForParent: function () { return Promise.resolve(); },
+      inject: function () { return Promise.resolve(); },
+      loadChildJob: function () { return Promise.resolve(null); },
+      loadStoredTaskFiles: function () { return Promise.resolve([]); },
+      runStreamingTask: function () { ran.push('run'); return Promise.resolve('done'); },
+      finishResurrectedChild: function () { return Promise.resolve(); },
+      runMultiTask: function () { return Promise.resolve(); },
+      makeCancelRef: function () { return { cancelled: false, abort: function () {} }; },
+      diagFail: function () {},
+      clearPendingDelegateForParent: function (id) { cleared.push(id); },
+      chrome: {
+        storage: {
+          session: {
+            get: function () {
+              const bag = {};
+              if (lease) bag['taskLease:4'] = lease;
+              return Promise.resolve(bag);
+            },
+            set: function () { return Promise.resolve(); }
+          }
+        },
+        tabs: { get: function () { return Promise.resolve({ id: 4 }); } }
+      }
+    };
+    vm.runInNewContext(src + '\nthis.resumeTaskFromAlarm = resumeTaskFromAlarm;', sb);
+    await sb.resumeTaskFromAlarm(4);
+    return { cleared: cleared, ran: ran };
+  }
+  const done = await runResume({
+    origin: 'https://p.example', savedAt: Date.now(), sessionEpoch: 1, cancelled: false
+  }, true);
+  ok(done.ran.length === 1 && done.cleared.indexOf(4) >= 0,
+    '闹钟续跑结束时清掉父页的子页待命');
+  const stale = await runResume({
+    origin: 'https://p.example', savedAt: Date.now(), sessionEpoch: 0, cancelled: false
+  }, false);
+  ok(stale.ran.length === 0 && stale.cleared.indexOf(4) >= 0,
+    '会话世代不符时闹钟续跑不启动，并清掉子页待命');
+})());
 {
   const fossilBox = {};
   const fossilStart = bg.indexOf('const PLAYBOOK_BEGIN');

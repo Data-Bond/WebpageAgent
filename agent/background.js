@@ -5900,9 +5900,23 @@ async function parentTabUrl(parentTabId) {
 }
 
 const PENDING_DELEGATE_INDEX_KEY = 'pendingDelegateIndex';
+let pendingDelegateIndexChain = Promise.resolve();
 
 function pendingDelegateSessionKey(childTabId) {
   return 'pendingDelegate:' + childTabId;
+}
+
+function pendingDelegateIndexSettled() {
+  return pendingDelegateIndexChain;
+}
+
+// 与 childJobIndexChain 一样串行读写索引。并发 persist/drop 若各自读改写，后写入会丢掉或复活条目。
+function enqueuePendingDelegateIndex(work) {
+  const run = pendingDelegateIndexChain.then(function () {
+    return work();
+  }).catch(function () {});
+  pendingDelegateIndexChain = run;
+  return run;
 }
 
 function persistPendingDelegate(childTabId, rec) {
@@ -5914,13 +5928,14 @@ function persistPendingDelegate(childTabId, rec) {
       parentUrl: String(rec.parentUrl || '').slice(0, 500),
       savedAt: Date.now()
     };
-    const write = chrome.storage.session.get(PENDING_DELEGATE_INDEX_KEY).then(function (saved) {
-      const prev = saved && saved[PENDING_DELEGATE_INDEX_KEY];
-      const index = Array.isArray(prev) ? prev.slice() : [];
-      if (index.indexOf(childTabId) < 0) index.push(childTabId);
-      return chrome.storage.session.set({ [key]: row, [PENDING_DELEGATE_INDEX_KEY]: index });
+    return enqueuePendingDelegateIndex(function () {
+      return chrome.storage.session.get(PENDING_DELEGATE_INDEX_KEY).then(function (saved) {
+        const prev = saved && saved[PENDING_DELEGATE_INDEX_KEY];
+        const index = Array.isArray(prev) ? prev.slice() : [];
+        if (index.indexOf(childTabId) < 0) index.push(childTabId);
+        return chrome.storage.session.set({ [key]: row, [PENDING_DELEGATE_INDEX_KEY]: index });
+      });
     });
-    if (write && typeof write.catch === 'function') write.catch(function () {});
   } catch (e) {}
 }
 
@@ -5928,43 +5943,45 @@ function dropPendingDelegateSession(childTabId) {
   try {
     if (!chrome.storage || !chrome.storage.session) return;
     const key = pendingDelegateSessionKey(childTabId);
-    const write = chrome.storage.session.get(PENDING_DELEGATE_INDEX_KEY).then(function (saved) {
-      const prev = saved && saved[PENDING_DELEGATE_INDEX_KEY];
-      const index = Array.isArray(prev) ? prev.filter(function (id) { return id !== childTabId; }) : [];
-      const removal = chrome.storage.session.remove(key);
-      const done = removal && typeof removal.then === 'function' ? removal : Promise.resolve();
-      return done.then(function () {
-        return chrome.storage.session.set({ [PENDING_DELEGATE_INDEX_KEY]: index });
+    return enqueuePendingDelegateIndex(function () {
+      return chrome.storage.session.get(PENDING_DELEGATE_INDEX_KEY).then(function (saved) {
+        const prev = saved && saved[PENDING_DELEGATE_INDEX_KEY];
+        const index = Array.isArray(prev) ? prev.filter(function (id) { return id !== childTabId; }) : [];
+        const removal = chrome.storage.session.remove(key);
+        const done = removal && typeof removal.then === 'function' ? removal : Promise.resolve();
+        return done.then(function () {
+          return chrome.storage.session.set({ [PENDING_DELEGATE_INDEX_KEY]: index });
+        });
       });
     });
-    if (write && typeof write.catch === 'function') write.catch(function () {});
   } catch (e) {}
 }
 
 function dropPendingDelegatesForParent(parentTabId) {
   try {
     if (!chrome.storage || !chrome.storage.session || parentTabId == null) return;
-    const write = chrome.storage.session.get(PENDING_DELEGATE_INDEX_KEY).then(function (saved) {
-      const index = Array.isArray(saved && saved[PENDING_DELEGATE_INDEX_KEY]) ? saved[PENDING_DELEGATE_INDEX_KEY].slice() : [];
-      if (!index.length) return;
-      return chrome.storage.session.get(index.map(pendingDelegateSessionKey)).then(function (rows) {
-        const removeKeys = [];
-        const next = [];
-        for (let i = 0; i < index.length; i++) {
-          const id = index[i];
-          const row = rows && rows[pendingDelegateSessionKey(id)];
-          if (row && row.parentTabId === parentTabId) {
-            removeKeys.push(pendingDelegateSessionKey(id));
-            pendingDelegateParent.delete(id);
-          } else next.push(id);
-        }
-        const removal = removeKeys.length ? chrome.storage.session.remove(removeKeys) : Promise.resolve();
-        return Promise.resolve(removal).then(function () {
-          return chrome.storage.session.set({ [PENDING_DELEGATE_INDEX_KEY]: next });
+    return enqueuePendingDelegateIndex(function () {
+      return chrome.storage.session.get(PENDING_DELEGATE_INDEX_KEY).then(function (saved) {
+        const index = Array.isArray(saved && saved[PENDING_DELEGATE_INDEX_KEY]) ? saved[PENDING_DELEGATE_INDEX_KEY].slice() : [];
+        if (!index.length) return;
+        return chrome.storage.session.get(index.map(pendingDelegateSessionKey)).then(function (rows) {
+          const removeKeys = [];
+          const next = [];
+          for (let i = 0; i < index.length; i++) {
+            const id = index[i];
+            const row = rows && rows[pendingDelegateSessionKey(id)];
+            if (row && row.parentTabId === parentTabId) {
+              removeKeys.push(pendingDelegateSessionKey(id));
+              pendingDelegateParent.delete(id);
+            } else next.push(id);
+          }
+          const removal = removeKeys.length ? chrome.storage.session.remove(removeKeys) : Promise.resolve();
+          return Promise.resolve(removal).then(function () {
+            return chrome.storage.session.set({ [PENDING_DELEGATE_INDEX_KEY]: next });
+          });
         });
       });
     });
-    if (write && typeof write.catch === 'function') write.catch(function () {});
   } catch (e) {}
 }
 
@@ -5979,7 +5996,9 @@ function childPendingDelegateInfo(childTabId) {
     dropPendingDelegateSession(childTabId);
     return null;
   }
-  if (!activeTasks.has(rec.parentTabId) && !rec.sessionBacked) {
+  // 父任务已经在本轮跑过，就不再把 sessionBacked 当成“父任务还活着”。父任务结束后下一次查询会清掉待命。
+  if (activeTasks.has(rec.parentTabId)) rec.sessionBacked = false;
+  else if (!rec.sessionBacked) {
     pendingDelegateParent.delete(childTabId);
     dropPendingDelegateSession(childTabId);
     return null;
@@ -5996,7 +6015,10 @@ async function parentTaskStillLive(parentTabId) {
     const saved = await chrome.storage.session.get(key);
     const lease = saved && saved[key];
     if (!lease || lease.cancelled || !lease.origin) return false;
-    return Date.now() - Number(lease.savedAt || 0) <= TASK_LEASE_MAX_AGE_MS;
+    if (Date.now() - Number(lease.savedAt || 0) > TASK_LEASE_MAX_AGE_MS) return false;
+    if (typeof ensureOriginEpochs === 'function') await ensureOriginEpochs();
+    if (typeof sessionEpochMatches === 'function' && !sessionEpochMatches(lease.origin, lease.sessionEpoch)) return false;
+    return true;
   } catch (e) {
     return false;
   }
@@ -10179,6 +10201,7 @@ async function resumeTaskFromAlarm(tabId) {
   if (taskResumeBlocked.has(id)) {
     await clearTaskLease(id);
     hideBusyMaskTab(id);
+    clearPendingDelegateForParent(id);
     postToTab(id, panelPorts.get(id) || null, { type: 'taskState', running: false });
     return;
   }
@@ -10195,25 +10218,32 @@ async function resumeTaskFromAlarm(tabId) {
   try {
     const saved = await chrome.storage.session.get(taskLeaseKey(id));
     const lease = saved && saved[taskLeaseKey(id)];
-    if (!lease) return;
+    if (!lease) {
+      clearPendingDelegateForParent(id);
+      return;
+    }
     if (lease.cancelled || !lease.origin) {
       await clearTaskLease(id);
       hideBusyMaskTab(id);
+      clearPendingDelegateForParent(id);
       return;
     }
     if (Date.now() - Number(lease.savedAt || 0) > TASK_LEASE_MAX_AGE_MS) {
       await clearTaskLease(id);
+      clearPendingDelegateForParent(id);
       return;
     }
     await ensureOriginEpochs();
     if (!sessionEpochMatches(lease.origin, lease.sessionEpoch)) {
       await clearTaskLease(id);
+      clearPendingDelegateForParent(id);
       return;
     }
     let tabAlive = false;
     try { tabAlive = !!(await chrome.tabs.get(id)); } catch (eTab) { tabAlive = false; }
     if (!tabAlive) {
       await clearTaskLease(id);
+      clearPendingDelegateForParent(id);
       return;
     }
     if (activeTasks.has(id)) {
@@ -10229,6 +10259,7 @@ async function resumeTaskFromAlarm(tabId) {
     if (crashN >= TASK_CRASH_RESUME_MAX) {
       await clearTaskLease(id);
       hideBusyMaskTab(id);
+      clearPendingDelegateForParent(id);
       postToTab(id, panelPorts.get(id) || null, {
         type: 'error',
         message: '同一进度连续中断过多次，已停止自动续跑。请重新发送指令。'
@@ -10295,12 +10326,14 @@ async function resumeTaskFromAlarm(tabId) {
     diagFail('unhandled', e);
     postToTab(id, port, { type: 'error', message: '任务续跑失败：' + String(e && e.message || e) });
     await clearTaskLease(id);
+    clearPendingDelegateForParent(id);
   } finally {
     taskResumeInflight.delete(id);
     if (doneResolve) doneResolve();
     const cur = activeTasks.get(id);
     if (cur && cur.cancelRef === cancelRef) {
       activeTasks.delete(id);
+      clearPendingDelegateForParent(id);
       postToTab(id, port, { type: 'taskState', running: false });
     }
   }
